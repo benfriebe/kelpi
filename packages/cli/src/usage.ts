@@ -414,6 +414,10 @@ export const workspaceCreateUsage = `Usage:
                        [--icon <emoji>] [--focus] [--json]
   kelpi workspace create ... --agent claude|codex \\
                        [--prompt "..." | --prompt-file <path|->] [--send]
+  kelpi workspace create --from <url|owner/name#n> [--name "..."] [--repo <path>] \\
+                       [--group <name> | --parent <name-or-id> | --nested] \\
+                       [--worktree <name>] [--branch <name>] [--icon <emoji>] [--focus] \\
+                       [--agent claude|codex ...] [--json]
 
 Creates a new workspace and returns its id. The workspace is created in the
 background: every window stays where it is (the sidebar points at the new row)
@@ -456,6 +460,9 @@ Options:
   --prompt-file <path>
                      Read the prompt from a file (UTF-8); \`-\` reads stdin.
   --send             Submit the prompt at launch instead of pasting it.
+  --from <ticket>    Start from a GitHub issue or pull request: its URL or
+                     <owner>/<name>#<n>. Kelpi resolves it with the GitHub
+                     account linked in Settings ▸ Integrations.
   --json             Print the structured reply (incl. the new workspace id
                      and, with a prompt, prompt_file).
   -h, --help         Show this help.
@@ -466,12 +473,25 @@ not be delivered is reported in Kelpi windows, not here. The daemon keeps a
 copy of the prompt for a day and the command prints its path
 ("prompt file: <path>").
 
+--from fills whatever the command leaves out from the ticket: the name
+(#418 Retry login on 401), the registered repository whose remotes match
+the ticket's (unless --repo or the group's repository says otherwise; the
+cwd is never assumed), a worktree on a new branch for an issue or on the
+head branch for a pull request, and, with --agent but no prompt, a prompt
+pointing the agent at the ticket. It writes the ticket's text to
+.kelpi/ticket-<n>.md in the checkout and prints the checkout mode and that
+file. A pull request is checked out on its own head branch, so a /pull/
+URL with --update-main is refused (<owner>/<name>#<n> does not say which
+kind it is, so for it the daemon decides); --branch names the local branch
+the head is checked out on.
+
 Examples:
   kelpi workspace create --worktree eng-123 --agent claude --prompt "Fix the login timeout"
   gh issue view 42 | kelpi workspace create --name issue-42 --agent codex --prompt-file - --send
+  kelpi workspace create --from https://github.com/acme/api/pull/418 --agent claude
 
 Exit codes: 0 on success, non-zero on failure; 1 also when the daemon
-predates --muted or --agent and created the workspace without it.
+predates --from, --muted or --agent and created the workspace without it.
 
 `;
 

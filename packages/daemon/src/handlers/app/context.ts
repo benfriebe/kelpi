@@ -15,7 +15,17 @@
 
 import { newUUID } from '@kelpi/core/codec';
 import type { SidebarID } from '@kelpi/core/codec';
-import type { JsonObject, JsonValue } from '@kelpi/protocol';
+import type { GitHubTicketRef, TicketCreateDefaults, TicketFileDetail } from '@kelpi/core/tickets';
+import type {
+    IntegrationErrorCode,
+    IntegrationFailure,
+    JsonObject,
+    JsonValue,
+    TicketExistingReason,
+    TicketProvider,
+    TicketSummary,
+    WorkspaceCreateFailure
+} from '@kelpi/protocol';
 
 import { INERT_AGENT_LAUNCHER, type AgentLauncher } from '../../agent-launch/index.js';
 import type { CommandHandler, HandlerContext, HandlerTable, ReplyHandle } from '../../seams.js';
@@ -26,13 +36,20 @@ import type {
     NewWorkspacePlacement
 } from '../../store/index.js';
 import {
+    createGitRunner,
     createGitService,
     DEFAULT_WORKTREE_BASE_PATH,
+    performPullRequestCheckout,
+    worktreeGitOps,
     type GitService,
     type BundledWorktreeOps,
     createWorktreeAddGuard,
+    type PullRequestCheckoutHooks,
+    type PullRequestCheckoutRequest,
+    type PullRequestCheckoutResult,
     type WorktreeAddHooks,
-    type WorktreeAddRequest
+    type WorktreeAddRequest,
+    type WorktreeGitOps
 } from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
@@ -86,8 +103,7 @@ export interface WorktreeCreateRun {
  * and per-(repo, branch) guard (`createWorktreeAddGuard`). A second create for the same worktree
  * path or branch while one runs is refused at once with `WorktreeBusyError`.
  */
-function guardedCreator(inner: WorktreeCreator): WorktreeCreator {
-    const guard = createWorktreeAddGuard();
+function guardedCreator(inner: WorktreeCreator, guard: ReturnType<typeof createWorktreeAddGuard>): WorktreeCreator {
     return {
         begin() {
             const run = inner.begin();
@@ -105,6 +121,166 @@ function guardedCreator(inner: WorktreeCreator): WorktreeCreator {
         }
     };
 }
+
+// ---------------------------------------------------------------------------
+// Tickets (docs/integrations.md): the seam between the create flow and the integrations service
+// ---------------------------------------------------------------------------
+
+/**
+ * A pull request's head, as the checkout needs it (docs/integrations.md §8). Everything here came from GitHub
+ * except the two remote fields, which the resolve worked out against the matched repository's
+ * remotes.
+ */
+export interface ResolvedPullRequest {
+    /** The head branch's own name (`headRefName`), unrewritten: `prLocalBranchName` validates it. */
+    readonly headRef: string;
+    /** The head commit (`headRefOid`): what the fetch must arrive at, and the tip a cancel may remove. */
+    readonly headSha: string;
+    /** The head lives in another repository (a fork). */
+    readonly crossRepository: boolean;
+    /** The fork lets the base repository's maintainers push to the head branch. */
+    readonly maintainerCanModify: boolean;
+    /** The head repository's owner login; null when the fork was deleted. */
+    readonly headOwner: string | null;
+    /** The head repository as `owner/name`; null when the fork was deleted. */
+    readonly headRepo: string | null;
+    /** The branch the pull request merges into. */
+    readonly baseRef: string;
+    /** The base repository's default branch (`prLocalBranchName`'s collision rule). */
+    readonly baseDefaultBranch: string;
+    /**
+     * A remote of the matched repository that already points at the head repository (the user's
+     * own fork, say): the head is fetched from it and the local branch tracks it, as `gh pr
+     * checkout` does. Null when there is none, or for a same-repository pull request.
+     */
+    readonly headRemote: string | null;
+    /**
+     * For a fork with no `headRemote` whose maintainers may push (and that still exists): the URL
+     * a push of the local branch goes to, the base remote's own URL with owner/name swapped
+     * (`replaceGitHubRemoteRepo`, so an SSH host alias carries over). Null when nothing can be
+     * pushed back (a deleted fork, or `maintainerCanModify` false) and for a same-repository pull
+     * request, which pushes to the base remote.
+     */
+    readonly headPushURL: string | null;
+}
+
+/** A workspace already open for a ticket: created from it (`ticket`) or on its branch (`branch`). */
+export interface ExistingTicketWorkspace {
+    readonly workspaceID: string;
+    readonly reason: TicketExistingReason;
+}
+
+/**
+ * One ticket, resolved: everything `ticket-resolve` answers and everything a create from it needs
+ * (so the create never asks GitHub twice). Invariants: `repoID === summary.repo_id ===
+ * defaults.repoID`, `checkedOutAt === defaults.checkedOutAt`, and `warnings` includes
+ * `defaults.warnings`.
+ */
+export interface ResolvedTicket {
+    /** The wire row, cleaned (`ticket-resolve`'s `ticket`). */
+    readonly summary: TicketSummary;
+    /** Null for an issue. */
+    readonly pullRequest: ResolvedPullRequest | null;
+    /**
+     * The registered repository whose remotes include `summary.repo`, or null. Ties go to an
+     * `origin` match over any other remote, a repository added by hand over an auto-discovered one,
+     * a repository root over a subfolder or linked worktree row, then the most recently used.
+     */
+    readonly repoID: string | null;
+    /**
+     * The remote of that repository whose URL matched (`origin`, `upstream` or any other): base
+     * fetches, `refs/pull/<n>/head` and an issue's update main use IT, not a hard-coded `origin`.
+     * Null with `repoID`.
+     */
+    readonly baseRemote: string | null;
+    /** `@kelpi/core/tickets`' `ticketCreateDefaults` for this ticket and the matched repository. */
+    readonly defaults: TicketCreateDefaults;
+    readonly existing: readonly ExistingTicketWorkspace[];
+    /** Where the default branch is already checked out, or null. */
+    readonly checkedOutAt: string | null;
+    readonly warnings: readonly string[];
+    /** What `renderTicketFile` writes into the checkout (the body and comments live only here). */
+    readonly file: TicketFileDetail;
+    /** Epoch ms: a resolve is reused for about five minutes. */
+    readonly resolvedAt: number;
+}
+
+/**
+ * Why a ticket could not be resolved, with the wire code a reply carries
+ * (`INTEGRATION_ERROR_CODES`). The message is ready to show and never holds a token or a header.
+ */
+export class TicketServiceError extends Error {
+    readonly code: IntegrationErrorCode;
+    readonly retryAfterS: number | undefined;
+    readonly ssoURL: string | undefined;
+    readonly settingsURL: string | undefined;
+
+    constructor(
+        code: IntegrationErrorCode,
+        message: string,
+        extras: { readonly retryAfterS?: number | undefined; readonly ssoURL?: string | undefined; readonly settingsURL?: string | undefined } = {}
+    ) {
+        super(message);
+        this.name = 'TicketServiceError';
+        this.code = code;
+        this.retryAfterS = extras.retryAfterS;
+        this.ssoURL = extras.ssoURL;
+        this.settingsURL = extras.settingsURL;
+    }
+}
+
+/** The `{ok:false, error, code, …}` a verb answers with for this error (`IntegrationFailure`). */
+export function integrationFailure(error: TicketServiceError): IntegrationFailure {
+    return {
+        ok: false,
+        error: error.message,
+        code: error.code,
+        ...(error.retryAfterS !== undefined ? { retry_after_s: error.retryAfterS } : {}),
+        ...(error.ssoURL !== undefined ? { sso_url: error.ssoURL } : {}),
+        ...(error.settingsURL !== undefined ? { settings_url: error.settingsURL } : {})
+    };
+}
+
+/**
+ * The `workspace-create` refusal for this error (wire-protocol.md §6.3): the same code, as
+ * `ticket_error`, with the same extras.
+ */
+export function ticketCreateFailure(error: TicketServiceError): WorkspaceCreateFailure {
+    return {
+        ok: false,
+        error: error.message,
+        ticket_error: error.code,
+        ...(error.retryAfterS !== undefined ? { retry_after_s: error.retryAfterS } : {}),
+        ...(error.ssoURL !== undefined ? { sso_url: error.ssoURL } : {}),
+        ...(error.settingsURL !== undefined ? { settings_url: error.settingsURL } : {})
+    };
+}
+
+/**
+ * What the create flow asks of the integrations service. Deliberately small: writing the ticket
+ * file and checking out a pull request are the create flow's own git work, not the service's.
+ */
+export interface TicketService {
+    /** Whether `provider` has a usable credential right now (stored, no `problem`). No network. */
+    connected(provider: TicketProvider): boolean;
+    /**
+     * Resolve a reference `parseTicketRef` accepted. Rejects with `TicketServiceError`, or with
+     * `signal.reason` once the signal aborts (a cancelled create). Reuses a resolve of the same
+     * ticket (`ticketIdentity`) younger than about five minutes.
+     */
+    resolve(ref: GitHubTicketRef, signal: AbortSignal): Promise<ResolvedTicket>;
+}
+
+/**
+ * The service a handler table gets when boot supplies none (handler tests, a daemon composed
+ * without integrations): nothing is connected, so a create that names a ticket is refused with
+ * `not-connected` before anything happens.
+ */
+export const INERT_TICKET_SERVICE: TicketService = {
+    connected: () => false,
+    resolve: () =>
+        Promise.reject(new TicketServiceError('not-connected', 'GitHub is not connected: connect it in Settings ▸ Integrations'))
+};
 
 export interface AppHandlerOptions {
     readonly git?: GitService | undefined;
@@ -195,6 +371,20 @@ export interface AppHandlerOptions {
      * nowhere to write one); boot always supplies the real one.
      */
     readonly agentLauncher?: AgentLauncher | undefined;
+    /**
+     * `workspace-create`'s `ticket` (wire-protocol.md §6.3, docs/integrations.md): resolves the
+     * ticket the create names. Absent = `INERT_TICKET_SERVICE` (nothing connected); boot passes
+     * the integrations service.
+     */
+    readonly tickets?: TicketService | undefined;
+    /**
+     * The git a create from a ticket runs DIRECTLY, never through the `kelpi.git` provider
+     * contract (graft-git.md §8.5.3): a pull request's checkout, the ticket file's tracked check,
+     * remote and branch reads. Absent = bundled git (`worktreeGitOps(createGitRunner())`, what
+     * boot's own worktree creates run). A pull request's checkout is refused while
+     * `worktrees.begin()` answers `detailed: false` (a plugin provider owns `kelpi.git`).
+     */
+    readonly ticketGit?: WorktreeGitOps | undefined;
 }
 
 export interface AppDeps {
@@ -221,6 +411,10 @@ export interface AppDeps {
     readonly decidePermission: (args: JsonObject, signal: AbortSignal) => PermissionDecisionCall;
     readonly log: (message: string) => void;
     readonly agentLauncher: AgentLauncher;
+    readonly tickets: TicketService;
+    readonly ticketGit: WorktreeGitOps;
+    /** `performPullRequestCheckout` on `ticketGit`, behind the same per-path/per-branch guard as `worktrees`. */
+    readonly checkoutPullRequest: (request: PullRequestCheckoutRequest, hooks: PullRequestCheckoutHooks) => Promise<PullRequestCheckoutResult>;
 }
 
 const noop = (): void => {};
@@ -230,10 +424,15 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
     const cols = options.defaultCols ?? 80;
     const rows = options.defaultRows ?? 24;
     const git = options.git ?? createGitService();
+    // One guard for both kinds of worktree create: a pull request's checkout and a plain create
+    // must not race for the same path or branch either.
+    const guard = createWorktreeAddGuard();
+    const ticketGit = options.ticketGit ?? worktreeGitOps(createGitRunner());
     return {
         git,
         worktrees: guardedCreator(
-            options.worktrees ?? { begin: () => ({ detailed: false, run: (request) => git.worktreeAdd(request) }) }
+            options.worktrees ?? { begin: () => ({ detailed: false, run: (request) => git.worktreeAdd(request) }) },
+            guard
         ),
         bundledWorktrees: options.bundledWorktrees ?? (() => null),
         // Nothing spawns or watches until a `graft-start` actually runs, so the default is
@@ -292,7 +491,17 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
             options.decidePermission ??
             (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),
         log: options.log ?? noop,
-        agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER
+        agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER,
+        tickets: options.tickets ?? INERT_TICKET_SERVICE,
+        ticketGit,
+        async checkoutPullRequest(request, hooks) {
+            const release = guard.acquire(request);
+            try {
+                return await performPullRequestCheckout(ticketGit, request, hooks);
+            } finally {
+                release();
+            }
+        }
     };
 }
 

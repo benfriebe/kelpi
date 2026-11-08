@@ -1,13 +1,16 @@
 /** Workspaces feature commands. Retained callbacks resolve the current mirror on invocation. */
 import type { PaneStatus } from '@kelpi/core/layout';
 import type { WorkspaceColor } from '@kelpi/daemon/store';
+import { parseIntegrationFailure } from '@kelpi/protocol';
 import type { Dispatch, SetStateAction } from 'react';
 import {
     DEFAULT_PROFILE_NAME,
     defaultGroupName,
+    type CreateFailure,
     type GroupRepoChange,
     type NewGroupRepo,
     type WorkspaceAgentRequest,
+    type WorkspaceTicketRequest,
     type WorkspaceWorktreeRequest
 } from '../chrome';
 import { parseWorktreeProgress } from '../chrome/worktree';
@@ -32,6 +35,45 @@ export interface WorkspacesActionHost {
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
     readonly setSidebarVisible: Dispatch<SetStateAction<boolean>>;
     readonly lifecycle: WorkspacesFeatureLifecycle;
+}
+
+/**
+ * A create that named a ticket and was refused BECAUSE of it (`ticket_error`, wire-protocol.md
+ * §6.3): the message, and the failure as the sheet's ticket states read it. Any other refusal is
+ * its message alone, as every create's has always been.
+ */
+export function createFailureOf(reply: CommandReply, ticket: boolean): CreateFailure {
+    const error = replyError(reply);
+    if (!ticket || typeof reply['ticket_error'] !== 'string') return error;
+    const info = parseIntegrationFailure(reply);
+    return info === null ? error : { error, ticket: info };
+}
+
+/**
+ * What a create from a ticket told the user beyond "done", as one toast's lines: no ticket echo (a
+ * daemon that predates tickets made a plain workspace), no ticket file (and why), and any
+ * warnings (a pull request head that could not be fast-forwarded, a fork that is gone). Empty when
+ * there is nothing to say.
+ */
+export function ticketCreateNotes(reply: CommandReply): { readonly title: string; readonly lines: readonly string[] } | null {
+    const ticket = reply['ticket'];
+    if (typeof ticket !== 'object' || ticket === null) {
+        return {
+            title: 'This daemon cannot start workspaces from tickets',
+            lines: ['The workspace was created without the ticket. Update the Kelpi daemon to use From ticket.']
+        };
+    }
+    const key = typeof (ticket as Record<string, unknown>)['key'] === 'string' ? ((ticket as Record<string, unknown>)['key'] as string) : 'the ticket';
+    const lines: string[] = [];
+    const fileError = replyText(reply, 'ticket_file_error');
+    if (fileError !== undefined) {
+        lines.push(`No ticket file was written: ${fileError}. The agent's prompt names the ticket's link instead.`);
+    }
+    const warnings = reply['warnings'];
+    if (Array.isArray(warnings)) {
+        for (const warning of warnings) if (typeof warning === 'string' && warning !== '') lines.push(warning);
+    }
+    return lines.length === 0 ? null : { title: `Created from ${key}, with notes`, lines };
 }
 
 /** How long a "Removed worktree" toast stays up; a "Kept on disk" one stays until dismissed. */
@@ -276,6 +318,26 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         notifyFailure('New workspace', error);
     };
 
+    /**
+     * A create from a ticket answered: what it did beyond "done" (no ticket file, warnings, or no
+     * ticket at all from an older daemon) as one sticky toast, since the sheet that asked has
+     * closed. Nothing when there is nothing to say.
+     */
+    const reportTicketNotes = (reply: CommandReply): void => {
+        const notes = ticketCreateNotes(reply);
+        if (notes === null) return;
+        const workspaceID = replyText(reply, 'workspace_id') ?? null;
+        store.getState().pushToast({
+            id: `ticket-create-${workspaceID ?? String(Date.now())}`,
+            kind: 'info',
+            title: notes.title,
+            body: notes.lines.join('\n'),
+            paneID: null,
+            workspaceID,
+            createdAt: Date.now()
+        });
+    };
+
     const runCreateWorkspace = (
         promise: Promise<CommandReply>,
         repoPaths: readonly string[] = [],
@@ -358,6 +420,22 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 // prop, so scoping the request to a group here would override a user who
                 // had turned inheritance off.
                 groupID: null,
+                seq: (previous?.seq ?? 0) + 1
+            }));
+            return true;
+        },
+
+        /**
+         * ⌥⌘N and the palette's New Workspace from Ticket (docs/integrations.md): the same sheet
+         * ⌘N opens, with its ticket picker already up. Over a daemon that cannot link GitHub the
+         * sheet has no picker to raise, and this is ⌘N.
+         */
+        newWorkspaceFromTicket(): boolean {
+            setSidebarVisible(true);
+            setSidebarCreateRequest((previous) => ({
+                kind: 'workspace',
+                groupID: null,
+                fromTicket: true,
                 seq: (previous?.seq ?? 0) + 1
             }));
             return true;
@@ -672,8 +750,10 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 parentID?: string | undefined;
                 /** shell-ui.md §10.1's Agent row: the agent starts in the worktree's first pane. */
                 agent?: WorkspaceAgentRequest | undefined;
+                /** shell-ui.md §10.1's From ticket: the ticket the worktree is cut for. */
+                ticket?: WorkspaceTicketRequest | undefined;
             } = {}
-        ): Promise<string | null> {
+        ): Promise<CreateFailure | null> {
             const onProgress = worktree.onProgress;
             const sentAt = Date.now();
             try {
@@ -694,7 +774,9 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     ...(extras.groupDefaults === false ? { groupDefaults: false } : {}),
                     ...(extras.parentID === undefined ? {} : { parent: extras.parentID }),
                     ...(worktree.requestID !== undefined ? { requestID: worktree.requestID } : {}),
-                    ...agentCreateFields(extras.agent)
+                    ...agentCreateFields(extras.agent),
+                    // The sheet showed the ticket's defaults and sends the user's final fields.
+                    ...(extras.ticket === undefined ? {} : { ticket: extras.ticket.ref, ticketDefaults: false })
                 };
                 const reply = await (onProgress === undefined
                     ? commands.createWorkspace(input)
@@ -705,10 +787,86 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                               if (progress !== null) onProgress(progress);
                           }
                       }));
-                if (!isOkReply(reply)) return replyError(reply);
+                if (!isOkReply(reply)) return createFailureOf(reply, extras.ticket !== undefined);
                 checkAgentEcho(reply, extras.agent, sentAt);
                 const created = replyText(reply, 'workspace_id');
                 if (created !== undefined) activateWorkspaceAndReveal(created);
+                if (extras.ticket !== undefined) reportTicketNotes(reply);
+                return null;
+            } catch (error) {
+                return error instanceof Error ? error.message : String(error);
+            }
+        },
+
+        /**
+         * A create from a ticket that makes no worktree (shell-ui.md §10.1, docs/integrations.md):
+         * the workspace opens at `ticket.repoPath`, sent as `repo` rather than as `path` plus a
+         * later association, so the daemon associates it and writes the ticket file there. Awaited
+         * like a worktree create, because the ticket lookup is a step that can take seconds and
+         * can be cancelled (`requestID`) or refused (`ticket_error`), and the sheet stays up for
+         * both. The other chosen repositories are associated once the workspace exists.
+         */
+        async createWorkspaceFromTicket(
+            name: string,
+            groupID: string | null,
+            ticket: WorkspaceTicketRequest,
+            extras: {
+                color?: WorkspaceColor | undefined;
+                profile?: string | null | undefined;
+                muted?: boolean | undefined;
+                groupDefaults?: boolean | undefined;
+                repoPaths?: readonly string[] | undefined;
+                /** §2.9 "New Nested Workspace…": nest under this workspace, as any create does. */
+                parentID?: string | undefined;
+                agent?: WorkspaceAgentRequest | undefined;
+            } = {}
+        ): Promise<CreateFailure | null> {
+            const onProgress = ticket.onProgress;
+            const sentAt = Date.now();
+            try {
+                const input = {
+                    ...(name.trim().length > 0 ? { name: name.trim() } : {}),
+                    ...(groupID === null ? {} : { group: groupID }),
+                    ...(extras.color === undefined ? {} : { color: extras.color }),
+                    ...(extras.profile === undefined ||
+                    extras.profile === null ||
+                    extras.profile === DEFAULT_PROFILE_NAME
+                        ? {}
+                        : { profile: extras.profile }),
+                    ...(extras.muted === true ? { muted: true } : {}),
+                    ...(ticket.repoPath === undefined ? {} : { repo: ticket.repoPath }),
+                    ...(extras.groupDefaults === false ? { groupDefaults: false } : {}),
+                    ...(extras.parentID === undefined ? {} : { parent: extras.parentID }),
+                    ...(ticket.requestID !== undefined ? { requestID: ticket.requestID } : {}),
+                    ...agentCreateFields(extras.agent),
+                    ticket: ticket.ref,
+                    ticketDefaults: false
+                };
+                const reply = await (onProgress === undefined
+                    ? commands.createWorkspace(input)
+                    : commands.createWorkspace(input, {
+                          onProgress: (raw) => {
+                              const progress = parseWorktreeProgress(raw);
+                              if (progress !== null) onProgress(progress);
+                          }
+                      }));
+                if (!isOkReply(reply)) return createFailureOf(reply, true);
+                checkAgentEcho(reply, extras.agent, sentAt);
+                const created = replyText(reply, 'workspace_id');
+                if (created !== undefined) {
+                    activateWorkspaceAndReveal(created);
+                    for (const path of extras.repoPaths ?? []) {
+                        void commands
+                            .addRepoAssociation({ workspaceID: created, path })
+                            .then((association) => {
+                                if (!isOkReply(association)) notifyFailure('Add repository', replyError(association));
+                            })
+                            .catch((error: unknown) => {
+                                notifyFailure('Add repository', error instanceof Error ? error.message : String(error));
+                            });
+                    }
+                }
+                reportTicketNotes(reply);
                 return null;
             } catch (error) {
                 return error instanceof Error ? error.message : String(error);

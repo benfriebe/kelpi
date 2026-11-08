@@ -5,8 +5,9 @@
  * `toggle_inspector` binding and closed from its own header. Three sections, in the shipped
  * app's order:
  *
- *   1. **Workspace** — colour bar + name (rename in place), pane count, the ten-colour row, the
- *      label chips, and the profile picker. The picker leads with the built-in `default` and
+ *   1. **Workspace** — colour bar + name (rename in place), pane count, the ticket it was created
+ *      from as a link (docs/integrations.md; opened only when it is a GitHub page), the
+ *      ten-colour row, the label chips, and the profile picker. The picker leads with the built-in `default` and
  *      keeps an assigned-but-missing profile selectable, so it never renders blank after a
  *      profile leaves the config (§WS-138).
  *   2. **Repositories** — associations grouped per repo in registration order, the main checkout
@@ -33,7 +34,10 @@ import type { WorkspacePullRequest } from '@kelpi/core/git';
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
+import { isGitHubWebURL } from '@kelpi/protocol';
+
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
+import { openGitHubURL } from './github-links';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
 import { PullRequestLinks } from './PullRequestGlyph';
@@ -122,6 +126,11 @@ export interface InspectorProps {
     readonly onSetProfile?: ((profile: string | null) => void) | undefined;
     /** Agent-lifecycle §7.6: `muted` is the new state. Absent hides the toggle. */
     readonly onSetMuted?: ((muted: boolean) => void) | undefined;
+    /**
+     * Open the ticket the workspace was created from (`workspace.ticket`). Only ever called with
+     * an `isGitHubWebURL` URL. Absent = `openGitHubURL`, the system browser.
+     */
+    readonly onOpenTicket?: ((url: string) => void) | undefined;
     readonly onOpenDiff?: ((repoPath: string) => void) | undefined;
     /** Shift-click asks for a vertical split, matching the shipped tooltip. */
     readonly onOpenTerminal?: ((repoPath: string, options: { vertical: boolean }) => void) | undefined;
@@ -432,6 +441,40 @@ export function Inspector(props: InspectorProps): ReactElement {
                     <div className="text-[11px]" style={{ color: tokens.textTertiary }}>
                         {panes.length} pane{panes.length === 1 ? '' : 's'}
                     </div>
+
+                    {/*
+                     * docs/integrations.md: the issue or pull request this workspace was created
+                     * from. A link only to a GitHub page (`isGitHubWebURL`): the URL came from a
+                     * stored record, and nothing else is opened on its word.
+                     */}
+                    {workspace.ticket === null || workspace.ticket === undefined ? null : isGitHubWebURL(workspace.ticket.url) ? (
+                        <button
+                            type="button"
+                            data-testid="inspector-workspace-ticket"
+                            title={workspace.ticket.url}
+                            className="flex min-w-0 items-center gap-1 text-left text-[11px]"
+                            style={{ color: tokens.accent }}
+                            onClick={() => {
+                                const url = workspace.ticket?.url;
+                                if (url === undefined || !isGitHubWebURL(url)) return;
+                                if (props.onOpenTicket !== undefined) props.onOpenTicket(url);
+                                else openGitHubURL(url);
+                            }}
+                        >
+                            <span aria-hidden="true">↗</span>
+                            <span className="shrink-0">{workspace.ticket.key}</span>
+                            <span className="min-w-0 truncate">{workspace.ticket.title}</span>
+                        </button>
+                    ) : (
+                        <div
+                            data-testid="inspector-workspace-ticket"
+                            className="flex min-w-0 items-center gap-1 text-[11px]"
+                            style={{ color: tokens.textSecondary }}
+                        >
+                            <span className="shrink-0">{workspace.ticket.key}</span>
+                            <span className="min-w-0 truncate">{workspace.ticket.title}</span>
+                        </div>
+                    )}
 
                     <div className="flex flex-wrap items-center gap-1 pt-0.5" data-testid="inspector-colors">
                         {WORKSPACE_COLORS.map((color) => (

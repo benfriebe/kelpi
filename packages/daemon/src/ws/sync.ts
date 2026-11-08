@@ -1,4 +1,10 @@
-import { pluginObject, type PluginContext, type WsOldTerminalHostsMessage } from '@kelpi/protocol';
+import {
+    isIntegrationCommand,
+    pluginObject,
+    WS_INTEGRATIONS_CHANGED_MESSAGE,
+    type PluginContext,
+    type WsOldTerminalHostsMessage
+} from '@kelpi/protocol';
 import type { PluginChannel } from '../plugins/service.js';
 /**
  * The state-sync half of the client socket (WP2.7).
@@ -122,6 +128,7 @@ import {
 import { DEVICE_TOKEN_PREFIX, credentialFingerprint } from '../lifecycle/devices.js';
 import { isPushCommand, type PushCommand, type PushService } from '../push/service.js';
 import { isRemoteCommand, type RemoteChannel, type RemoteCommand } from './remote.js';
+import { handleIntegrationCommand, type IntegrationsChannel } from './integrations.js';
 import { handleRepoCommand, isOwnerOnlyRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
 import {
     FAVOURITE_COMMANDS,
@@ -236,6 +243,13 @@ export interface SyncHubOptions {
      * available" and nothing is pushed.
      */
     readonly push?: Pick<PushService, 'subscribe' | 'unsubscribe' | 'deliver' | 'test'> | undefined;
+    /**
+     * GitHub tickets (docs/integrations.md, `ws/integrations.ts`): the status `welcome` carries,
+     * the `integrations-changed` feed, and the seven integration verbs. Absent = `welcome` carries
+     * no `integrations` (a client reads that as "nothing can be linked here") and the verbs answer
+     * `unavailable`.
+     */
+    readonly integrations?: IntegrationsChannel | undefined;
     /**
      * M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). Absent =
      * they answer "repo commands are not available", which is what a daemon booted without a
@@ -1802,6 +1816,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private readonly handles = new Set<WsReplyHandle>();
         /** #294: this session's running worktree creates, by the `request_id` it sent. */
         private readonly cancellableCreates = new Map<string, WsReplyHandle>();
+        /** Integration requests (a search, a resolve, a link) still waiting on GitHub. */
+        private readonly integrationRequests = new Set<AbortController>();
         /** paneID → this connection's content subscription (events go nowhere else). */
         private readonly contentSubs = new Map<string, ContentSubscription>();
         /** Bumped on every subscribe/unsubscribe so an in-flight subscribe can be voided. */
@@ -2089,6 +2105,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             this.operationReplies.clear();
             for (const handle of [...this.handles]) handle.peerGone();
             this.handles.clear();
+            for (const controller of this.integrationRequests) controller.abort(new Error('command caller disconnected'));
+            this.integrationRequests.clear();
             // A dropped connection must not leave the daemon watching a file for nobody.
             for (const subscription of this.contentSubs.values()) {
                 try {
@@ -2273,6 +2291,16 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 // knows whether it bound. Rides here for the same reason settings do.
                 ...(options.transport !== undefined
                     ? { transport: options.transport() as unknown as JsonObject }
+                    : {}),
+                // docs/integrations.md §1: each provider's status rides the handshake like
+                // settings (not domain state, never in the snapshot), and later changes arrive as
+                // `integrations-changed`. Whether THIS session may link and unlink is per session,
+                // so it rides here only: a paired device may not (`integrationCommand`).
+                ...(options.integrations !== undefined
+                    ? {
+                          integrations: options.integrations.statuses() as unknown as JsonObject[],
+                          integrationsManageable: !this.pairedDevice
+                      }
                     : {})
             });
 
@@ -2630,6 +2658,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const payload = message['payload'];
             const plugins = options.plugins;
             const name = isRecord(payload) ? text(payload['command']) : undefined;
+            // docs/integrations.md §2.1: the integrations family is never plugin-hookable. A
+            // wildcard operation hook must not see a pasted token (`integration-link-token`) or any
+            // other management verb go by, so the family skips the interception entirely.
+            if (name !== undefined && isIntegrationCommand(name)) { this.commandNow(message); return; }
             if (id === undefined || name === undefined || !plugins?.hasOperationHooks?.(name) || !plugins.interceptOperation) { this.commandNow(message); return; }
             const supported = isContentCommand(name) || isCsvCommand(name) || isWebCommand(name) || isAgentCommand(name) || isRemoteCommand(name) || isWsSettingsCommand(name) || isWsOnlyCommand(name) || isRepoCommand(name) || isGraftUiCommand(name) || isTerminalSearchCommand(name) || isPaneLifecycleCommand(name) || isDesktopCommand(name) || name === GUI_DELETE_WORKSPACE_COMMAND || name === WORKSPACE_CREATE_CANCEL_COMMAND || decodeWireObject(payload).ok;
             if (!supported) { this.commandNow(message); return; }
@@ -2707,6 +2739,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 }
                 if (name !== undefined && isPushCommand(name)) {
                     this.pushCommand(id, name, payload);
+                    return;
+                }
+                if (name !== undefined && isIntegrationCommand(name)) {
+                    this.integrationCommand(id, payload);
                     return;
                 }
                 if (name !== undefined && isWsSettingsCommand(name)) {
@@ -3147,6 +3183,34 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
         private contentReply(id: string, reply: JsonObject): void {
             this.send({ type: 'command-reply', id, reply });
+        }
+
+        /**
+         * The integrations family (`ws/integrations.ts`, docs/integrations.md §2.1). The four
+         * management verbs need an OWNER session: a paired device (`kd_…`) is refused, and so is a
+         * plugin view's command (`commandSource === 'plugin'`), whose internal session would
+         * otherwise count as the owner because plugin backends run without a credential. Search,
+         * resolve and status are open to every session. A request still running when the session
+         * goes away is aborted (`close()`), so GitHub is not asked on behalf of nobody.
+         */
+        private integrationCommand(id: string, payload: Record<string, unknown>): void {
+            const channel = options.integrations;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: { ok: false, error: 'integrations are not available', code: 'unavailable' } });
+                return;
+            }
+            const controller = new AbortController();
+            this.integrationRequests.add(controller);
+            const manageable = !this.pairedDevice && this.commandSource !== 'plugin';
+            void handleIntegrationCommand(channel, payload, { manageable }, controller.signal)
+                .then(
+                    (reply) => this.send({ type: 'command-reply', id, reply }),
+                    (error: unknown) => {
+                        report(error, `ws-command ${String(payload['command'])}`);
+                        this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                    }
+                )
+                .finally(() => this.integrationRequests.delete(controller));
         }
 
         /**
@@ -3967,6 +4031,21 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         }
     });
 
+    /*
+     * docs/integrations.md §1: every change to an integration's status (a link, an unlink, a device
+     * flow starting, failing or being replaced, a 401 turning a credential revoked) reaches every
+     * ready session as one `integrations-changed` frame carrying the whole list. Sent straight to
+     * the sessions rather than through `broadcast`, so it never reaches a plugin's `observe`: there
+     * is nothing secret in it, but nothing a plugin needs either.
+     */
+    const offIntegrations = options.integrations?.onChange((statuses) => {
+        if (closed) return;
+        const message = { type: WS_INTEGRATIONS_CHANGED_MESSAGE, integrations: statuses } as unknown as JsonObject;
+        for (const session of sessions) {
+            if (session.ready) session.send(message);
+        }
+    });
+
     return {
         executeCommand(payload, context, signal) {
             if (closed || signal.aborted) return Promise.reject(new Error('command cancelled'));
@@ -4096,6 +4175,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             for (const timer of pushRechecks) clearTimeout(timer);
             pushRechecks.clear();
             unsubscribe();
+            offIntegrations?.();
             for (const session of [...sessions]) session.shutdown();
             sessions.clear();
         }

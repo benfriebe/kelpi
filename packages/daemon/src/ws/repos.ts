@@ -91,7 +91,7 @@ import {
     type WorktreeCleanupCandidate,
     type WorktreeCleanupDeps
 } from '../git/index.js';
-import { ensureRegisteredRepo, findRepoByPath, repoKey } from '../git/registry.js';
+import { ensureRegisteredRepo, findRepoByPath, readRemoteURL, repoKey } from '../git/registry.js';
 import { canonicalizeForClient } from './paths.js';
 import { workspaceByID } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, Repo, RepoAssociation } from '../store/types.js';
@@ -615,12 +615,8 @@ async function handleRepoAdd(channel: RepoChannel, payload: Record<string, unkno
         };
     }
 
-    let remoteURL: string | null = null;
-    try {
-        remoteURL = await channel.git.getRemoteURL(standardized);
-    } catch {
-        remoteURL = null;
-    }
+    // Best effort, and never with a secret from the URL's userinfo: the registry reaches every client.
+    const remoteURL = await readRemoteURL({ getRemoteURL: (candidate) => channel.git.getRemoteURL(candidate) }, standardized);
     const id = channel.uuid();
     const repo: Repo = {
         id,
@@ -739,12 +735,8 @@ async function handleRepoScan(channel: RepoChannel, payload: Record<string, unkn
             continue;
         }
         known.add(repoKey(candidatePath, home));
-        let remoteURL: string | null = null;
-        try {
-            remoteURL = await channel.git.getRemoteURL(candidatePath);
-        } catch {
-            remoteURL = null;
-        }
+        // As `repo-add`: best effort, never with a secret from the URL's userinfo.
+        const remoteURL = await readRemoteURL({ getRemoteURL: (repoPath) => channel.git.getRemoteURL(repoPath) }, candidatePath);
         const repo: Repo = {
             id: channel.uuid(),
             path: candidatePath,

@@ -143,6 +143,31 @@ describe('snapshot hydration', () => {
         expect(events[0]).toMatchObject({ workspace: { pullRequests: [pullRequest] } });
     });
 
+    it('normalizes ticket to a ticket or null, so an older daemon\'s mirror reads as "no ticket"', () => {
+        const { store } = seededDaemon();
+        const wire = serializeState(store.getState()) as Record<string, unknown>;
+        const workspaces = wire['workspaces'] as Record<string, unknown>[];
+        const legacy = { ...wire, workspaces: workspaces.map(({ ticket: _ticket, ...rest }) => rest) };
+        expect(hydrateSnapshotState(legacy).workspaces[0]?.ticket).toBeNull();
+        expect(hydrateSnapshotState(serializeState(store.getState())).workspaces[0]?.ticket).toBeNull();
+
+        const ticket = {
+            provider: 'github',
+            kind: 'issue',
+            repo: 'acme/api',
+            number: 7,
+            key: '#7',
+            url: 'https://github.com/acme/api/issues/7',
+            title: 'Crash'
+        };
+        const events = hydrateDomainEvents([
+            { kind: 'workspace-upserted', id: W1, workspace: { id: W1, name: 'x', ticket } },
+            { kind: 'workspace-upserted', id: W1, workspace: { id: W1, name: 'x', ticket: { ...ticket, url: 'javascript:x' } } }
+        ]);
+        expect(events[0]).toMatchObject({ workspace: { ticket } });
+        expect(events[1]).toMatchObject({ workspace: { ticket: null } });
+    });
+
     it('survives a junk payload rather than blanking the app', () => {
         expect(hydrateSnapshotState(null).workspaces).toEqual([]);
         expect(hydrateSnapshotState({ workspaces: 'nope' }).workspaces).toEqual([]);

@@ -29,7 +29,24 @@ const PR: WorkspacePullRequest = {
 /** The full port script: every family of action, applied to a mirror via events alone. */
 const SCRIPT: readonly DomainAction[] = [
     { type: 'create-workspace', id: W1, paneID: P0, name: 'alpha', color: 'blue', now: NOW },
-    { type: 'create-workspace', id: W2, paneID: P1, name: 'beta', color: 'red', now: NOW },
+    {
+        type: 'create-workspace',
+        id: W2,
+        paneID: P1,
+        name: '#418 Retry login on 401',
+        color: 'red',
+        now: NOW,
+        // A workspace created from a ticket: the mirror must end up holding the same ticket.
+        ticket: {
+            provider: 'github',
+            kind: 'pr',
+            repo: 'acme/api',
+            number: 418,
+            key: '#418',
+            url: 'https://github.com/acme/api/pull/418',
+            title: 'Retry login on 401'
+        }
+    },
     { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
     { type: 'split-pane', workspaceID: W1, paneID: PB, direction: 'vertical', now: NOW },
     { type: 'set-pane-label', workspaceID: W1, paneID: PA, label: 'agent' },
@@ -343,6 +360,23 @@ describe('event precision', () => {
         expect(h.state()).toBe(state);
         h.dispatch({ type: 'set-workspace-pull-requests', id: W1, pullRequests: [] });
         expect(h.state().workspaces[0]?.pullRequests).toEqual([]);
+    });
+
+    it('creating from a ticket carries it on the envelope', () => {
+        const h = harness();
+        const ticket = {
+            provider: 'github',
+            kind: 'issue',
+            repo: 'acme/api',
+            number: 7,
+            key: '#7',
+            url: 'https://github.com/acme/api/issues/7',
+            title: 'Crash'
+        } as const;
+        h.dispatch({ type: 'create-workspace', id: W1, paneID: P0, name: '#7 Crash', now: NOW, ticket });
+        const upsert = h.events.find((event) => event.kind === 'workspace-upserted');
+        expect(upsert).toMatchObject({ workspace: { ticket } });
+        expect(applyDomainEvents(emptyDaemonState(HOME), h.events).workspaces[0]?.ticket).toEqual(ticket);
     });
 
     it('a focus change emits only focus-changed', () => {

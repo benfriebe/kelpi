@@ -247,6 +247,7 @@ describe('the set follows the config file', () => {
             'alt+meta+ArrowLeft', // focus_previous_pane
             'alt+meta+ArrowRight', // focus_next_pane
             'alt+meta+ArrowUp', // previous_workspace
+            'alt+meta+KeyN', // new_workspace_from_ticket (docs/integrations.md; ⌘N is already Kelpi's)
             'ctrl+Tab', // next_recent_workspace (a page's own ⌃Tab tab switching gives way)
             'ctrl+meta+Enter', // toggle_zen_mode (a page that binds ⌃⌘↩ gives it up to Zen Mode)
             'ctrl+shift+ArrowDown', // move_pane_down

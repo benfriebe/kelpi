@@ -4,6 +4,8 @@ import {
     CommandClient,
     CommandDisconnectedError,
     CommandTimeoutError,
+    TICKET_COMMAND_TIMEOUT_MS,
+    WORKTREE_COMMAND_TIMEOUT_MS,
     isOkReply,
     replyText,
     unwrapReply
@@ -477,5 +479,89 @@ describe('worktree create progress and cancel (#294)', () => {
         expect(h.lastCommand()).toEqual({ command: 'workspace-create-cancel', request_id: 'req-1' });
         void h.client.prefetchRepo('R1');
         expect(h.lastCommand()).toEqual({ command: 'repo-prefetch', repo_id: 'R1' });
+    });
+});
+
+describe('integrations and tickets (docs/integrations.md)', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('sends the seven WS-only verbs in the protocol\'s spelling', () => {
+        const h = harness();
+        void h.client.integrationsStatus();
+        expect(h.lastCommand()).toEqual({ command: 'integrations-status' });
+        void h.client.integrationLinkStart('github');
+        expect(h.lastCommand()).toEqual({ command: 'integration-link-start', provider: 'github' });
+        void h.client.integrationLinkCancel('github', 'flow-1');
+        expect(h.lastCommand()).toEqual({ command: 'integration-link-cancel', provider: 'github', flow_id: 'flow-1' });
+        // No flow id = cancel whatever is pending; never an empty or null `flow_id`.
+        void h.client.integrationLinkCancel('github', null);
+        expect(h.lastCommand()).toEqual({ command: 'integration-link-cancel', provider: 'github' });
+        void h.client.integrationLinkToken('github', 'ghp_x');
+        expect(h.lastCommand()).toEqual({ command: 'integration-link-token', provider: 'github', token: 'ghp_x' });
+        void h.client.integrationUnlink('github');
+        expect(h.lastCommand()).toEqual({ command: 'integration-unlink', provider: 'github' });
+        void h.client.ticketSearch('github', 'retry login');
+        expect(h.lastCommand()).toEqual({ command: 'ticket-search', provider: 'github', query: 'retry login' });
+        void h.client.ticketResolve('acme/api#418');
+        expect(h.lastCommand()).toEqual({ command: 'ticket-resolve', ref: 'acme/api#418' });
+    });
+
+    it('gives the verbs that talk to GitHub a longer deadline than the default', async () => {
+        const h = harness();
+        let settled: unknown = null;
+        void h.client.ticketSearch('github', '').then(
+            (reply) => {
+                settled = reply;
+            },
+            (error: unknown) => {
+                settled = error;
+            }
+        );
+        // The harness default is 1 s; a search waits TICKET_COMMAND_TIMEOUT_MS.
+        vi.advanceTimersByTime(TICKET_COMMAND_TIMEOUT_MS - 1);
+        await Promise.resolve();
+        expect(settled).toBeNull();
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(settled).toBeInstanceOf(CommandTimeoutError);
+    });
+
+    it('sends a create\'s ticket and ticket_defaults, and gives any ticket create the long deadline', async () => {
+        const h = harness();
+        void h.client.createWorkspace({ name: '#418 Retry', repo: '/src/api', ticket: 'https://github.com/acme/api/pull/418', ticketDefaults: false });
+        expect(h.lastCommand()).toEqual({
+            command: 'workspace-create',
+            name: '#418 Retry',
+            repo: '/src/api',
+            // #307: a window's create is a focusing one unless it says otherwise.
+            focus: true,
+            ticket: 'https://github.com/acme/api/pull/418',
+            ticket_defaults: false
+        });
+        h.answer({ ok: true });
+
+        let settled: unknown = null;
+        void h.client.createWorkspace({ ticket: 'acme/api#7' }).then(
+            (reply) => {
+                settled = reply;
+            },
+            (error: unknown) => {
+                settled = error;
+            }
+        );
+        // No worktree, but the lookup can take seconds: the worktree deadline, not the default.
+        vi.advanceTimersByTime(WORKTREE_COMMAND_TIMEOUT_MS - 1);
+        await Promise.resolve();
+        expect(settled).toBeNull();
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(settled).toBeInstanceOf(CommandTimeoutError);
     });
 });

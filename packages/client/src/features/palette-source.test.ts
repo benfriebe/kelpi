@@ -56,6 +56,36 @@ function leaves(value: unknown, path = 'items'): string[] {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('palette feature source', () => {
+    // docs/integrations.md: offered only where assembly says From ticket works (a daemon that
+    // reports GitHub, the desktop shell), with ⌥⌘N's hint, and it runs the same request ⌥⌘N does.
+    it('offers New Workspace from Ticket only where the host says it works', async () => {
+        const h = fixture();
+        expect(h.source.snapshot().items.find((item) => item.id === 'cmd:new-workspace-from-ticket')).toBeUndefined();
+
+        const newWorkspaceFromTicket = vi.fn(() => true);
+        const host: PaletteFeatureHost = {
+            ...h.host,
+            fromTicket: true,
+            actions: { ...h.actions, newWorkspaceFromTicket },
+            shortcut: vi.fn((action: string) => (action === 'new_workspace_from_ticket' ? '⌥⌘N' : undefined)) as PaletteFeatureHost['shortcut']
+        };
+        const source = createPaletteFeatureSource(host);
+        const items = source.snapshot().items;
+        const ids = items.map((item) => item.id);
+        expect(items.find((item) => item.id === 'cmd:new-workspace-from-ticket')).toMatchObject({
+            title: 'New Workspace from Ticket…',
+            shortcut: '⌥⌘N'
+        });
+        // Right after New Workspace.
+        expect(ids.indexOf('cmd:new-workspace-from-ticket')).toBe(ids.indexOf('cmd:new-workspace') + 1);
+        await source.execute('cmd:new-workspace-from-ticket', {});
+        expect(newWorkspaceFromTicket).toHaveBeenCalledOnce();
+
+        // The phone shell (fromTicket false) has no such row even with the action present.
+        const phone = createPaletteFeatureSource({ ...host, fromTicket: false });
+        expect(phone.snapshot().items.some((item) => item.id === 'cmd:new-workspace-from-ticket')).toBe(false);
+    });
+
     it('projects workspaces, panes and verbs as descriptors that carry no closures', () => {
         const h = fixture();
         h.setMenu([{ id: 'sample.menu:palette', title: 'Run Lab', pluginName: 'UI Lab', enabled: true, shortcut: '⌥L', run: () => true }]);

@@ -100,6 +100,7 @@ interface Workspace {
   icon: GroupIcon | null;         // avatar override; null = first letter of name
   profileName: string | null;     // workspace profile assignment; null = built-in "default"
   muted: boolean;                 // no attention signals (agent-lifecycle.md §7.6); default false
+  ticket: WorkspaceTicket | null; // the issue or pull request it was created from (4.1); default null
   panes: Pane[];                  // visible panes
   parkedPanes: Pane[];            // off-layout panes, including live PTY sources and persisted plugin panes
   layout: PaneLayout;
@@ -249,7 +250,7 @@ interface Repo {
   id: UUID;
   path: string;             // absolute path of the main repository checkout
   name: string;             // defaults to last path component of path
-  remoteURL: string | null; // `git remote get-url origin`, resolved async
+  remoteURL: string | null; // origin's URL, resolved async (`getRemoteURL`, §7.2), without a URL's userinfo
   lastAccessedAt: Date;
   isAutoDiscovered: boolean; // true = created by auto-link; eligible for GC (see 7.6)
 }
@@ -637,7 +638,7 @@ Signature (all optional but name):
 
 ```
 createWorkspace(name, color?, workingDirectory?, groupID?, profileName?, id?,
-                worktree?: { path, branchName })
+                worktree?: { path, branchName }, ticket?: WorkspaceTicket)
 ```
 
 Behavior, in order:
@@ -650,6 +651,12 @@ Behavior, in order:
    (fresh pane id, `workingDirectory` = user home), `layout = leaf(pane.id)`,
    `focusedPaneID = pane.id`, `createdAt = lastAccessedAt = now`.
 5. `profileName`: normalize the assignment (trim; empty or the literal `"default"` -> null).
+5a. `ticket`: the `WorkspaceTicket` the create was made from (`{provider, kind, repo, number, key,
+   url, title}`, [integrations.md](integrations.md)), else null. Stored as given and never edited
+   afterwards: a rename keeps the link, since the ticket is where the workspace came from. It is
+   persisted (`workspace.ticketJSON`, persistence.md §2.1), mirrored to every client (the
+   Inspector links it), and is how `ticket-resolve` finds the workspaces a ticket is already open
+   in.
 6. First-pane working directory precedence:
    - `worktree` present -> `worktree.path`
    - else `workingDirectory` if given
@@ -744,6 +751,15 @@ Inputs: `name, color?, repo, worktreeName, branchName, updateMain=false, groupID
 An agent request (`start_agent`, `agent_prompt`, `send_prompt`) is checked before step 1, before
 any of the git work above: an unknown agent or a malformed prompt is refused with no worktree
 made (socket-handlers.md §6.2 "Starting an agent").
+
+A create from a ticket (`ticket`, wire-protocol.md §6.3) resolves the ticket before step 1 too,
+after the agent checks: a reference that does not parse, a provider that is not connected, or a
+ticket GitHub will not show refuses the create with nothing made. Its defaults
+(`ticketCreateDefaults`, integrations.md §7) fill the name, repository, worktree, branch and update
+main the request leaves unsaid; a pull request is checked out on its head (`checkout: pr-head`)
+rather than on a new branch off `origin/<default>`, and a branch that is already checked out opens
+a workspace at that checkout with no worktree. Step 5 then passes the ticket to 4.1 (step 5a),
+after the ticket file is written into the new checkout.
 
 #### 4.2.1 sanitizedGitName(name)
 
@@ -1133,9 +1149,20 @@ gray)` for every label they introduce, so a CLI-applied label is never an orphan
 - If a repo with this exact `path` exists: when it is `isAutoDiscovered`, promote it
   (`isAutoDiscovered = false`, persist) - a manual add "keeps" a previously auto-discovered repo;
   otherwise no-op.
-- Else mint an id, resolve `remoteURL` async (`git remote get-url origin`, null on failure/empty),
-  then `repoAdded(repo)` appends to the registry and persists. (`name` defaults to the last path
-  component.)
+- Else mint an id, resolve `remoteURL` async (`git remote get-url origin`, null on failure/empty;
+  but when only `remote.origin.url` as written names a GitHub repository, as when a repo-local
+  `url.<base>.insteadOf` rewrites a GitHub URL onto a mirror, that spelling: `registryRemoteURL`,
+  `@kelpi/core/tickets`, the same either-spelling rule the ticket matching uses, so the
+  Integrations tab's searchable repositories agree with the daemon's search and resolve), then
+  `repoAdded(repo)` appends to the registry and persists. (`name` defaults to the last path
+  component.) The registry reaches every client, so the URL is stored without the secret a
+  userinfo can carry (`remoteURLWithoutSecrets`, `@kelpi/core/git`): an `https://<token>@…` or
+  `https://user:<token>@…` URL loses its whole userinfo, an SSH URL keeps its user and loses only a
+  password, and an scp-like `git@host:o/r` is kept as is. Every write of a remote URL into the
+  registry goes through it (`readRemoteURL` in `git/registry.ts`, or the helper itself): Settings
+  ▸ Repositories' Add and Scan Directory (`repo-add`, `repo-scan`), a repository a create
+  registers (`ensureRegisteredRepo`), auto-link's remote refresh and the ticket resolve's
+  backfill.
 
 ### 7.3 removeRepo(id)
 

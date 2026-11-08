@@ -249,9 +249,16 @@ import {
     globalHotkeyErrorFrom,
     settingsTransportStatus,
     useSettingsSurface,
+    type IntegrationsTabActions,
     type SettingsActions,
     type SettingsTabID
 } from './settings';
+import {
+    readTicketResolve,
+    readTicketSearch,
+    ticketFailureFromError,
+    type TicketSource
+} from './chrome/TicketPicker';
 import {
     activateToast,
     isAppActive,
@@ -262,6 +269,7 @@ import {
     selectPane,
     selectSidebarWorkspaceIDs,
     selectWorkspace,
+    integrationStatusOf,
     recentlyClosedCount,
     type KelpiRuntime,
     type Toast
@@ -3147,6 +3155,62 @@ function Shell(props: AppProps): ReactElement {
         setSettingsTab(tab);
     }, []);
 
+    /*
+     * docs/integrations.md: the New Workspace sheet's From ticket, over this daemon's GitHub
+     * integration. Undefined (no From ticket at all) for a daemon that does not report one; the
+     * phone shell never gets it either (its own sheet, `phone/new-workspace.ts`, has no From
+     * ticket). The status rides the store, so
+     * the picker sees a link made while it is up; the replies are read with the protocol's own
+     * readers, and a command that throws (a timeout, a dropped connection) is a failure the picker
+     * can show like any other.
+     */
+    const githubStatus = integrationStatusOf(kelpi.integrations, 'github');
+    const daemonClientID = kelpi.daemon.clientID;
+    const integrationsSupported = kelpi.integrations.supported;
+    const ticketSource = useMemo<TicketSource | undefined>(() => {
+        if (!integrationsSupported || githubStatus === null) return undefined;
+        return {
+            status: githubStatus,
+            search: (query) =>
+                commands.ticketSearch('github', query).then(readTicketSearch, (error: unknown) => ({
+                    ok: false as const,
+                    failure: ticketFailureFromError(error)
+                })),
+            resolve: (ref) =>
+                commands.ticketResolve(ref).then(readTicketResolve, (error: unknown) => ({
+                    ok: false as const,
+                    failure: ticketFailureFromError(error)
+                })),
+            openIntegrationSettings: () => {
+                openSettings('integrations');
+            },
+            workspaceName: (workspaceID) =>
+                store.getState().daemon.state.workspaces.find((candidate) => candidate.id === workspaceID)?.name ?? null,
+            switchToWorkspace: (workspaceID) => {
+                activateWorkspaceAndReveal(workspaceID);
+            },
+            // A reconnect fails what was in flight; the picker asks again (see `TicketSource`).
+            sessionKey: daemonClientID
+        };
+    }, [integrationsSupported, githubStatus, commands, openSettings, store, activateWorkspaceAndReveal, daemonClientID]);
+
+    /*
+     * Settings ▸ Integrations' verbs. A link or unlink reply echoes the new status list, applied
+     * here so the tab (and the sheet) move at once rather than on the broadcast that follows.
+     */
+    const integrationActions = useMemo<IntegrationsTabActions>(() => {
+        const echo = (reply: Record<string, unknown>): Record<string, unknown> => {
+            if (reply['ok'] === true && Array.isArray(reply['integrations'])) store.getState().applyIntegrations(reply['integrations']);
+            return reply;
+        };
+        return {
+            linkStart: (provider) => commands.integrationLinkStart(provider),
+            linkCancel: (provider, flowID) => commands.integrationLinkCancel(provider, flowID),
+            linkToken: (provider, token) => commands.integrationLinkToken(provider, token).then(echo),
+            unlink: (provider) => commands.integrationUnlink(provider).then(echo)
+        };
+    }, [commands, store]);
+
     /**
      * Closing hands the keyboard back to the pane the user came from — the same choreography
      * the palette follows (§10.4). Without it the window is left with focus on a button that
@@ -3442,6 +3506,9 @@ function Shell(props: AppProps): ReactElement {
             toggle_status_bar: () => windowArrangement.toggleBand('statusbar'),
             toggle_bottom_panel: () => windowArrangement.toggleBand('panel.bottom'),
             new_workspace: () => act.newWorkspace(),
+            // ⌥⌘N (docs/integrations.md): the New Workspace sheet with its ticket picker up. Over a
+            // daemon that cannot link GitHub the sheet has no picker, and this is ⌘N.
+            new_workspace_from_ticket: () => act.newWorkspaceFromTicket(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
             next_recent_workspace: ({ event }) => stepRecent(1, event),
@@ -3914,6 +3981,9 @@ function Shell(props: AppProps): ReactElement {
         openSettings,
         // #372: the palette row that brings the old-terminal-host notice back after "Later".
         showOldTerminalHosts,
+        // docs/integrations.md: New Workspace from Ticket, desktop only and over a daemon that can
+        // link GitHub (the phone's own New workspace sheet has no From ticket).
+        fromTicket: !phoneActive && ticketSource !== undefined,
         // Desktop only: the phone shell draws no root band, so there is nothing to arrange.
         arrangement: phoneActive ? null : {
             current: () => workbench.arrangement,
@@ -4833,7 +4903,9 @@ function Shell(props: AppProps): ReactElement {
                     reportFailure: notifyFailure,
                     // app-state-core.md §5.5: the group repository sheet's Choose Folder…,
                     // desktop app only (see `browseForFolder`).
-                    ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })
+                    ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }),
+                    // docs/integrations.md: the sheet's From ticket; never on the phone shell.
+                    ...(ticketSource === undefined || phoneActive ? {} : { tickets: ticketSource })
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
@@ -5369,6 +5441,18 @@ function Shell(props: AppProps): ReactElement {
                         // #375: "cleared" only once the daemon says so.
                         clearHistory: () => webCommands.historyClear().then(isOkReply, () => false)
                     }
+                }}
+                /*
+                 * Settings ▸ Integrations (docs/integrations.md): GitHub's status, linking and
+                 * unlinking (owner sessions only), and the repositories a ticket search covers.
+                 * `sessionKey` is this connection's welcome id: a device code shown before a
+                 * reconnect belongs to a flow the daemon dropped, and the tab forgets it.
+                 */
+                integrations={{
+                    integrations: kelpi.integrations,
+                    actions: integrationActions,
+                    repos: inspectorData.repos,
+                    sessionKey: daemon.clientID
                 }}
                 /* Settings ▸ Remote: the pair/devices/tailnet flow (daemon ws/remote.ts). */
                 remote={{

@@ -43,6 +43,16 @@ function richSnapshot(): PersistedSnapshot {
                 childOrder: [],
                 childrenCollapsed: false,
                 status: 'waitingForInput',
+                // v28: the ticket the workspace was created from survives a save and a load.
+                ticket: {
+                    provider: 'github',
+                    kind: 'pr',
+                    repo: 'acme/kelpi',
+                    number: 418,
+                    key: '#418',
+                    url: 'https://github.com/acme/kelpi/pull/418',
+                    title: 'Retry login on 401'
+                },
                 layout: {
                     kind: 'split',
                     direction: 'horizontal',
@@ -143,6 +153,7 @@ function richSnapshot(): PersistedSnapshot {
                 childOrder: [],
                 childrenCollapsed: false,
                 status: 'idle',
+                ticket: null,
                 layout: { kind: 'leaf', paneID: P_WEB },
                 focusedPaneID: null,
                 createdAt: 1_755_400_000,

@@ -42,6 +42,8 @@
 
 import path from 'node:path';
 
+import { remoteURLWithoutSecrets } from '@kelpi/core/git';
+
 import { standardizePath } from './names.js';
 import { canonicalizePath } from '../graft/paths.js';
 import type { GitService } from './service.js';
@@ -174,7 +176,9 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
         if (stopped || generation !== gitGeneration || remoteGeneration.get(repoID) === generation) return;
         remoteGeneration.set(repoID, generation);
         try {
-            const remoteURL = await git.getRemoteURL(repoPath);
+            const raw = await git.getRemoteURL(repoPath);
+            // The registry reaches every client: never a token from the URL's userinfo.
+            const remoteURL = raw === null ? null : remoteURLWithoutSecrets(raw);
             if (stopped || generation !== gitGeneration || remoteGeneration.get(repoID) !== generation) return;
             const repo = store.getState().repos.find(entry => entry.id === repoID);
             // A removed or manually adopted repo no longer belongs to auto-detection.

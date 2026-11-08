@@ -90,7 +90,7 @@ describe('the section catalog', () => {
             expect(isNativeSettingsSection(id)).toBe(false);
             expect(settingsSectionHasNative(id)).toBe(true);
         }
-        for (const id of ['plugins', 'remote', 'profiles', 'keybindings', 'labels', 'web'] as const) {
+        for (const id of ['plugins', 'remote', 'integrations', 'profiles', 'keybindings', 'labels', 'web'] as const) {
             expect(isNativeSettingsSection(id)).toBe(true);
             expect(settingsSectionHasNative(id)).toBe(true);
         }
@@ -164,6 +164,7 @@ describe('the Settings search index', () => {
             'GlobalHotkeySection.tsx',
             'WebTab.tsx',
             'RemoteTab.tsx',
+            'IntegrationsTab.tsx',
             'GeneralTab.tsx',
             'WorkspacesTab.tsx'
         ];

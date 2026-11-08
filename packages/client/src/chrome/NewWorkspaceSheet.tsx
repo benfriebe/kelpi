@@ -22,10 +22,14 @@
  *     controls, Cancel, Create. Kelpi adds stops the Swift never had: Mute Notifications, right
  *     after profile (agent-lifecycle §7.6), and the Agent row (shell-ui.md §10.1), right after the
  *     worktree section and before Cancel: the Agent picker, then, once an agent is chosen, its
- *     Prompt box and Send immediately. Tab is driven by hand for the reason the Swift drives its own
- *     (#64): the colour row is ONE stop with ←/→ moving inside it, and a disabled Create is
- *     skipped rather than landed on — AppKit refuses first responder to a disabled button, so
- *     including it would strand the loop.
+ *     Prompt box and Send immediately. And, before the name, From ticket (docs/integrations.md):
+ *     the title row's "From ticket…" button whenever the host offers tickets, then, once a ticket
+ *     is linked, its chip's ✕ and the "already open" banner's Switch to it; a create refused
+ *     because of its ticket adds that failure's buttons just before Cancel. A pull request's
+ *     checkout has no Update main stop (it is checked out on its head). Tab is driven by hand for
+ *     the reason the Swift drives its own (#64): the colour row is ONE stop with ←/→ moving inside
+ *     it, and a disabled Create is skipped rather than landed on — AppKit refuses first responder
+ *     to a disabled button, so including it would strand the loop.
  *   - **The colour opens on `nextRandomColor`** — a random swatch that avoids the trailing
  *     workspace's (`WorkspaceFeature.swift:1993-2003`); the caller rolls it once per opening.
  *   - **The Group picker exists only when groups exist** and preselects the sheet's scope: the
@@ -34,7 +38,15 @@
  *   - **The Profile picker leads with the built-in `default`** (§SET-214), which rides the wire as
  *     "unassigned".
  *   - **Escape cancels and the backdrop cancels**, innermost surface first: with the repo picker
- *     open, both close the picker and leave the sheet standing.
+ *     or the ticket picker open, both close that picker and leave the sheet standing.
+ *   - **From ticket prefills, then gets out of the way** (shell-ui.md §10.1): a picked ticket is
+ *     resolved by the daemon (`ticket-resolve`) and its defaults fill the name, the repository,
+ *     the worktree and its branch (a pull request's head, editable, with no Update main), and the
+ *     prompt (kept even while the Agent is None); every field it set counts as edited, so nothing
+ *     re-follows the name. The create then names the ticket with `ticket_defaults: false` and
+ *     carries exactly what is shown; without a worktree it sends the checkout as `repo`, so the
+ *     daemon can write the ticket file into it. Clearing the chip drops the link, not the fields.
+ *     A ticket already open elsewhere gets a banner offering to switch, and Create stays enabled.
  *   - **The repo picker is a SUB-SHEET over this one** (`NewWorkspaceSheet.swift:227-239` hangs
  *     `RepoPickerView` off the sheet with its own `.sheet(isPresented:)`): its own dimming
  *     layer above the sheet, landing at the sheet's top edge and at the sheet's width, so
@@ -63,6 +75,8 @@
  */
 
 import type { WorkspaceColor } from '@kelpi/daemon/store';
+import { isSafeBranchName } from '@kelpi/core/tickets';
+import type { IntegrationFailureInfo, TicketResolveReply, WorkspaceCheckoutMode } from '@kelpi/protocol';
 import {
     useEffect,
     useRef,
@@ -75,6 +89,7 @@ import { createPortal } from 'react-dom';
 
 import { ChromeIcon } from './icons';
 import { RepoPicker } from './RepoPicker';
+import { TicketPicker, TicketProblem, ticketProblemButtons, type TicketSource } from './TicketPicker';
 import { WorktreeCreateProgressPanel, type WorktreeCreatePhase } from './WorktreeCreateProgress';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -82,10 +97,13 @@ import {
     AGENT_DISPLAY_NAMES,
     DEFAULT_PROFILE_NAME,
     WORKSPACE_COLORS,
+    isTicketCreateFailure,
     type ChromeGroup,
     type ChromeRepo,
+    type CreateFailure,
     type NewGroupRepo,
     type WorkspaceAgentRequest,
+    type WorkspaceTicketRequest,
     type WorkspaceWorktreeRequest,
     type WorktreeCreateProgress
 } from './types';
@@ -121,6 +139,13 @@ export interface NewEntryDraft {
      * from a sheet whose daemon cannot start agents (`canStartAgent: false`).
      */
     readonly agent: WorkspaceAgentRequest | null;
+    /**
+     * shell-ui.md §10.1's From ticket: the GitHub issue or pull request the workspace starts from,
+     * with, for a create that makes no worktree, the checkout it opens at and the create's own id
+     * and progress (a worktree create carries those on `worktree`). Null = none, and always null
+     * from the group sheet.
+     */
+    readonly ticket: WorkspaceTicketRequest | null;
 }
 
 /** The Agent picker's value: "None" or an agent kind. `new-workspace-agent`'s vocabulary. */
@@ -196,7 +221,19 @@ export interface NewEntrySheetProps {
      * silently ignored. Absent = offered, which is every fixture that predates the row.
      */
     readonly canStartAgent?: boolean | undefined;
-    readonly onSubmit: (draft: NewEntryDraft) => Promise<string | null>;
+    /**
+     * docs/integrations.md: GitHub issues and pull requests to start from, behind the title row's
+     * "From ticket…". Absent = no From ticket at all: the group sheet, the phone shell's create,
+     * and a daemon that predates integrations. Workspace sheet only.
+     */
+    readonly tickets?: TicketSource | undefined;
+    /** ⌥⌘N (`new_workspace_from_ticket`): open with the ticket picker already up. Needs `tickets`. */
+    readonly openTicketPicker?: boolean | undefined;
+    /**
+     * The create. Resolves with null when it worked, else the daemon's message, or the message
+     * with its ticket failure (`ticket_error`), which the sheet shows with its way out.
+     */
+    readonly onSubmit: (draft: NewEntryDraft) => Promise<CreateFailure | null>;
     readonly onCancel: () => void;
 }
 
@@ -363,6 +400,21 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [agentSend, setAgentSend] = useState(props.defaultSendPrompt ?? false);
     /** The row exists on the workspace sheet only, and only over a daemon that can start agents. */
     const agentRow = isWorkspace && props.canStartAgent !== false;
+    /*
+     * shell-ui.md §10.1's From ticket (docs/integrations.md). `linked` is the `ticket-resolve`
+     * reply the fields were prefilled from: the ticket the create will name, its defaults (which
+     * decide the progress steps and whether this is a pull request's checkout), the workspaces it
+     * is already open in, and the resolve's warnings. Clearing the chip drops only the link; the
+     * prefilled fields stay as the user now has them. `ticketFailure` is a create the daemon
+     * refused because of the ticket (`ticket_error`), shown with its way out.
+     */
+    const tickets = isWorkspace ? props.tickets : undefined;
+    const [ticketPickerOpen, setTicketPickerOpen] = useState(() => tickets !== undefined && props.openTicketPicker === true);
+    const [linked, setLinked] = useState<TicketResolveReply | null>(null);
+    const [ticketFailure, setTicketFailure] = useState<IntegrationFailureInfo | null>(null);
+    /** The prompt the last prefill wrote, so a second ticket replaces it but never text the user typed. */
+    const ticketPrompt = useRef<string | null>(null);
+    const prMode = linked?.ticket.kind === 'pr';
     const agentOn = agentRow && agent !== 'none';
     const agentLabel = AGENT_CHOICES.find((choice) => choice.value === agent)?.label ?? 'the agent';
 
@@ -404,11 +456,23 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     cancelRef.current = props.onCancel;
     const pickerOpenRef = useRef(pickerOpen);
     pickerOpenRef.current = pickerOpen;
+    const ticketPickerOpenRef = useRef(ticketPickerOpen);
+    ticketPickerOpenRef.current = ticketPickerOpen;
 
     useEffect(() => {
+        // ⌥⌘N opens with the ticket picker up, and the picker's own field has the caret.
+        if (ticketPickerOpenRef.current) return;
         ref.current?.focus();
         ref.current?.select();
     }, []);
+
+    /** Close the ticket picker and give the caret back to the button that opened it. */
+    const closeTicketPicker = (): void => {
+        setTicketPickerOpen(false);
+        stops.current.get('from-ticket')?.focus();
+    };
+    const closeTicketPickerRef = useRef(closeTicketPicker);
+    closeTicketPickerRef.current = closeTicketPicker;
 
     /**
      * Escape closes the INNERMOST surface — the repo picker if it is up, otherwise the sheet.
@@ -429,6 +493,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             if (event.isComposing || event.keyCode === 229) return;
             event.preventDefault();
             event.stopPropagation();
+            if (ticketPickerOpenRef.current) {
+                closeTicketPickerRef.current();
+                return;
+            }
             if (pickerOpenRef.current) {
                 setPickerOpen(false);
                 return;
@@ -463,20 +531,73 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
      * all, so `repos[0]` decided what got branched.
      */
     const repo = chosenRepos.length === 1 ? (chosenRepos[0] ?? null) : null;
-    const preview = worktreePreview({
+    const plainPreview = worktreePreview({
         name: worktreeName,
         branch,
         base: repo?.worktreeBase ?? ''
     });
+    /*
+     * A pull request is checked out on its head branch under the head's own spelling (git's
+     * `check-ref-format`, `isSafeBranchName`), not through the worktree-name sanitizer, which
+     * would rewrite `+`, `#` or `@` into a different branch than the one the pull request has.
+     */
+    const preview = prMode
+        ? {
+              ...plainPreview,
+              sanitizedBranch: isSafeBranchName(branch.trim()) ? branch.trim() : null,
+              branchLine: `branch: ${branch.trim() === '' ? '<branch>' : branch.trim()} (tracks the pull request)`,
+              valid: plainPreview.sanitizedName !== null && isSafeBranchName(branch.trim())
+          }
+        : plainPreview;
     const worktreeOn = isWorkspace && worktree && repo !== null;
-    const canSubmit = value.trim() !== '' && !busy && (!worktreeOn || preview.valid);
+    /*
+     * A ticket workspace with no worktree opens in a checkout: the chosen repository the ticket
+     * matched (else the first chosen), or, when the resolve found the branch already checked out
+     * somewhere (`existing-checkout`), that checkout. It rides the create as `repo`, so the daemon
+     * associates it and writes the ticket file there. None = nothing to open at, and Create waits.
+     */
+    const ticketRepo =
+        linked === null ? null : (chosenRepos.find((entry) => entry.id === linked.defaults.repo_id) ?? chosenRepos[0] ?? null);
+    const ticketOpenAt =
+        linked === null || worktreeOn
+            ? null
+            : linked.defaults.checkout === 'existing-checkout' &&
+                linked.checked_out_at !== undefined &&
+                ticketRepo !== null &&
+                ticketRepo.id === linked.defaults.repo_id
+              ? linked.checked_out_at
+              : (ticketRepo?.path ?? null);
+    const canSubmit =
+        value.trim() !== '' && !busy && (!worktreeOn || preview.valid) && (linked === null || worktreeOn || ticketOpenAt !== null);
+    /** The update-main box means nothing for a pull request (it is checked out on its head). */
+    const updateMainShown = !prMode;
+    const effectiveUpdateMain = updateMainShown && updateMain;
+    /**
+     * How a create from the linked ticket will check out, for the checklist it shows before the
+     * daemon's first frame (the frames then name the mode the daemon actually chose).
+     */
+    const expectedCheckout: WorkspaceCheckoutMode =
+        !worktreeOn
+            ? 'existing-checkout'
+            : prMode
+              ? 'pr-head'
+              : linked !== null && linked.defaults.checkout === 'attach-branch' && branch === linked.defaults.branch
+                ? 'attach-branch'
+                : 'new-branch';
+    /** The "already open" banner's workspace: the first one the mirror can name. */
+    const existingOpen =
+        linked === null || tickets === undefined
+            ? null
+            : (linked.existing
+                  .map((entry) => ({ ...entry, name: tickets.workspaceName(entry.workspace_id) }))
+                  .find((entry): entry is typeof entry & { name: string } => entry.name !== null) ?? null);
 
     /*
      * #294: a worktree off latest main for `repo` is on screen, so start its fetch now: by the
      * time Create is pressed the network is usually done, and the create reuses it. Once per repo
      * per opening (the daemon rate-limits as well); unticking and re-ticking does not ask again.
      */
-    const prefetchRepoID = worktreeOn && updateMain && repo !== null ? repo.id : null;
+    const prefetchRepoID = worktreeOn && effectiveUpdateMain && repo !== null ? repo.id : null;
     const prefetchedRepoIDs = useRef(new Set<string>());
     const onPrefetchRepo = props.onPrefetchRepo;
     useEffect(() => {
@@ -543,15 +664,21 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
         inFlight.current = true;
         setBusy(true);
         setError(null);
+        setTicketFailure(null);
         setCloseHint(false);
         // #294: a worktree create names itself (for Cancel) and reports its steps here. Frames
-        // from an earlier, abandoned request id are ignored.
+        // from an earlier, abandoned request id are ignored. A create from a ticket does too, with
+        // or without a worktree: its lookup is a network step that can take seconds (`ticket`).
         let worktreeHooks: Pick<WorkspaceWorktreeRequest, 'requestID' | 'onProgress'> = {};
-        if (worktreeOn && repo !== null) {
+        if ((worktreeOn && repo !== null) || linked !== null) {
             const id = mintRequestID();
             requestID.current = id;
             const startedAt = Date.now();
-            setProgress(initialWorktreeProgress(updateMain));
+            setProgress(
+                initialWorktreeProgress(
+                    linked === null ? updateMain : { ticket: true, checkout: expectedCheckout, updateMain: effectiveUpdateMain }
+                )
+            );
             setCreatePhase('running');
             setCreateStartedAt(startedAt);
             setCreateEndedAt(null);
@@ -580,6 +707,14 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             setProgress(null);
             setCreatePhase(null);
         }
+        // A ticket create with no worktree opens in `ticketOpenAt`, sent as `repo`: that one is not
+        // ALSO associated afterwards (it would be twice), the other chosen repositories are.
+        const ticketRequest: WorkspaceTicketRequest | null =
+            linked === null
+                ? null
+                : worktreeOn
+                  ? { ref: linked.ticket.url }
+                  : { ref: linked.ticket.url, ...(ticketOpenAt === null ? {} : { repoPath: ticketOpenAt }), ...worktreeHooks };
         const failure = await props.onSubmit({
             name: value.trim(),
             color,
@@ -587,14 +722,26 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             profile: profile === DEFAULT_PROFILE_NAME ? null : profile,
             muted: isWorkspace && muted,
             remoteDaemon: remoteDaemon === '' ? null : remoteDaemon,
-            repoPaths: chosenRepos.map((entry) => entry.path),
+            repoPaths: chosenRepos
+                .filter((entry) => !(linked !== null && !worktreeOn && entry.id === ticketRepo?.id))
+                .map((entry) => entry.path),
             ...(worktreeOn && repo !== null
-                ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain, ...worktreeHooks } }
+                ? {
+                      worktree: {
+                          repoID: repo.id,
+                          name: worktreeName,
+                          // A pull request's head keeps its own spelling (see `preview`).
+                          branch: prMode ? branch.trim() : branch,
+                          updateMain: effectiveUpdateMain,
+                          ...worktreeHooks
+                      }
+                  }
                 : {}),
             groupRepo: groupRepoChoice,
             // The prompt goes as typed: the daemon is the one place it is normalized
             // (wire-protocol.md §6.3), so the sheet neither trims it nor strips anything.
-            agent: agentOn ? { kind: agent, prompt: agentPrompt, send: agentSend } : null
+            agent: agentOn ? { kind: agent, prompt: agentPrompt, send: agentSend } : null,
+            ticket: ticketRequest
         });
         inFlight.current = false;
         setBusy(false);
@@ -605,7 +752,64 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             setCreatePhase((phase) => (failure === null ? 'done' : phase === 'cancelling' ? 'cancelled' : 'failed'));
             requestID.current = null;
         }
-        if (failure !== null) setError(failure);
+        if (failure !== null) {
+            setError(typeof failure === 'string' ? failure : failure.error);
+            setTicketFailure(isTicketCreateFailure(failure) ? failure.ticket : null);
+        }
+    };
+
+    /**
+     * A ticket picked and resolved: fill the sheet from `ticket-resolve`'s defaults (the daemon's
+     * own `ticketCreateDefaults`, so what the sheet shows is what a CLI create would do), and mark
+     * every field it set as the user's, so nothing re-follows the name afterwards. Everything stays
+     * editable; the create then sends exactly what is shown (`ticket_defaults: false`).
+     */
+    const applyResolved = (reply: TicketResolveReply): void => {
+        const defaults = reply.defaults;
+        setLinked(reply);
+        setTicketFailure(null);
+        setError(null);
+        setValue(defaults.name);
+        const repoKnown = defaults.repo_id !== null && repos.some((entry) => entry.id === defaults.repo_id);
+        if (repoKnown && defaults.repo_id !== null) {
+            setChosenRepoIDs([defaults.repo_id]);
+            setRepoTouched(true);
+        }
+        setWorktreeTouched(true);
+        if (!repoKnown || defaults.checkout === 'existing-checkout' || defaults.worktree === null) {
+            // Nothing to cut a worktree from, or the branch is already checked out somewhere: the
+            // workspace opens at that checkout (the line under Repositories says where).
+            setWorktree(false);
+        } else {
+            setWorktree(true);
+            setWorktreeName(defaults.worktree);
+            setWorktreeNameEdited(true);
+            setBranch(defaults.branch ?? defaults.worktree);
+            setBranchEdited(true);
+            setUpdateMain(defaults.update_main);
+        }
+        // The rendered prompt goes into the box whether or not an agent is chosen yet (choosing
+        // one later still has it), unless the user has written their own.
+        if (agentPrompt.trim() === '' || agentPrompt === ticketPrompt.current) {
+            setAgentPrompt(defaults.prompt);
+            ticketPrompt.current = defaults.prompt;
+        }
+        setTicketPickerOpen(false);
+        ref.current?.focus();
+    };
+
+    /** The chip's ✕: forget the link, keep the fields. The caret goes to the name field. */
+    const clearTicket = (): void => {
+        ref.current?.focus();
+        setLinked(null);
+        setTicketFailure(null);
+    };
+
+    /** Leave the sheet for Settings ▸ Integrations: Settings is a modal of its own. */
+    const openIntegrationSettings = (): void => {
+        if (tickets === undefined) return;
+        props.onCancel();
+        tickets.openIntegrationSettings();
     };
 
     /**
@@ -631,7 +835,15 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const fieldOrder = (): string[] => {
         // #294: while a worktree create runs every field is disabled; Cancel is the one stop.
         if (worktreeRunning) return ['cancel'];
-        const order = ['name', 'colors'];
+        // shell-ui.md §10.1: From ticket… is in the title row, so it leads; the linked ticket's
+        // chip (its ✕, and the banner's Switch to it) sits between it and the name.
+        const order: string[] = [];
+        if (tickets !== undefined) order.push('from-ticket');
+        if (linked !== null) {
+            order.push('ticket-clear');
+            if (existingOpen !== null) order.push('ticket-switch');
+        }
+        order.push('name', 'colors');
         if (isWorkspace) {
             if (groups.length > 0) order.push('group');
             order.push('profile', 'muted');
@@ -643,7 +855,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             // `!store.repoRegistry.isEmpty` (`NewWorkspaceSheet.swift:401-407`).
             if (repo !== null) {
                 order.push('worktree-toggle');
-                if (worktreeOn) order.push('worktree-name', 'worktree-branch', 'update-main');
+                if (worktreeOn) {
+                    order.push('worktree-name', 'worktree-branch');
+                    if (updateMainShown) order.push('update-main');
+                }
             }
             // shell-ui.md §10.1: the Agent row is the last thing before Cancel, as it is drawn.
             if (agentRow) {
@@ -654,6 +869,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             order.push('group-repo');
             if (props.onBrowseForFolder !== undefined) order.push('group-repo-browse');
             if (groupRepoChoice !== null) order.push('group-worktree');
+        }
+        // A create refused because of its ticket offers its way out just above the last row.
+        if (ticketFailure !== null) {
+            for (const id of ticketProblemButtons(ticketFailure, { retry: false })) order.push(`ticket-problem:${id}`);
         }
         order.push('cancel');
         if (canSubmit) order.push('submit');
@@ -845,6 +1064,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             onMouseDown={(event) => {
                 if (event.target !== event.currentTarget) return;
                 // Innermost first, exactly as Escape resolves it.
+                if (ticketPickerOpen) {
+                    closeTicketPicker();
+                    return;
+                }
                 if (pickerOpen) {
                     setPickerOpen(false);
                     return;
@@ -873,13 +1096,40 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
                 }}
             >
-                {/* `Text("New Workspace").font(.headline)` — the sheet's first row. */}
-                <div
-                    data-testid={`new-${props.kind}-title`}
-                    className="mb-3 text-[13px] font-semibold"
-                    style={{ color: tokens.textPrimary }}
-                >
-                    {title}
+                {/* `Text("New Workspace").font(.headline)` — the sheet's first row. Kelpi adds
+                    From ticket… on its trailing edge (shell-ui.md §10.1), outside the fieldset
+                    like the title, and disabled with it while a create runs. */}
+                <div className="mb-3 flex items-center gap-2">
+                    <div
+                        data-testid={`new-${props.kind}-title`}
+                        className="text-[13px] font-semibold"
+                        style={{ color: tokens.textPrimary }}
+                    >
+                        {title}
+                    </div>
+                    {tickets === undefined ? null : (
+                        <button
+                            ref={(element) => {
+                                registerStop('from-ticket', element);
+                            }}
+                            type="button"
+                            data-testid="new-workspace-from-ticket"
+                            className="ml-auto text-[11px]"
+                            style={{ color: worktreeRunning ? tokens.textTertiary : tokens.accent }}
+                            disabled={worktreeRunning}
+                            aria-haspopup="dialog"
+                            /* Outside the form, so its Tab is handed to the sheet's loop here. Its
+                               Return is the button's own (open the picker), not the sheet's submit. */
+                            onKeyDown={(event) => {
+                                if (event.key === 'Tab') onFormKeyDown(event);
+                            }}
+                            onClick={() => {
+                                setTicketPickerOpen(true);
+                            }}
+                        >
+                            From ticket…
+                        </button>
+                    )}
                 </div>
 
                 <form
@@ -904,6 +1154,86 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         className={`m-0 flex min-w-0 flex-col border-0 p-0 ${isWorkspace ? 'gap-4' : 'gap-[14px]'}`}
                         style={worktreeRunning ? { opacity: 0.55 } : undefined}
                     >
+                    {linked === null ? null : (
+                        <div className="flex flex-col gap-1.5" data-testid="new-workspace-ticket-block">
+                            {/* The ticket this create names. ✕ forgets the link, never the fields. */}
+                            <div
+                                data-testid="new-workspace-ticket"
+                                data-kind={linked.ticket.kind}
+                                className="flex min-w-0 items-center gap-1.5 rounded border px-2 py-1 text-[11px]"
+                                style={{ borderColor: tokens.divider, background: withAlpha(tokens.textPrimary, 0.04) }}
+                            >
+                                <span
+                                    className="shrink-0 rounded px-1 text-[9px] font-semibold uppercase"
+                                    style={{ background: withAlpha(tokens.textPrimary, 0.08), color: tokens.textSecondary }}
+                                >
+                                    {linked.ticket.kind === 'pr' ? 'PR' : 'Issue'}
+                                </span>
+                                <span className="shrink-0 tabular-nums" style={{ color: tokens.textSecondary }}>
+                                    {linked.ticket.key}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate" style={{ color: tokens.textPrimary }} title={linked.ticket.title}>
+                                    {linked.ticket.title}
+                                </span>
+                                <span className="shrink-0 truncate text-[10px]" style={{ color: tokens.textTertiary }}>
+                                    {linked.ticket.repo}
+                                </span>
+                                <button
+                                    ref={(element) => {
+                                        registerStop('ticket-clear', element);
+                                    }}
+                                    type="button"
+                                    aria-label={`Unlink ${linked.ticket.key}`}
+                                    title="Unlink the ticket (the fields stay)"
+                                    data-testid="new-workspace-ticket-clear"
+                                    style={{ color: tokens.textTertiary }}
+                                    onClick={clearTicket}
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            {existingOpen === null ? null : (
+                                <div
+                                    data-testid="new-workspace-ticket-existing"
+                                    className="flex items-center gap-2 rounded px-2 py-1 text-[11px]"
+                                    style={{ background: withAlpha(tokens.activeAgent, 0.12), color: tokens.textPrimary }}
+                                >
+                                    <span className="min-w-0 flex-1">
+                                        {existingOpen.reason === 'ticket'
+                                            ? `${linked.ticket.key} is already open in ${existingOpen.name}`
+                                            : `${linked.ticket.key}'s branch is already open in ${existingOpen.name}`}
+                                        {linked.existing.length > 1 ? ` (and ${String(linked.existing.length - 1)} more)` : ''}.
+                                    </span>
+                                    <button
+                                        ref={(element) => {
+                                            registerStop('ticket-switch', element);
+                                        }}
+                                        type="button"
+                                        data-testid="new-workspace-ticket-switch"
+                                        className="shrink-0"
+                                        style={{ color: tokens.accent }}
+                                        onClick={() => {
+                                            tickets?.switchToWorkspace(existingOpen.workspace_id);
+                                            props.onCancel();
+                                        }}
+                                    >
+                                        Switch to it
+                                    </button>
+                                </div>
+                            )}
+                            {(linked.warnings ?? []).map((warning) => (
+                                <div
+                                    key={warning}
+                                    data-testid="new-workspace-ticket-warning"
+                                    className="text-[10px]"
+                                    style={{ color: tokens.activeAgent }}
+                                >
+                                    {warning}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     {props.workspaceCount === undefined ? null : (
                         <div
                             data-testid="new-group-count"
@@ -1322,24 +1652,27 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                     }}
                                 />
                             </label>
-                            <label
-                                className="flex cursor-pointer items-center gap-1.5 text-[11px]"
-                                style={{ color: tokens.textSecondary }}
-                            >
-                                <input
-                                    ref={(element) => {
-                                        registerStop('update-main', element);
-                                    }}
-                                    type="checkbox"
-                                    data-testid="new-workspace-worktree-update-main"
-                                    checked={updateMain}
-                                    onChange={(event) => {
-                                        setWorktreeTouched(true);
-                                        setUpdateMain(event.target.checked);
-                                    }}
-                                />
-                                Update main first (fetch + branch off origin)
-                            </label>
+                            {/* A pull request is checked out on its head: there is no main to update. */}
+                            {!updateMainShown ? null : (
+                                <label
+                                    className="flex cursor-pointer items-center gap-1.5 text-[11px]"
+                                    style={{ color: tokens.textSecondary }}
+                                >
+                                    <input
+                                        ref={(element) => {
+                                            registerStop('update-main', element);
+                                        }}
+                                        type="checkbox"
+                                        data-testid="new-workspace-worktree-update-main"
+                                        checked={updateMain}
+                                        onChange={(event) => {
+                                            setWorktreeTouched(true);
+                                            setUpdateMain(event.target.checked);
+                                        }}
+                                    />
+                                    Update main first (fetch + branch off origin)
+                                </label>
+                            )}
                             <div
                                 data-testid="new-workspace-worktree-preview"
                                 className="text-[10px]"
@@ -1350,6 +1683,28 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                             </div>
                         </div>
                     ) : null}
+
+                    {/*
+                     * A ticket workspace with no worktree: say where it opens, and why when the
+                     * resolve found its branch already checked out (`existing-checkout`), or that
+                     * it needs a repository before Create can do anything.
+                     */}
+                    {linked === null || worktreeOn ? null : ticketOpenAt === null ? (
+                        <div data-testid="new-workspace-ticket-needs-repo" className="text-[11px]" style={{ color: tokens.textSecondary }}>
+                            Choose a repository: a workspace from a ticket opens in a checkout of it.
+                        </div>
+                    ) : (
+                        <div
+                            data-testid="new-workspace-ticket-open-at"
+                            className="truncate text-[11px]"
+                            style={{ color: tokens.textSecondary }}
+                            title={ticketOpenAt}
+                        >
+                            {ticketOpenAt === linked.checked_out_at
+                                ? `Opens a workspace at ${ticketOpenAt}, where its branch is already checked out.`
+                                : `Opens a workspace at ${ticketOpenAt}.`}
+                        </div>
+                    )}
 
                     {/*
                      * shell-ui.md §10.1's Agent row (Kelpi addition): start Claude Code or Codex
@@ -1463,7 +1818,18 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         />
                     )}
 
-                    {error === null ? null : (
+                    {error === null ? null : ticketFailure !== null && createPhase !== 'cancelled' ? (
+                        // Refused because of the ticket: the same states, and ways out, the picker shows.
+                        <TicketProblem
+                            testID="new-workspace-ticket-problem"
+                            failure={ticketFailure}
+                            onOpenSettings={openIntegrationSettings}
+                            onOpenURL={tickets?.openURL}
+                            buttonRef={(id, element) => {
+                                registerStop(`ticket-problem:${id}`, element);
+                            }}
+                        />
+                    ) : (
                         <div data-testid="new-workspace-error" className="text-[11px]" style={{ color: '#E0655C' }}>
                             {createPhase === 'cancelled' ? 'Create cancelled: nothing it made was kept.' : error}
                         </div>
@@ -1540,6 +1906,45 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
              * Escape and the backdrop take); `stopPropagation` keeps that click off the
              * backdrop's own cancel path.
              */}
+            {/*
+             * The ticket picker: the repo picker's sub-sheet shape exactly (its own dimming layer,
+             * the sheet's top edge and width, closed innermost first by Escape, its layer or its
+             * Cancel). It stays up while a picked ticket is looked up, and closes on the answer.
+             */}
+            {ticketPickerOpen && tickets !== undefined ? (
+                <div
+                    data-testid="new-workspace-ticket-picker-layer"
+                    className="fixed inset-0 z-[60] flex items-start justify-center"
+                    style={{ background: 'rgba(0,0,0,0.35)' }}
+                    onMouseDown={(event) => {
+                        event.stopPropagation();
+                        if (event.target !== event.currentTarget) return;
+                        closeTicketPicker();
+                    }}
+                >
+                    <div
+                        data-testid="new-workspace-ticket-picker"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Start from a ticket"
+                        className="mt-[12vh] max-h-[76vh] w-[360px] overflow-y-auto rounded-lg p-4 text-[12px]"
+                        style={{
+                            background: tokens.surfaceBackground,
+                            border: `1px solid ${tokens.divider}`,
+                            color: tokens.textPrimary,
+                            boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+                        }}
+                    >
+                        <TicketPicker
+                            source={tickets}
+                            onResolved={applyResolved}
+                            onCancel={closeTicketPicker}
+                            onOpenSettings={openIntegrationSettings}
+                        />
+                    </div>
+                </div>
+            ) : null}
+
             {pickerOpen ? (
                 <div
                     data-testid="new-workspace-repo-picker-layer"

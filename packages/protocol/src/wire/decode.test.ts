@@ -704,7 +704,9 @@ describe('workspace and group commands', () => {
             focus: false,
             start_agent: undefined,
             agent_prompt: undefined,
-            send_prompt: false
+            send_prompt: false,
+            ticket: undefined,
+            ticket_defaults: true
         });
         expect(ok({ command: 'workspace-create', muted: true })).toMatchObject({ muted: true });
         // Verbatim, for the handler to validate (workspace-icon's rule).
@@ -794,6 +796,31 @@ describe('workspace and group commands', () => {
             agent_prompt: undefined,
             send_prompt: false
         });
+    });
+
+    it('decodes the ticket fields of workspace-create raw, with ticket_defaults on by default (§6.3)', () => {
+        expect(
+            ok({ command: 'workspace-create', ticket: 'https://github.com/acme/api/pull/418/files', ticket_defaults: false })
+        ).toMatchObject({ ticket: 'https://github.com/acme/api/pull/418/files', ticket_defaults: false });
+        // Raw: what is or is not a ticket reference is the handler's call (`bad-ref`), before
+        // anything is created; the decoder neither trims nor parses it.
+        expect(ok({ command: 'workspace-create', ticket: ' not a ref ' })).toMatchObject({ ticket: ' not a ref ' });
+        expect(ok({ command: 'workspace-create', ticket: 'acme/api#7' })).toMatchObject({ ticket: 'acme/api#7', ticket_defaults: true });
+        // Empty is absent (§2.2), and JSON null is absent like everywhere else.
+        expect(ok({ command: 'workspace-create', ticket: '' })).toMatchObject({ ticket: undefined });
+        expect(ok({ command: 'workspace-create', ticket: null, ticket_defaults: null })).toMatchObject({
+            ticket: undefined,
+            ticket_defaults: true
+        });
+    });
+
+    it('poisons a line whose ticket fields have the wrong type, on any command', () => {
+        expect(rejected({ command: 'workspace-create', ticket: 418 })).toMatchObject({ reason: 'field-type', field: 'ticket' });
+        expect(rejected({ command: 'workspace-create', ticket_defaults: 'false' })).toMatchObject({
+            reason: 'field-type',
+            field: 'ticket_defaults'
+        });
+        expect(rejected({ command: 'workspace-list', ticket: ['acme/api#7'] })).toMatchObject({ field: 'ticket' });
     });
 
     it('decodes group-set-repo and refuses the contradictory or empty requests', () => {

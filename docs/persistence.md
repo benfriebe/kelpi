@@ -105,6 +105,7 @@ Read/write tolerances (`packages/daemon/src/db/codec.ts`):
 | `childOrderJSON`| TEXT    | yes  |         | Kelpi-only (v26). JSON array of the UUIDs nested under this workspace, in sidebar order (app-state-core.md §2.9). NULL (written when there are none), absent (a pre-v26 row) or undecodable → none. |
 | `childrenCollapsed` | BOOLEAN | no | 0     | Kelpi-only (v26). 1 = the nested workspaces are hidden behind the parent's chevron. NULL or absent reads as expanded. |
 | `status`        | TEXT    | no   | `'idle'`| Kelpi-only (v27). The row menu's hand-set Status (agent-lifecycle.md §5.10), in `pane.status`'s vocabulary and encoding. Unknown, NULL or absent (a pre-v27 row) → `idle`. Unlike `pane.status` it is NOT reset on load. |
+| `ticketJSON`    | TEXT    | yes  |         | Kelpi-only (v28). The ticket the workspace was created from ([integrations.md](integrations.md)), one JSON object in a fixed key order: `{"provider":"github","kind":"pr","repo":"acme/api","number":418,"key":"#418","url":"https://github.com/acme/api/pull/418","title":"Retry login on 401"}` (`encodeWorkspaceTicketJSON`, `packages/daemon/src/store/ticket.ts`). NULL = none. Read leniently (`decodeWorkspaceTicketJSON`): NULL, an empty string, undecodable JSON, or a record that is not a whole valid ticket (an unknown provider or kind, a URL that is not `https://`, a number that is not a positive integer) reads as no ticket, never failing the row; unknown keys are dropped. |
 
 Note: there is **no group membership column**. A workspace belongs to a group iff its UUID
 appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears in the
@@ -336,11 +337,11 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 27 in total: the 18 shared
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 28 in total: the 18 shared
 with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes`,
 `v21_workspace_muted`, `v22_workspace_group_repo`, `v23_pane_csv_header_row`,
-`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap`, `v26_workspace_nesting` and
-`v27_workspace_status`. From v3 onward, every
+`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap`, `v26_workspace_nesting`,
+`v27_workspace_status` and `v28_workspace_ticket`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -379,6 +380,7 @@ migration idempotent regardless of ledger drift.
 | `v25_pane_scratchpad_wrap` | `pane` + `scratchpadWrap BOOLEAN NOT NULL DEFAULT 0` (§2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing scratchpad reads back unwrapped, as it drew before; an older daemon's explicit-column INSERT leaves the default, so a downgrade turns each scratchpad's wrap off the first time it saves. |
 | `v26_workspace_nesting` | `workspace` + `childOrderJSON TEXT` and `childrenCollapsed BOOLEAN NOT NULL DEFAULT 0` (§2.1), guarded per column. Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`). Additive, so no new database generation: every existing workspace reads back with nothing nested, expanded. An older daemon ignores both columns and its sidebar does not show nested workspaces (app-state-core.md §2.9, Downgrade); its save rewrites every row with the defaults, so the nesting is lost once it saves, and a newer daemon's boot repair then places those workspaces at the top level. |
 | `v27_workspace_status` | `workspace` + `status TEXT NOT NULL DEFAULT 'idle'` (§2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing workspace reads back idle; an older daemon's explicit-column INSERT leaves the default, so a downgrade clears every workspace's status the first time it saves. |
+| `v28_workspace_ticket` | `workspace` + `ticketJSON TEXT` (nullable, §2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing workspace reads back with no ticket; an older daemon's explicit-column INSERT leaves NULL, so a downgrade forgets which ticket each workspace came from the first time it saves, and nothing else. |
 
 ---
 
@@ -695,8 +697,8 @@ id may persist and be resumed (known limitation).
 
 ### 7.4 Sibling state files beside the database
 
-Two daemon-owned state files live in the database's directory (`dirname(dbPath)`), so they
-follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps both in memory only
+Three daemon-owned state files live in the database's directory (`dirname(dbPath)`), so they
+follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps all three in memory only
 (`packages/daemon/src/boot/compose.ts:327-329`, `424-432`):
 
 - `pane-geometry.json` (`packages/daemon/src/pty/geometry.ts:58`): the last-rendered cols/rows
@@ -706,8 +708,22 @@ follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps both in memory onl
 - `favourites.json` (`packages/daemon/src/webpane/favourites.ts`): web-pane favourites, kept in
   the legacy app's `[{id, url, title, createdAt}]` payload shape rather than in an `appState`
   row.
+- `integrations.json` (`packages/daemon/src/integrations/store.ts`): the linked GitHub account
+  and its access token (`{v: 1, accounts: [{provider, host, login, how, scopes?, createdAt,
+  problem?, endpoints: {api, web}, credential: {accessToken, tokenType, expiresAt, refreshToken,
+  refreshTokenExpiresAt}}]}`), [integrations.md](integrations.md) §9.1. `endpoints` binds the
+  token to the GitHub API and web bases it was linked against: a daemon started with others
+  (`KELPI_GITHUB_API_URL` / `KELPI_GITHUB_WEB_URL`) never sends it (`problem:
+  'endpoint-mismatch'`); an account without the field reads as linked against the defaults. `KELPID_INTEGRATIONS_PATH`
+  overrides its location (even for a `:memory:` daemon). The daemon is its only writer: a 0600
+  file, written temp → fsync → rename → directory fsync on every link, unlink and revoke. A
+  directory the daemon creates for it is 0700; an existing one (the database's directory, or
+  wherever the override points) keeps its own mode, as the database's parent does (§1), so the
+  file's 0600 is what keeps the token private. A file it cannot read or parse, or one with `v` above 1, fails closed (`problem:
+  'unreadable'`, nothing connected) and is renamed `integrations.json.unreadable-<epoch ms>` by
+  the next link or unlink. Never in the snapshot, the database, a frame or a log.
 
-Neither file is part of the SQLite schema, the migration ledger or the save transaction.
+None of these files is part of the SQLite schema, the migration ledger or the save transaction.
 
 ### 7.5 Plugin installations and revision recovery
 
@@ -732,7 +748,7 @@ ordering, failure behavior and limits.
 
 ## 8. Equivalent SQLite DDL for the TS daemon
 
-This is the schema as it exists after v21, expressed as plain DDL. (SQLite's ALTER-produced
+This is the schema as it exists after v28, expressed as plain DDL. (SQLite's ALTER-produced
 schema differs cosmetically — column order and the absence of NOT NULL on late-added columns
 are preserved here.) An adopted legacy database may additionally hold `scheduledTask`,
 `workspaceFolder` and `workspace.folderID` (§2.6); they are not part of this DDL and Kelpi
@@ -759,7 +775,8 @@ CREATE TABLE workspace (
   muted          BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v21)
   childOrderJSON TEXT,                       -- Kelpi-only (v26): nested workspace UUIDs
   childrenCollapsed BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v26)
-  status         TEXT NOT NULL DEFAULT 'idle'  -- Kelpi-only (v27): idle|running|waitingForInput
+  status         TEXT NOT NULL DEFAULT 'idle', -- Kelpi-only (v27): idle|running|waitingForInput
+  ticketJSON     TEXT                       -- Kelpi-only (v28): the ticket it was created from, JSON
 );
 
 CREATE TABLE pane (

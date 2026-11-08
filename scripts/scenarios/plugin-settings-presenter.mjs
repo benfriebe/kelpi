@@ -128,7 +128,7 @@ const retryID = `settings-presenter-retry-${slot}`;
 
 /** Every section the catalog lists, in rail order (`settings/catalog.ts` ▸ SETTINGS_TABS). */
 const SECTIONS = ['general', 'appearance', 'repositories', 'labels', 'profiles', 'keybindings', 'web',
-    'workspaces', 'remote', 'plugins'];
+    'workspaces', 'remote', 'integrations', 'plugins'];
 
 /**
  * What must never appear in a frame or in the presenter's document.
@@ -690,7 +690,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shel
             && (remainderText.includes(sandbox.configPath) || remainderText.includes('Config:')
                 || await page.eval(`!!document.querySelector('${remainder} [data-testid="compat-degraded-note"]')`)),
             `fields ${JSON.stringify(generalFields)} · lab note remainder ${String(generalNote)} · remainder ${JSON.stringify(remainderText.trim().slice(0, 140))}`);
-        await shot('lab-settings-general', 'Settings, drawn by the LAB: its own rail down the left with all ten sections, the General cards (Base path, Auto-detect, the workspace placement selects) inside the frame, and the host\u2019s native remainder underneath it naming the config file. No bundled rail anywhere.');
+        await shot('lab-settings-general', 'Settings, drawn by the LAB: its own rail down the left with all eleven sections, the General cards (Base path, Auto-detect, the workspace placement selects) inside the frame, and the host\u2019s native remainder underneath it naming the config file. No bundled rail anywhere.');
 
         await routeTo('plugins');
         const pluginsFrame = await labSnapshot();
@@ -1170,7 +1170,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shel
                 && JSON.stringify(keyCounts(configAfter)) === JSON.stringify(keyCounts(configBefore))
                 && /chrome-appearance\s*=\s*dark/.test(configAfter),
                 `kelpi config ${String(configBefore.length)} → ${String(configAfter.length)} bytes (identical ${String(configAfter === configBefore)}), ghostty config identical ${String(ghosttyAfter === ghosttyBefore)}; keys ${JSON.stringify(keyCounts(configAfter))}; the value committed in check 4 is still there once`);
-            await shot('after-daemon-restart', 'Settings drawn by the LAB again after its daemon was stopped and replaced: the lab’s own rail with all ten sections, its "SETTINGS LAB Appearance" header carrying the "1 unsaved" badge for the draft nobody committed (the terminal Font family row holding it is below the fold), the host’s native remainder underneath with the preset gallery, the title bar reading "connected" with no reconnect banner, and no toast and no bundled rail anywhere.');
+            await shot('after-daemon-restart', 'Settings drawn by the LAB again after its daemon was stopped and replaced: the lab’s own rail with all eleven sections, its "SETTINGS LAB Appearance" header carrying the "1 unsaved" badge for the draft nobody committed (the terminal Font family row holding it is below the fold), the host’s native remainder underneath with the preset gallery, the title bar reading "connected" with no reconnect banner, and no toast and no bundled rail anywhere.');
             await resetField('appearance.fontFamily');
         }
         rec.note('LIMIT: the 240-calls-per-second budget breach is not pressed live; driving it from CDP measures the harness. See the header.');

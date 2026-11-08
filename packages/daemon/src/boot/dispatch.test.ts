@@ -139,7 +139,7 @@ describe('createDispatcher', () => {
             operations: { hasOperationHooks: () => true, interceptOperation: (_payload, _context, _source, run) => run() }
         });
         const reply = Object.assign(stubReply(), { progress: vi.fn(), signal, originClientID: 'client-7' });
-        dispatch({ command: 'workspace-create', send_prompt: false, muted: false, group_defaults: true }, reply);
+        dispatch({ command: 'workspace-create', send_prompt: false, muted: false, group_defaults: true, ticket_defaults: true }, reply);
         await Promise.resolve();
         expect(seen).toHaveLength(1);
         // A plugin hook in front of the create must not cost its `agent-launch` frame its window.

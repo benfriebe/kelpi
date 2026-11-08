@@ -493,6 +493,7 @@ export const WIRED_KEY_ACTIONS: readonly KelpiAction[] = [
     'command_palette',
     'toggle_sidebar',
     'new_workspace',
+    'new_workspace_from_ticket',
     'new_group',
     'next_workspace',
     'previous_workspace',

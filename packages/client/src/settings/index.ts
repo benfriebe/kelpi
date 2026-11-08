@@ -13,6 +13,8 @@
  *                           hand-rolled HSV picker both of their Custom rows open
  *   `ProfilesTab.tsx`     — §9.5's config-file editor, over `set-profiles`
  *   `WorkspacesTab.tsx`   — the writable general settings (`set-general-setting`)
+ *   `IntegrationsTab.tsx` - linking GitHub for workspaces made from tickets, over the WS-only
+ *                           integration verbs (docs/integrations.md)
  *   `controls.tsx`        — the WRITING controls (debounced colour/slider, segmented, select)
  *   `catalog.ts` / `model.ts` / `recorder.ts` — the pure rules the tabs render
  *   `contract.ts`         — what a section and a field ARE, plus the two validation funnels
@@ -58,6 +60,12 @@ export {
     useDebouncedValue
 } from './controls';
 export { LabelsTab, type LabelsTabProps } from './LabelsTab';
+export {
+    IntegrationsTab,
+    formatCountdown,
+    type IntegrationsTabActions,
+    type IntegrationsTabProps
+} from './IntegrationsTab';
 export {
     COLOR_FLYOVER_WIDTH,
     ColorFlyover,

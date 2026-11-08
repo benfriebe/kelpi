@@ -87,6 +87,7 @@ import {
 } from '../graft/index.js';
 import { createGhRunner, createPullRequestGit, createPullRequestPoller } from '../github/index.js';
 import { createAppHandlers, type WorktreeCreator } from '../handlers/app/index.js';
+import { createIntegrationsService } from '../integrations/index.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
 // §TERM-046: the OSC 52 clipboard sink — the gate, the log lines and the client broadcast.
@@ -1592,6 +1593,24 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
     const graftCommands: GraftChannel = { store, graft, orphans: graftOrphanRegistry };
 
+    /*
+     * GitHub tickets (docs/integrations.md §9): the credential (`integrations.json` beside the
+     * database, memory only for `:memory:`), the device flow, search and resolve. One instance is
+     * the create flow's `TicketService` (`tickets` below) AND the sync hub's channel (`startWs`),
+     * so a create reuses the resolve the sheet just made. Torn down first in `stop()` and in
+     * `handoff()`: its requests are aborted and a pending device flow is dropped, device code and
+     * all (the successor knows nothing of it; the client resets its code on reconnect).
+     */
+    const integrations = createIntegrationsService({
+        store,
+        version: version.version,
+        dbPath,
+        env,
+        persist,
+        log,
+        onError: (error, context) => report(error, context)
+    });
+
     const appHandlers = createAppHandlers({
         git,
         worktrees,
@@ -1645,6 +1664,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         isAppActive: () => ws?.presence().anyVisible ?? false,
         isPaneFocused: (paneID, workspaceID) => ws?.isPaneAttended(workspaceID, paneID) ?? false,
         agentLauncher,
+        tickets: integrations,
         // SET-008 / SET-013: read through the settings service on every command, so changing
         // the worktree base path or the placement picker in Settings takes effect on the next
         // `workspace create` without rebuilding the handler table (`resolveAppDeps` turns
@@ -2429,6 +2449,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     const stop = async (): Promise<void> => {
         if (stopped !== undefined) return stopped;
+        // No GitHub request outlives the daemon, and a pending device flow dies with it.
+        integrations.dispose();
         // First, while the WS server can still carry them: every launch still waiting reports
         // (with its prompt), and nothing the kill below does to a pane sends a second frame.
         agentLauncher.abandonAll('daemon-stopping');
@@ -2493,6 +2515,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             await stop();
             return 'stopped';
         }
+        // A pending device flow is dropped, not handed over: its device code lives only in this
+        // process, and the client resets its code display when it reconnects to the successor.
+        integrations.dispose();
         flushEditors();
         stopped = (async () => {
             await Promise.race([restored, new Promise((resolve) => setTimeout(resolve, HANDOFF_RESTORE_WAIT_MS))]);
@@ -2679,6 +2704,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // every notification to the phones not looking at Kelpi (`push/service.ts`).
                 // Built once per daemon, not per bind attempt, so a port fallback keeps them.
                 push: pushService(token),
+                // Settings ▸ Integrations and the ticket picker (`ws/integrations.ts`): status in
+                // `welcome`, `integrations-changed`, and the seven verbs (owner-only management).
+                integrations,
                 // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
                 // Finder. All three need the pane handler context (a PTY to spawn into, a
                 // `TerminalInput` for the reopened agent's resume command, the broadcast seam),

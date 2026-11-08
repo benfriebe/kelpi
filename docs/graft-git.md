@@ -73,7 +73,7 @@ interface Repo {
   id: string;              // UUID
   path: string;            // parent repo root (main checkout)
   name: string;            // defaults to last path component of path
-  remoteURL?: string;      // `git remote get-url origin`
+  remoteURL?: string;      // origin's URL (`getRemoteURL`, §3)
   lastAccessedAt: Date;
   isAutoDiscovered: boolean; // true when created by pane-cwd auto-detection; GC'd when unused
 }
@@ -281,7 +281,11 @@ Depth-first from `rootPath` (depth 0), up to `maxDepth` levels (`REPO_SCAN_MAX_D
 #### `getRemoteURL(repoPath) -> string | null`
 
 `git remote get-url origin`. Trim; empty or any failure → null (never throws;
-`packages/daemon/src/git/service.ts:278-285`).
+`packages/daemon/src/git/service.ts`). When that URL names no GitHub repository but
+`remote.origin.url` as written does (a GitHub URL a `url.<base>.insteadOf` rewrites onto a mirror or
+a local path), the URL as written instead (`registryRemoteURL`, `@kelpi/core/tickets`): the
+registry is where a client reads which repositories are on GitHub, and the ticket matching counts
+both spellings (docs/integrations.md §9.6). A non-GitHub remote keeps git's URL, as before.
 
 #### `getCurrentBranch(path) -> string | null`
 
@@ -1490,6 +1494,11 @@ exactly the commands above. While a plugin provider owns `kelpi.git`, the handle
 create through `git.worktreeAdd` instead (no steps, no cancel), so the provider still decides
 every worktree it creates.
 
+A create from a pull request does NOT go through this function: its checkout is its own request
+type and module (§8.5.3), so it never reaches the plugin `git.worktreeAdd` contract. An issue's
+create does, with `remote` set to the remote that matched the ticket's repository (`origin`,
+`upstream` or any other; the remote's name, never an assumed `origin`).
+
 ### 8.4 Inspector flow (`createWorktree` action)
 
 From the workspace inspector (`workspace-add-worktree`,
@@ -1606,6 +1615,32 @@ frame is the WHOLE list (`serializeWorktreeProgress`, `git/worktree-steps.ts`):
   update main only the last two. Status: `pending`, `running`, `done`, `skipped` (the fetch,
   `prefetched 5.0 s ago`), `failed` (with `error`: `worktreeErrorMessage`'s text, or
   `cancelled`). `cancelled` appears once the create was cancelled.
+- A create from a ticket (wire-protocol.md §6.3) runs a `ticket` step FIRST: the lookup, which
+  can take seconds and can be cancelled like any step (a cancel answers
+  `{ok:false, error:"worktree create cancelled"}` with the `ticket` step `failed`/`cancelled`).
+  Only once the ticket has answered does the create know how it checks out, so the list is
+  re-planned then (`tracker.replan`). Until then the frames carry a first guess from what the
+  reference names (`pr-head` for a `/pull/` URL, else `new-branch`), and every frame, the first
+  included, names its mode as `checkout` (`WorkspaceCheckoutMode`), so a client labels each step
+  for what it does and a pull request's rows never show a plain create's labels:
+
+  | `checkout` | steps after `ticket` |
+  |---|---|
+  | `new-branch` (an issue, update main on) | `resolve-default-branch`, `fetch`, `worktree-add`, `create-workspace` |
+  | `new-branch` / `attach-branch` (update main off) | `worktree-add`, `create-workspace` |
+  | `pr-head` | `fetch` (the pull request's head, not the default branch), `worktree-add`, `create-workspace` |
+  | `existing-checkout` (no worktree: a `repo` without `worktree`, or the defaults' branch is already checked out) | `create-workspace` |
+
+  The first frame is a guess from the reference (a `/pull/` URL plans `pr-head`, anything else an
+  issue with update main); a plain create's frames never carry `checkout`.
+
+  ```json
+  {"kind":"worktree-create","checkout":"pr-head","steps":[
+    {"id":"ticket","status":"done","detail":"#418 Retry login on 401"},
+    {"id":"fetch","status":"running","detail":"origin/fix/login","phase":"Receiving objects","percent":60},
+    {"id":"worktree-add","status":"pending"},
+    {"id":"create-workspace","status":"pending"}]}
+  ```
 - `phase` and `percent` while a running step has git's meter: the fetch runs with
   `--progress`, and the checkout's delayed "Updating files" meter is switched on with
   `GIT_PROGRESS_DELAY=0` (`git worktree add` has no `--progress`; its internal
@@ -1698,6 +1733,129 @@ returned is too late: the create COMPLETES (the remaining step is synchronous st
 and rolling back a finished worktree the reply is about to reveal would be the riskier
 answer); `performWorktreeAdd` checks the signal right after git exits, so a cancel that
 raced git's exit is still rolled back.
+
+### 8.5.3 Checking out a pull request (`pr-head`)
+
+A `workspace-create` from a pull request with a worktree (wire-protocol.md §6.3) checks the
+pull request out with `performPullRequestCheckout` (`packages/daemon/src/git/pr-checkout.ts`),
+like `gh pr checkout` but into a new worktree. It is a request type of its own
+(`PullRequestCheckoutRequest`), never a field on `WorktreeAddRequest`, so it cannot leak into the
+plugin `git.worktreeAdd` contract, and it runs only on Kelpi's own git: while a plugin provider
+owns `kelpi.git` (`worktrees.begin()` answers `detailed: false`) the create is refused before
+anything happens. It shares the per-(repo, path) and per-(repo, branch) guard with every other
+worktree create, and the step reporting and cancellation of §8.5.1/§8.5.2.
+
+Inputs come from the resolve (`ResolvedTicket.pullRequest`, docs/integrations.md §8): the head
+branch's own name and commit, whether it is a fork, whether its maintainers may push, the base
+remote (the remote whose URL matched the ticket's repository), a remote already pointing at the
+fork (`headRemote`) and, for a fork with no such remote whose maintainers may push, its push URL
+(`headPushURL`: the base remote's URL with owner/name swapped, so an SSH host alias carries
+over). A request whose `repo` (or group repository) is not the matched repository has these
+recomputed from that repository's own remotes, read and matched exactly as the resolve does
+(`readRemoteFacts`, `bestRemoteFor`, `headRemoteFor`, docs/integrations.md §9.6: `origin`, then
+`upstream`, then git's order, each remote's URLs counted as git uses them and as written, so an
+`insteadOf` alias matches; the fork's push URL from the base remote's push URL, else its fetch
+URL); a repository with no remote for the ticket's repository is refused (`<path> has no remote for owner/name: a pull request is checked out only in a clone of
+its own repository`). `update_main: true` is refused (`a pull request is checked out on its own
+head branch, so update main does not apply: leave it off`).
+
+The local branch is `prLocalBranchName`'s (the head's name, else `<owner>/<head>`, else
+`pr-<n>`, docs/integrations.md §4), read against the repository's branches at create time with the
+resolve's own lookup (`readBranchFacts`, `localBranchLookup`), or the name the request gave
+(renaming is allowed). Head and local branch names are used RAW, never
+`sanitizedGitName`, and must pass both `isSafeBranchName` and `git check-ref-format --branch`;
+remote names must be remotes of the repository. Then, before any fetch:
+
+- a branch checked out anywhere (the main clone included) is an error naming the path
+  (`branch '<b>' is already checked out at '<path>': open a workspace there, or choose another
+  branch name`); the resolve has usually already turned that case into `existing-checkout`. A
+  branch held only by a worktree whose folder is gone (git lists it `prunable` and refuses the
+  branch just the same) is refused with ``branch '<b>' is still held by a worktree whose folder is
+  gone ('<path>'): run `git worktree prune` in <repo> to free it, or choose another branch name``;
+  the defaults never propose such a branch (docs/integrations.md §4), so this is reached only with
+  a `branch` the request named;
+- an existing local branch that does not track this pull request is an error. Both are read with
+  `readBranchFacts` and `readRemoteFacts` (strict: an unreadable repository is git's error) and
+  judged by `@kelpi/core/tickets`' `tracksPullRequest`, the rule the resolve proposed the branch
+  with (docs/integrations.md §9.6: `refs/pull/<n>/head` from the base repository, or the head
+  branch from the repository it lives in, through the matched remote, the fork URL, any other
+  remote of that repository or a URL naming it; or, for a same-repository pull request, no
+  upstream at all), so a branch the sheet prefilled is never refused here.
+
+```
+head reachable through a remote (same repository: the base remote; a fork: headRemote)
+  git fetch --no-tags [--progress] <remote> +refs/heads/<head>:refs/remotes/<remote>/<head>
+  no local branch    git worktree add --track -b <b> <path> refs/remotes/<remote>/<head>
+  a local branch     git worktree add <path> <b>
+                     then, if <b> is behind:   git merge --ff-only <head commit>   (in the worktree)
+                     diverged (force-pushed):  left as it is, reply WARNING
+                     no upstream yet:          branch.<b>.remote/.merge set (only then)
+
+a fork with no remote, or a head branch that is gone (merged and deleted)
+  git fetch --no-tags [--progress] <base remote> refs/pull/<n>/head:refs/heads/<b>   (not forced)
+  git worktree add <path> <b>
+  only when branch.<b>.merge is unset:
+    maintainers may push, fork alive   remote = pushRemote = <headPushURL>, merge = refs/heads/<head>
+    otherwise                          remote = pushRemote = <base remote>, merge = refs/pull/<n>/head
+```
+
+- **A head branch that is gone** is detected without reading git's (localized) stderr: when the
+  head fetch fails, `git ls-remote --exit-code <remote> refs/heads/<head>` exits 2 for "no such
+  ref", and the checkout falls back to `refs/pull/<n>/head` (a warning says the worktree cannot be
+  pushed to). Any other fetch failure is the error.
+- **Force-pushes.** A same-repository branch that cannot be fast-forwarded stays on the user's
+  commits with a warning (`local branch '<b>' has diverged from <remote>/<head> (was pull request
+  #<n> force-pushed?): …`). The `refs/pull` fetch into an existing branch is not forced, so a
+  force-pushed fork is an error (`could not bring local branch '<b>' up to pull request #<n>'s
+  head (…): if the pull request was force-pushed, delete or rename '<b>' and try again`).
+- **Never off HEAD.** There is no `-b <b>` fallback: a head that cannot be fetched fails the
+  create and makes no branch.
+- **Existing configuration is never rewritten**: `branch.<b>.*` is written only when
+  `branch.<b>.merge` is unset, exactly as gh does; no named remote is ever added.
+- **A fork's tracked hooks never run.** A RELATIVE `core.hooksPath` (`.githooks`, husky's
+  `.husky/_`) names a folder of the checkout, and git runs the fast-forward's `post-merge` from
+  the new worktree's own copy (`worktree add`'s `post-checkout` from the main checkout's on git
+  2.50, but that lookup is git's choice): for a fork's pull request, scripts its author wrote. So
+  for a cross-repository pull request whose `core.hooksPath` is relative (not `/`, `~` or
+  `%(prefix)/`), the `worktree add` and the `merge --ff-only` run with `git -c
+  core.hooksPath=/dev/null`, and the reply warns `git hooks did not run for pull request #<n>'s
+  checkout: core.hooksPath (<value>) is inside the checkout, which holds the fork's files`. The
+  default `.git/hooks`, an absolute hooks path and every same-repository pull request keep the
+  user's hooks; the user's configuration is never changed.
+- **Cancel.** The snapshot is taken BEFORE the fetch (the `refs/pull` fetch can create the
+  branch), and the commit the fetch arrived at counts as a tip this create could have made, so a
+  cancel removes a branch the fetch made and nothing else (§8.5.2). The fast-forward and the
+  upstream writes happen after `worktree add` and are not cancellable.
+
+### 8.5.4 The ticket file
+
+Every create from a ticket writes `<dir>/.kelpi/ticket-<number>.md` (`renderTicketFile`'s text,
+docs/integrations.md §7) where `<dir>` is the first pane's working directory (the worktree, or
+the checkout), AFTER the checkout exists and BEFORE the workspace is dispatched, so the file is
+there before the agent launcher types anything (agent-lifecycle.md §6.5).
+`writeTicketFile` (`packages/daemon/src/git/ticket-file.ts`) writes `.kelpi/.gitignore` (`*`)
+first, then the file, each to a temporary name opened `wx` and renamed into place (a symbolic
+link at the target is replaced, never followed); the file is 0600. It is SKIPPED, and the reason
+becomes the reply's `ticket_file_error`, when:
+
+- the checkout tracks anything under `.kelpi` in ANY letter case (`git ls-files -- ':(icase).kelpi'`),
+  or, in `pr-head` mode, the pull request's head commit has an entry named `.kelpi` in any case at
+  `<dir>` (`git ls-tree --name-only -z <head>` run in `<dir>`, names compared lowercased; a head
+  commit that is not present cannot be checked and also skips, and so does a failed `ls-tree`):
+  whatever is there came from the pull request's author. Any case, because on a case-insensitive
+  file system (macOS's default APFS) `.Kelpi/` IS `.kelpi/`: a fork tracking `.Kelpi/` would pass
+  a case-sensitive check, Kelpi would write into its tracked folder (dirtying tracked files), and
+  a `git commit -a` would push the ticket text to the fork;
+- `.kelpi` is a symbolic link or not a folder, or resolves outside the checkout (`lstat` +
+  `fs.realpathSync.native`, which returns the case the file system stores, where `realpathSync`
+  keeps the case asked for), or is an untracked folder spelled in another case (`the checkout has
+  .Kelpi, which this file system takes for .kelpi, so Kelpi did not write a ticket file there`);
+- the first pane does not open inside the checkout, or any read or write fails.
+
+The create still succeeds. The agent's prompt then names only the ticket's URL
+(`withoutTicketFileReference`: the unedited default becomes its `url-only` variant, an edited
+prompt has each mention of the file replaced by the URL), and its prompt file is rewritten: an
+agent is never pointed at a file Kelpi did not write.
 
 ### 8.6 `worktreeErrorMessage`
 
@@ -1886,7 +2044,9 @@ spellings of one repo never register twice.
   `packages/daemon/src/store/types.ts:316-325`) and persisted, so the auto-unlink GC
   can never collect a repo the user asked for by hand; already registered and manual
   → `ok` with the existing row, unchanged; new → registered with `name ?? basename`,
-  `remoteURL` from a best-effort `getRemoteURL`, `isAutoDiscovered: false`. The path
+  `remoteURL` from a best-effort `getRemoteURL` without its userinfo's secret
+  (`readRemoteURL` in `git/registry.ts`, which applies `remoteURLWithoutSecrets`),
+  `isAutoDiscovered: false`. The path
   is deliberately not required to be a checkout (a directory picker can pick
   anything; the row is honest about being remote-less). Reply:
   `{ok:true, repo_id, promoted, already_registered, repo}`.
@@ -1899,7 +2059,8 @@ spellings of one repo never register twice.
 - `repo-scan {path, max_depth?}` (`repos.ts:616-667`): `scanForRepos` (§3.2) from the
   standardized `path` (depth 3 unless `max_depth` is a finite number); every find not
   already in the registry is added (`isAutoDiscovered: false`, remote URL read
-  best-effort), already-registered finds are reported rather than dropped. Reply:
+  best-effort and without its userinfo's secret, `readRemoteURL` as for `repo-add`),
+  already-registered finds are reported rather than dropped. Reply:
   `{ok:true, root, scanned, added:[repos], skipped:[paths]}`.
 
 Promotion out of auto-discovered status also happens on the two worktree-creation

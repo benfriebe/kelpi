@@ -163,6 +163,25 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
         expect(await service.getCurrentBranch(repo)).toBe(DETACHED_HEAD);
     });
 
+    it("keeps origin's URL for the registry as git uses it, unless only the spelling as written names GitHub", async () => {
+        const service = createGitService();
+        const mirrored = initRepo('remote-mirror');
+        git(mirrored, 'remote', 'add', 'origin', 'https://github.com/acme/api.git');
+        git(mirrored, 'config', 'url./srv/mirror/api.git.insteadOf', 'https://github.com/acme/api.git');
+        // `git remote get-url` says the mirror; the registry keeps the GitHub spelling.
+        expect(git(mirrored, 'remote', 'get-url', 'origin').trim()).toBe('/srv/mirror/api.git');
+        expect(await service.getRemoteURL(mirrored)).toBe('https://github.com/acme/api.git');
+
+        const aliased = initRepo('remote-alias');
+        git(aliased, 'remote', 'add', 'origin', 'gh:acme/api');
+        git(aliased, 'config', 'url.git@github.com:.insteadOf', 'gh:');
+        expect(await service.getRemoteURL(aliased)).toBe('git@github.com:acme/api');
+
+        const plain = initRepo('remote-plain');
+        git(plain, 'remote', 'add', 'origin', '/srv/git/api.git');
+        expect(await service.getRemoteURL(plain)).toBe('/srv/git/api.git');
+    });
+
     it('returns null for a non-repo directory instead of throwing', async () => {
         const service = createGitService();
         expect(await service.getCurrentBranch(tmpDir('plain'))).toBeNull();

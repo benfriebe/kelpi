@@ -9,6 +9,7 @@
 
 import type { JsonObject, JsonValue } from '../json.js';
 import type { AgentKind, PaneStatus } from '../wire/vocab.js';
+import type { WsIntegrationStatus, WsIntegrationsChangedMessage } from './integrations.js';
 import type { WsSettingsChangedMessage, WsSettingsSnapshot } from './settings.js';
 import type { WsUpdateStateMessage } from './update.js';
 
@@ -654,6 +655,19 @@ export interface WsWelcomeMessage {
      * never as "everything bound".
      */
     readonly transport?: WsTransportStatus;
+    /**
+     * Every integration provider's status (docs/integrations.md, `./integrations.ts`). Rides here
+     * for the reason settings do: it is not domain state, and a delta replay must never touch it.
+     * Later changes arrive as `integrations-changed`. Never carries a credential or a device code.
+     * Additive: absent on a daemon that predates integrations, which a client reads as "this
+     * daemon cannot link anything" (no Integrations tab, no From ticket).
+     */
+    readonly integrations?: readonly WsIntegrationStatus[];
+    /**
+     * Whether THIS session may link and unlink (an owner session, not a paired device). Per
+     * session, so it rides `welcome` only, never the broadcast. Absent = false.
+     */
+    readonly integrationsManageable?: boolean;
 }
 
 export const WS_REJECTION_CODES = ['protocol-mismatch', 'unauthorized', 'server-error'] as const;
@@ -1203,6 +1217,7 @@ export type WsServerMessage =
     | WsResyncRequiredMessage
     | WsPongMessage
     | WsSettingsChangedMessage
+    | WsIntegrationsChangedMessage
     | WsHostRegisteredMessage
     | WsHostRevokedMessage
     | WsHostRpcMessage

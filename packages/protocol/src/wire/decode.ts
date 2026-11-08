@@ -416,7 +416,11 @@ function decodeCommand(
                 // into `claude`, and the handler has to be able to refuse it before any effect.
                 start_agent: fields.text('start_agent'),
                 agent_prompt: fields.rawText('agent_prompt'),
-                send_prompt: fields.flag('send_prompt', false)
+                send_prompt: fields.flag('send_prompt', false),
+                // Raw like `start_agent` (§6.3): the handler parses it and answers `bad-ref`
+                // itself, before anything is created.
+                ticket: fields.text('ticket'),
+                ticket_defaults: fields.flag('ticket_defaults', true)
             };
         case 'workspace-move': {
             const name = fields.nonEmpty('name');

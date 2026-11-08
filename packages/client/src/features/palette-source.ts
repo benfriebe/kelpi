@@ -46,6 +46,8 @@ export interface PaletteFeatureActions {
     cycleLayout(): boolean;
     toggleSyncInput(): boolean;
     newWorkspace(): boolean;
+    /** The sheet with its ticket picker up (docs/integrations.md). Optional: fixtures predate it. */
+    newWorkspaceFromTicket?(): boolean;
     setWorkspaceMuted(workspaceID: string, muted: boolean): boolean;
 }
 
@@ -82,6 +84,12 @@ export interface PaletteFeatureHost {
      * Its row shows only while one drains; absent = this window draws no notice.
      */
     readonly showOldTerminalHosts?: (() => void) | undefined;
+    /**
+     * docs/integrations.md: offer New Workspace from Ticket. True only over a daemon that reports
+     * a GitHub integration, on the desktop shell (the phone's own New workspace sheet has no From
+     * ticket). Absent = false.
+     */
+    readonly fromTicket?: boolean | undefined;
 }
 
 export interface PaletteArrangementHost {
@@ -267,6 +275,13 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 hint('toggle_sync_input'), () => act.toggleSyncInput()),
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
+            ...(host.fromTicket === true && act.newWorkspaceFromTicket !== undefined
+                ? [
+                      commandEntry('cmd:new-workspace-from-ticket', 'rectangle.stack', 'New Workspace from Ticket…',
+                          'start from a GitHub issue or pull request', hint('new_workspace_from_ticket'),
+                          () => act.newWorkspaceFromTicket?.() ?? false)
+                  ]
+                : []),
             ...muteEntries,
             ...oldHostEntries,
             ...arrangementEntries(host.arrangement, hint),

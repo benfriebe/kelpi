@@ -5,7 +5,8 @@
  * imported directly so a future edit to either side fails here rather than in a user's window.
  */
 
-import { sanitizedGitName } from '@kelpi/daemon/git';
+import { sanitizedGitName, worktreeStepsFor } from '@kelpi/daemon/git';
+import { WORKSPACE_CHECKOUT_MODES } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -15,7 +16,9 @@ import {
     sanitizeGitName,
     worktreeNameFromWorkspace,
     worktreePreview,
-    worktreePreviewPath
+    worktreePreviewPath,
+    worktreeProgressSteps,
+    worktreeStepLabel
 } from './worktree';
 
 const CORPUS = [
@@ -140,6 +143,68 @@ describe('worktree create progress (#294)', () => {
         expect(parseWorktreeProgress(null)).toBeNull();
         expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [] })).toEqual({ steps: [], cancelled: false, detailed: true });
         expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [], detailed: false })).toEqual({ steps: [], cancelled: false, detailed: false });
+    });
+
+    it('reads the ticket step and the checkout a create from a ticket names, dropping an unknown mode', () => {
+        expect(
+            parseWorktreeProgress({
+                kind: 'worktree-create',
+                steps: [
+                    { id: 'ticket', status: 'done', detail: '#418' },
+                    { id: 'fetch', status: 'running' }
+                ],
+                checkout: 'pr-head'
+            })
+        ).toEqual({
+            cancelled: false,
+            detailed: true,
+            checkout: 'pr-head',
+            steps: [
+                { id: 'ticket', status: 'done', detail: '#418' },
+                { id: 'fetch', status: 'running' }
+            ]
+        });
+        expect(parseWorktreeProgress({ kind: 'worktree-create', steps: [], checkout: 'teleport' })).toEqual({
+            steps: [],
+            cancelled: false,
+            detailed: true
+        });
+    });
+
+    it('plans a ticket create\'s checklist per checkout mode, exactly as the daemon does', () => {
+        for (const checkout of WORKSPACE_CHECKOUT_MODES) {
+            for (const updateMain of [true, false]) {
+                for (const ticket of [true, false]) {
+                    expect(worktreeProgressSteps({ checkout, updateMain, ticket }), `${checkout} ${String(updateMain)} ${String(ticket)}`).toEqual(
+                        worktreeStepsFor({ checkout, updateMain, ticket })
+                    );
+                }
+            }
+        }
+        const pr = initialWorktreeProgress({ ticket: true, checkout: 'pr-head' });
+        expect(pr.steps.map((step) => `${step.id}:${step.status}`)).toEqual([
+            'ticket:running',
+            'fetch:pending',
+            'worktree-add:pending',
+            'create-workspace:pending'
+        ]);
+        expect(pr.checkout).toBe('pr-head');
+        // The plain boolean form names no checkout, so its steps keep their plain labels.
+        expect(initialWorktreeProgress(true).checkout).toBeUndefined();
+        expect(initialWorktreeProgress({ ticket: true, checkout: 'existing-checkout' }).steps.map((step) => step.id)).toEqual([
+            'ticket',
+            'create-workspace'
+        ]);
+    });
+
+    it('labels a step for what it does under the checkout mode', () => {
+        expect(worktreeStepLabel('fetch')).toBe('Fetch the latest main');
+        expect(worktreeStepLabel('fetch', 'new-branch')).toBe('Fetch the latest main');
+        expect(worktreeStepLabel('fetch', 'pr-head')).toBe('Fetch the pull request');
+        expect(worktreeStepLabel('worktree-add', 'pr-head')).toBe('Check out the pull request');
+        expect(worktreeStepLabel('worktree-add', 'attach-branch')).toBe('Create the worktree on the existing branch');
+        expect(worktreeStepLabel('ticket', 'existing-checkout')).toBe('Look up the ticket');
+        expect(worktreeStepLabel('create-workspace', 'existing-checkout')).toBe('Open the workspace');
     });
 
     it('formats the elapsed clock', () => {

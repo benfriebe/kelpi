@@ -8,9 +8,10 @@ import { isOkReply, replyError } from '../connection';
 import { Sidebar, type SidebarProps, type SidebarSelectionCommands } from '../chrome/Sidebar';
 import type { WorktreeCleanupSource } from '../chrome/WorktreeCleanupList';
 import { NewEntrySheet } from '../chrome/NewWorkspaceSheet';
+import type { TicketSource } from '../chrome/TicketPicker';
 import { defaultGroupName, nextCreateColor } from '../chrome/sidebar-model';
 import type { ChromeBucket } from '../chrome/theme';
-import type { NewWorkspaceExtras, SubmitResult, WorkspaceWorktreeRequest } from '../chrome/types';
+import { isTicketCreateFailure, type NewWorkspaceExtras, type SubmitResult, type WorkspaceWorktreeRequest } from '../chrome/types';
 import { useSidebarNativeMounted } from '../plugins/Workbench';
 import type { SidebarPlacement } from '../plugins/registry';
 import { selectActiveWorkspace, selectFilteredSidebarEntries, selectGroupForWorkspace, selectSidebarEntries, type KelpiStoreApi } from '../state';
@@ -26,7 +27,8 @@ export function useWorkspacesFeatureLifecycle() {
     /** #307: the row a background create just added, worn briefly (`app/new-workspace-cue.ts`). */
     const [highlightWorkspaceID, setHighlightWorkspaceID] = useState<string | null>(null);
     const [sidebarRenameRequest, setSidebarRenameRequest] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
-    const [sidebarCreateRequest, setSidebarCreateRequest] = useState<{ kind: 'workspace' | 'group'; groupID: string | null; seq: number } | null>(null);
+    // `fromTicket`: ⌥⌘N's request, which opens the sheet with its ticket picker up.
+    const [sidebarCreateRequest, setSidebarCreateRequest] = useState<{ kind: 'workspace' | 'group'; groupID: string | null; seq: number; fromTicket?: boolean } | null>(null);
     const [createSheetOpen, setCreateSheetOpen] = useState(false);
     const sidebarEscapeRef = useRef<(() => boolean) | null>(null);
     const pendingSelectAllRef = useRef(false);
@@ -102,6 +104,11 @@ export interface WorkspacesFeatureViewProps {
     readonly reportFailure: (label: string, message: string) => void;
     /** #283's native folder panel (desktop app only): the group repository sheet's Choose Folder…. */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /**
+     * docs/integrations.md: the create sheet's From ticket. Absent (a daemon that cannot link
+     * GitHub) = the sheet offers none.
+     */
+    readonly tickets?: TicketSource | undefined;
 }
 
 /**
@@ -109,7 +116,7 @@ export interface WorkspacesFeatureViewProps {
  * and `WorkspacesCreateSheetHost` below hand a submitted draft to the same two functions.
  */
 export type WorkspacesCreateHost = Pick<WorkspacesFeatureViewProps,
-    'model' | 'actions' | 'lifecycle' | 'repos' | 'remotes' | 'bucket' | 'reportFailure' | 'onBrowseForFolder'>;
+    'model' | 'actions' | 'lifecycle' | 'repos' | 'remotes' | 'bucket' | 'reportFailure' | 'onBrowseForFolder' | 'tickets'>;
 
 /** §1.7: a group destined for another daemon is created THERE: no local row exists. */
 function createRemoteGroup(host: WorkspacesCreateHost, daemonName: string, name: string, color: WorkspaceColor | null): void {
@@ -131,6 +138,11 @@ function createWorkspaceFromSheet(
     // app-state-core.md §5.5: the sheet has already shown the group's default repository and
     // what it submits is the user's final choice, so the daemon must not add the default back.
     const literal = { ...(extras ?? {}), groupDefaults: false };
+    // shell-ui.md §10.1: a ticket with no worktree opens in a checkout sent as `repo`, and waits
+    // for its reply (the lookup can be cancelled or refused while the sheet is still up).
+    if (worktree === undefined && literal.ticket !== undefined) {
+        return host.actions.createWorkspaceFromTicket(name, groupID, literal.ticket, literal);
+    }
     if (worktree === undefined) return host.actions.createWorkspace(name, groupID, literal);
     const repo = host.repos.find(candidate => candidate.id === worktree.repoID);
     if (repo === undefined) return 'that repository is no longer registered';
@@ -182,6 +194,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onRenameGroup={actions.renameGroup}
         onDeleteGroup={actions.deleteGroup}
         onCreateWorkspace={(name, groupID, worktree, extras) => createWorkspaceFromSheet(props, name, groupID, worktree, extras)}
+        {...(props.tickets === undefined ? {} : { ticketSource: props.tickets })}
         onPrefetchWorktreeRepo={actions.prefetchWorktreeRepo}
         onCancelWorkspaceCreate={actions.cancelWorkspaceCreate}
         onCreateGroup={actions.createGroup}
@@ -244,7 +257,7 @@ export function WorkspacesCreateSheetHost(props: WorkspacesCreateSheetProps): Re
 function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement | null {
     const { lifecycle, model } = props;
     const { setSidebarCreateRequest, setCreateSheetOpen } = lifecycle;
-    const [form, setForm] = useState<{ kind: 'workspace' | 'group'; groupID: string | null } | null>(null);
+    const [form, setForm] = useState<{ kind: 'workspace' | 'group'; groupID: string | null; fromTicket?: boolean } | null>(null);
 
     /**
      * The same one-shot contract the sidebar applies (`chrome/Sidebar.tsx`, §APP-018's other
@@ -254,7 +267,7 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
     const request = lifecycle.sidebarCreateRequest;
     useEffect(() => {
         if (request === null) return;
-        setForm({ kind: request.kind, groupID: request.groupID });
+        setForm({ kind: request.kind, groupID: request.groupID, ...(request.fromTicket === true ? { fromTicket: true } : {}) });
         setSidebarCreateRequest(null);
     }, [request, setSidebarCreateRequest]);
 
@@ -293,6 +306,8 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
         defaultAgent={model.defaultAgent}
         defaultSendPrompt={model.defaultSendPrompt}
         canStartAgent={model.canStartAgent}
+        // docs/integrations.md: From ticket, and ⌥⌘N's picker already up.
+        {...(form.kind === 'workspace' && props.tickets !== undefined ? { tickets: props.tickets, openTicketPicker: form.fromTicket === true } : {})}
         onCancel={() => { setForm(null); }}
         onSubmit={async draft => {
             if (form.kind === 'group') {
@@ -306,10 +321,12 @@ function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement 
                 profile: draft.profile,
                 repoPaths: draft.repoPaths,
                 ...(draft.muted ? { muted: true } : {}),
-                ...(draft.agent === null ? {} : { agent: draft.agent })
+                ...(draft.agent === null ? {} : { agent: draft.agent }),
+                ...(draft.ticket === null ? {} : { ticket: draft.ticket })
             });
-            // §WS-079: a failed worktree create keeps the SHEET open, with the message inline.
-            if (typeof result === 'string') return result;
+            // §WS-079: a failed worktree create keeps the SHEET open, with the message inline
+            // (and, refused because of its ticket, that failure's way out).
+            if (typeof result === 'string' || isTicketCreateFailure(result)) return result;
             setForm(null);
             return null;
         }}

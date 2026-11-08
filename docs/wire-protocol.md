@@ -1351,6 +1351,71 @@ without `broadcast`, only within a minute of it sending the create, and never fo
 The plugin SDK's `createWorkspace` does not forward these three fields yet. A client that
 predates the frame ignores the unknown type.
 
+Starting from a ticket (`ticket`, `ticket_defaults`; additive, every create flow;
+[integrations.md](integrations.md) has the verbs, the defaults and the security rules):
+`ticket` (string, decoded raw like `start_agent`, empty string = absent) names a GitHub issue or
+pull request, as its page URL (`https://github.com/<owner>/<name>/pull/<n>` or `/issues/<n>`,
+scheme optional, `/files` and the like, a fragment, a query or a trailing slash allowed) or as
+`<owner>/<name>#<n>` (`parseTicketRef`, `packages/core/src/tickets/refs.ts`). The daemon resolves
+it with ITS GitHub credential (Settings ▸ Integrations); a request never carries one.
+`ticket_defaults` (bool, default true, the twin of `group_defaults`) fills whatever the request
+leaves unsaid from the ticket: `name` (`#418 Retry login on 401`), `repo` (the registered
+repository whose remotes point at the ticket's repository), `worktree` and `branch`, `update_main`,
+and, when `start_agent` is present without `agent_prompt`, the prompt (`ticketCreateDefaults`,
+`packages/core/src/tickets/defaults.ts`). The CLI leaves it on; the New Workspace sheet sends
+`"ticket_defaults":false`, because it has already shown those defaults (from `ticket-resolve`) and
+sends the user's final choice. After the `icon` and `parent` checks and phase 1's agent checks
+above (so a bad icon or parent is refused before the ticket is even parsed), and still BEFORE any
+effect, the handler refuses a `ticket` that does not parse (`bad-ref`), a provider with no usable
+credential (`not-connected`) and any ticket the resolve cannot read; every such refusal carries
+`ticket_error`, one of the codes in integrations.md, beside `error`, plus that code's extras
+(`retry_after_s`, `sso_url`, `settings_url`):
+
+```json
+{"command":"workspace-create","ticket":"acme/api#999"}
+→ {"ok":false,"error":"acme/api#999 was not found, or this GitHub account cannot see it","ticket_error":"not-found"}
+```
+
+Over the WS sync socket the lookup is a `ticket` step, first in the create's `command-progress`
+frames, and the create can be cancelled during it like any worktree create; a frame then also
+names the create's `checkout` (graft-git.md §8.5.1). A ticket create that makes no worktree (it
+names a `repo`, or the defaults open an existing checkout) reports the `ticket` step and
+`create-workspace` too.
+
+A pull request is checked out on its head, never on a new branch: with `worktree` it is a
+`pr-head` create, and `update_main: true` is refused. A ticket create left with neither a `repo`
+nor a `worktree` (after the defaults, when `ticket_defaults` applies them) is refused before
+anything is created: a ticket always lands in a checkout. Every success reply to a request that
+carried `ticket` echoes it, and says what the create did. Otherwise a ticket create is any
+create: `icon`, `parent`/`parent_pane_id` (Nesting, below: the group defaults are then the
+parent's group's, and a parent lost while the ticket resolves or git runs is handled as on the
+repository and worktree branches) and `focus` (absent = background) apply, with the same echoes.
+
+| reply field | meaning |
+|---|---|
+| `ticket` | `{provider, kind, repo, number, key, url, title}`: the ticket the workspace keeps (`kind` is `pr` or `issue`, `repo` is `owner/name`, `key` is `#418`) |
+| `checkout` | `new-branch`, `pr-head`, `attach-branch` (a new worktree on a local branch that already existed) or `existing-checkout` (no worktree: the workspace opens at a checkout that already exists) |
+| `ticket_file` | the file Kelpi wrote for the agent, `<checkout>/.kelpi/ticket-<number>.md` (absolute), beside a `.kelpi/.gitignore` of `*` |
+| `ticket_file_error` | why no ticket file was written (a `.kelpi` that is tracked or a symlink, a failed write); the create still succeeded |
+| `warnings` | things that did not stop the create (a pull request head that could not be fast-forwarded onto the existing local branch, a fork that no longer exists, a fork's checkout made with git hooks off because `core.hooksPath` is inside the checkout, graft-git.md §8.5.3) |
+
+When no ticket file was written, the prompt the daemon renders itself names only the ticket's URL,
+and a prompt the request carried has every mention of the file replaced by that URL
+(`withoutTicketFileReference`): an agent is never pointed at a file Kelpi did not write. A
+daemon that predates these fields drops them and creates a plain workspace, so a caller that sent
+`ticket` and finds no `ticket` echo knows the workspace WAS created, from nothing
+(`kelpi workspace create --from` then says so and exits 1).
+
+```json
+{"command":"workspace-create","ticket":"https://github.com/acme/api/pull/418","start_agent":"claude"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"#418 Retry login on 401","muted":false,
+   "worktree_path":"/…/worktrees/fix-login","branch":"fix/login","update_main":false,
+   "repo_path":"/Users/ben/code/api","start_agent":"claude","prompt_file":"/…/prompts/<uuid>.txt",
+   "ticket":{"provider":"github","kind":"pr","repo":"acme/api","number":418,"key":"#418",
+             "url":"https://github.com/acme/api/pull/418","title":"Retry login on 401"},
+   "checkout":"pr-head","ticket_file":"/…/worktrees/fix-login/.kelpi/ticket-418.md"}
+```
+
 Names are sanitized before any git work: an unusable `worktree` →
 `{"ok":false,"error":"\"<name>\" isn't a usable worktree name"}`, an unusable `branch` →
 `{"ok":false,"error":"\"<branch>\" isn't a usable branch name"}`
@@ -1383,7 +1448,11 @@ created`, or `parent '<name>' changed while the workspace was being created: <re
 worktree branch already has its worktree, so (like a cancel that arrives after git, graft-git.md
 §8.5.2) it completes, at the top level, and the reply adds `"parent_lost": true` and
 `parent_lost_reason` (the same sentence) in place of `parent_id`. The CLI exits non-zero with
-that sentence, and the plugin SDK rejects with `PARENT_LOST`.
+that sentence, and the plugin SDK rejects with `PARENT_LOST`. A create from a `ticket` without a
+worktree is the repository branch with one step more: it checks the parent before it registers
+anything, and fails whole then; a parent that goes while its ticket file is being written (the
+repository registered and the file on disk by then) gets `parent_lost` as the worktree branch
+does (socket-handlers.md §6.2).
 
 ```json
 {"command":"workspace-create","name":"worker-1","parent":"orchestrator"}
@@ -2109,6 +2178,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
 | `start_agent`, `agent_prompt` | string | `workspace-create` (`start_agent` decoded raw, §6.3) |
 | `send_prompt` | bool | `workspace-create` |
+| `ticket` | string | `workspace-create` (decoded raw, §6.3; empty string = absent) |
+| `ticket_defaults` | bool | `workspace-create` (default true, §6.3) |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), all absent = background |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |

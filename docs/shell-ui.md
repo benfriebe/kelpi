@@ -1116,7 +1116,11 @@ then a scrollable stack of three sections (12pt padding, dividers between):
 
 **Workspace section** — "Workspace" caption; a 4×16 rounded bar in the workspace color +
 the name (click to rename inline; Enter commits, Esc cancels;
-`packages/client/src/chrome/Inspector.tsx:382-420`); "N pane(s)" caption; the ten-color
+`packages/client/src/chrome/Inspector.tsx:382-420`); "N pane(s)" caption; for a workspace
+created from a GitHub issue or pull request (`workspace.ticket`, docs/integrations.md), a
+"↗ #418 title" row in the accent colour (`data-testid="inspector-workspace-ticket"`) that opens
+the ticket's page in the system browser, and only when that URL is a `https://github.com/` page
+(`isGitHubWebURL`; otherwise the key and title are plain text); the ten-color
 swatch row (the current color outlined); the workspace's applied label chips; a **Profile**
 dropdown (built-in `default` first, then config profiles, plus the currently-assigned name
 even if it vanished from the config; selecting dispatches `setProfile`, applies to future
@@ -1338,7 +1342,19 @@ All sheets sit on `surfaceBackground`. Enter = default action, Esc = cancel thro
 
 Fields, top to bottom:
 
-1. Title "New Workspace".
+1. Title "New Workspace", with **From ticket…** on the row's trailing edge (Kelpi addition,
+   docs/integrations.md) whenever the daemon reports a GitHub integration (`welcome.integrations`),
+   on the desktop shell only: the phone shell's own New workspace sheet (`phone/new-workspace.ts`)
+   has no From ticket, and a daemon that predates
+   integrations shows no button. It opens the ticket picker (item 12) as a sub-sheet; ⌥⌘N
+   (`new_workspace_from_ticket`) and the palette's "New Workspace from Ticket…" open the sheet
+   with the picker already up (over a daemon with no GitHub integration they open the plain
+   sheet, as ⌘N does). Once a ticket is linked, a chip under the title row names it (PR or Issue,
+   `#418`, the title, `owner/name`) with a ✕ that drops the link and keeps every field as it now
+   is; a ticket already open in another workspace adds a banner, "#418 is already open in X"
+   (or "#418's branch is already open in X", "(and N more)"), with **Switch to it**, which
+   switches and closes the sheet (Create stays enabled); and the resolve's warnings (a deleted
+   fork, a head branch git cannot use) follow as accent captions.
 2. **Name** text field (auto-focused; Enter submits). Create is disabled while the
    trimmed name is empty.
 3. **Color** swatch row: the 10 workspace colors as 24pt circles; the selected one gets
@@ -1464,7 +1480,10 @@ Fields, top to bottom:
    leave it running with nothing on screen).
 10. Error line (red caption) when an async worktree creation failed: the daemon's message
    (e.g. `branch 'x' already exists, …`), or "Create cancelled: nothing it made was kept."
-   after a cancel. The sheet stays open for retry, with the form re-enabled.
+   after a cancel. The sheet stays open for retry, with the form re-enabled. A create from a
+   ticket refused BECAUSE of the ticket (the reply's `ticket_error`, read with
+   `parseIntegrationFailure`) shows the picker's failure panel instead (item 12), with its
+   buttons as Tab stops just before Cancel.
 11. Cancel / **Create**. Create is disabled while a worktree submission is in flight
    (double-submit guard) and reads "Creating…". While a worktree create runs, Cancel CANCELS
    it (`workspace-create-cancel` for the request id the sheet minted; the daemon kills git
@@ -1474,15 +1493,71 @@ Fields, top to bottom:
    the sheet (a cancel that lost the race to success closes it too); failure surfaces the
    inline error. The plain route dispatches
    `createWorkspace(name, color, repos, groupID, profileName)` and shows no progress.
+12. **From ticket** (Kelpi addition; docs/integrations.md; `TicketPicker.tsx`). The picker is a
+   sub-sheet hung where the repo picker hangs (its own dimming layer, the sheet's top edge and
+   width); Escape and a click on its layer close it and leave the sheet up, with the caret back
+   on From ticket…. It opens on the three `@me` lists (`ticket-search` with an empty query):
+   "Your open pull requests", "Waiting for your review", "Issues assigned to you". Typed text
+   searches 300 ms after the last keystroke and from two characters (GitHub's search allows 30
+   requests a minute); every search carries a sequence number and a reply for an older one is
+   dropped. A PASTE that leaves the field holding an issue or pull request URL, or
+   `owner/name#n`, is looked up at once; the same text typed shows one "Open owner/name#n" row
+   instead. A row is PR / Draft PR / Issue, `#n`, the title, and `owner/name · author`; a ticket
+   whose repository is not registered is dimmed, cannot be picked, and says "Add owner/name in
+   Settings ▸ Repositories to start a workspace from it". ↑/↓ move over the pickable rows,
+   Return picks, Tab cycles the picker's own controls. Each failure says how to get past it:
+   not connected or a refused credential (Open Settings ▸ Integrations, which closes the sheet
+   first), the rate limit (when it lifts, and Try again), SAML SSO (Authorize on GitHub), an
+   organization that restricts OAuth Apps (Request access on GitHub, or Use a token instead),
+   GitHub unavailable for now (the daemon's reason, and Try again); every page it opens must
+   pass `isGitHubWebURL`. A partial-results SSO warning is shown above the list. A reconnect
+   (the welcome's client id changing) re-asks a search or lookup the dropped connection failed.
+   A pick is resolved (`ticket-resolve`) while the picker says "Looking up …"; the reply's
+   defaults (the daemon's `ticketCreateDefaults`) then prefill the sheet and the picker closes:
+   the name (`#418 Retry login on 401`), the ticket's repository as the one chosen repo, and
+   by checkout mode: `new-branch` (an issue) turns Create git worktree on with the worktree
+   name, the branch (`418-retry-login-on-401`) and Update main as proposed; `pr-head` (a pull
+   request) fills the worktree and the pull request's head branch, which stays editable and is
+   sent with its own spelling (validated like `git check-ref-format --branch`, not through the
+   worktree-name sanitizer), and hides Update main (and its Tab stop) since a pull request is
+   checked out on its head; `existing-checkout` (the branch is already checked out somewhere)
+   turns the worktree off, and a caption says "Opens a workspace at <path>, where its branch is
+   already checked out." The rendered prompt fills the Agent row's Prompt box even while the
+   Agent is None, so choosing one later still has it, unless the user has written their own (a
+   second ticket replaces the first one's prompt, never typed text). Every field the prefill set
+   counts as edited, so nothing re-follows the name.
+   The create names the ticket (`ticket`, its URL) with `ticket_defaults: false` and carries
+   exactly what the sheet shows. With a worktree it is the worktree route above. Without one it
+   sends the checkout the workspace opens at as `repo` (the ticket's repository, or the existing
+   checkout's path) rather than `path` plus a later association, so the daemon associates it and
+   writes the ticket file there; the other chosen repositories are associated afterwards, and a
+   caption says where it opens (or, with no repository left, "Choose a repository: …", and
+   Create waits). Every ticket create shows the progress panel (item 9), starting with "Look up
+   the ticket" and labelled for its checkout ("Fetch the pull request", "Check out the pull
+   request", "Create the worktree on the existing branch"; the daemon's frames name the mode,
+   `checkout`, and its first frame is a guess it re-plans once the ticket has answered, so the
+   list may change mid-create and the sheet follows it), and Cancel cancels it during the lookup
+   too (a create with no worktree cannot be cancelled once the lookup is done). The daemon fills
+   nothing for the sheet (`ticket_defaults: false`), so the sheet sends the name, the checkout,
+   and the prompt in its box as the agent's own; a refusal after the lookup (a name, a group, a
+   repository that does not match a pull request) carries no `ticket_error` and is a plain error. On success the sheet closes; a
+   reply with `ticket_file_error` or `warnings` leaves one sticky toast, "Created from #418, with
+   notes", and a reply with no `ticket` echo (a daemon that predates tickets made a plain
+   workspace) says so in a toast.
 
 Keyboard: Tab / Shift-Tab cycle through every *visible* control in reading order
-(name → color → group → profile → mute → repo removes → add-repo → worktree toggle →
-worktree fields → agent → prompt → send immediately → cancel → create), wrapping; the Create
+(from ticket → ticket ✕ → switch to it → name → color → group → profile → mute → repo
+removes → add-repo → worktree toggle → worktree fields → agent → prompt → send immediately →
+a ticket failure's buttons → cancel → create), wrapping; From ticket… is a stop only where it is
+drawn, the ticket ✕ and Switch to it only while a ticket is linked (Switch only with the banner),
+Update main is not a stop for a pull request; the Create
 stop is omitted while disabled, the prompt and send stops exist only while an agent is chosen
 (Tab moves out of the prompt rather than typing a tab), and while a worktree create runs Cancel
 is the only stop (and takes focus).
 Return submits from anywhere in the sheet, not only from a text field, with one exception: in
-the Prompt text area Return inserts a newline, and ⌘Return (Ctrl+Return off a Mac) submits. A
+the Prompt text area Return inserts a newline, and ⌘Return (Ctrl+Return off a Mac) submits.
+(From ticket… sits in the title row, outside the form: Return on it opens the picker, and in the
+picker Return picks the highlighted row.) A
 Return that ends an IME composition (`isComposing`, or WebKit's keyCode 229) submits nothing in
 any field (`onFormKeyDown`, `packages/client/src/chrome/NewWorkspaceSheet.tsx`). Likewise an
 Escape that cancels an IME composition (the same two tests) is left to the input method: the

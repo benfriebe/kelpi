@@ -122,6 +122,79 @@ describe('store bridge', () => {
         expect(h.store.getState().daemon.state.workspaces[0]?.name).toBe('alpha');
     });
 
+    it('hydrates the integrations slice from the welcome and the integrations-changed frame (docs/integrations.md)', () => {
+        const h = harness();
+        expect(h.store.getState().integrations).toEqual({ supported: false, manageable: false, providers: [] });
+        h.connection.connect();
+        const socket = h.sockets.last();
+        socket.open();
+        socket.emit({
+            type: 'welcome',
+            protocolVersion: 2,
+            clientID: 'client-1',
+            daemon: { version: '0.1.0', build: 'test', pid: 4242 },
+            integrations: [
+                { provider: 'github', available: true, connected: false },
+                // A provider this client does not know is dropped, not half-read.
+                { provider: 'gitlab', available: true, connected: true }
+            ],
+            integrationsManageable: true
+        });
+        expect(h.store.getState().integrations).toEqual({
+            supported: true,
+            manageable: true,
+            providers: [{ provider: 'github', available: true, connected: false }]
+        });
+
+        const before = h.store.getState().integrations;
+        socket.emit({
+            type: 'integrations-changed',
+            integrations: [
+                {
+                    provider: 'github',
+                    available: true,
+                    connected: false,
+                    linking: { state: 'pending', flowID: 'f1', expiresAt: 1_000 }
+                }
+            ]
+        });
+        const after = h.store.getState().integrations;
+        expect(after).not.toBe(before);
+        // Per session: the broadcast never touches `manageable`.
+        expect(after.manageable).toBe(true);
+        expect(after.providers[0]?.linking).toEqual({ state: 'pending', flowID: 'f1', expiresAt: 1_000 });
+
+        // The same list again is not a change, so nothing re-renders for it.
+        socket.emit({ type: 'integrations-changed', integrations: [{ ...after.providers[0] }] });
+        expect(h.store.getState().integrations).toBe(after);
+        // A frame that is not a list is ignored.
+        socket.emit({ type: 'integrations-changed', integrations: 'nope' });
+        expect(h.store.getState().integrations).toBe(after);
+    });
+
+    it('resets the integrations slice when a reconnect lands on a daemon that predates them', () => {
+        const store = createKelpiStore();
+        store.getState().applyIntegrationsWelcome([{ provider: 'github', available: true, connected: true, login: 'octo' }], true);
+        expect(store.getState().integrations.supported).toBe(true);
+        const h = harness(store);
+        h.connection.connect();
+        completeHandshake(h.sockets.last(), { state: snapshotState() as never });
+        expect(h.store.getState().integrations).toEqual({ supported: false, manageable: false, providers: [] });
+    });
+
+    it('applies a reply\'s echoed status list, leaving manageable alone', () => {
+        const store = createKelpiStore();
+        store.getState().applyIntegrationsWelcome([{ provider: 'github', available: true, connected: false }], false);
+        store.getState().applyIntegrations([{ provider: 'github', available: true, connected: true, login: 'octo', how: 'token' }]);
+        expect(store.getState().integrations).toEqual({
+            supported: true,
+            manageable: false,
+            providers: [{ provider: 'github', available: true, connected: true, login: 'octo', how: 'token' }]
+        });
+        store.getState().applyIntegrations(undefined);
+        expect(store.getState().integrations.providers).toHaveLength(1);
+    });
+
     it('tracks the size-control owner (terminal-surface.md §5.1)', () => {
         const h = harness();
         h.connection.connect();

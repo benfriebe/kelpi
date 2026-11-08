@@ -637,6 +637,70 @@ describe('createDaemon', () => {
  * echo and a private prompt file, and a launch still waiting when the daemon stops is reported
  * to THAT window (not broadcast), with its prompt, before the stop closes the WS server (R3).
  */
+/*
+ * docs/integrations.md §9: the integrations service is composed with the credential file beside
+ * the database, its status rides `welcome` (never the credential), and its verbs answer over the
+ * daemon's own socket.
+ */
+describe('integrations', () => {
+    it('reads integrations.json beside the database into welcome, and unlinks over the socket', async () => {
+        const paths = scratch();
+        const file = path.join(path.dirname(paths.dbPath), 'integrations.json');
+        fs.writeFileSync(
+            file,
+            JSON.stringify({
+                v: 1,
+                accounts: [
+                    {
+                        provider: 'github',
+                        host: 'github.com',
+                        login: 'octocat',
+                        how: 'token',
+                        scopes: ['repo'],
+                        createdAt: '2026-10-07T00:00:00.000Z',
+                        credential: { accessToken: 'ghp_COMPOSE_SENTINEL', tokenType: 'bearer', expiresAt: null, refreshToken: null, refreshTokenExpiresAt: null }
+                    }
+                ]
+            }),
+            { mode: 0o600 }
+        );
+        const daemon = daemonFor(paths, { env: { KELPI_GITHUB_CLIENT_ID: '' } });
+        const info = await daemon.start();
+        const token = readToken(daemon.paths) ?? '';
+        const socket = new WebSocket(`ws://127.0.0.1:${String(info.httpPort)}/ws?token=${token}`);
+        cleanups.push(() => socket.close());
+        const messages: Record<string, unknown>[] = [];
+        const next = (predicate: (m: Record<string, unknown>) => boolean, label: string): Promise<Record<string, unknown>> =>
+            new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 10_000);
+                const check = (): void => {
+                    const hit = messages.find(predicate);
+                    if (hit === undefined) return;
+                    clearTimeout(timer);
+                    socket.off('message', check);
+                    resolve(hit);
+                };
+                socket.on('message', check);
+                check();
+            });
+        socket.on('message', (data) => messages.push(JSON.parse(String(data)) as Record<string, unknown>));
+        await new Promise<void>((resolve, reject) => {
+            socket.once('open', () => resolve());
+            socket.once('error', reject);
+        });
+        socket.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token }));
+        const welcome = await next((m) => m['type'] === 'welcome', 'welcome');
+        expect(welcome['integrations']).toEqual([{ provider: 'github', available: false, connected: true, login: 'octocat', how: 'token', scopes: ['repo'] }]);
+        expect(welcome['integrationsManageable']).toBe(true);
+        socket.send(JSON.stringify({ type: 'command', id: 'u', payload: { command: 'integration-unlink', provider: 'github' } }));
+        const reply = await next((m) => m['type'] === 'command-reply' && m['id'] === 'u', 'the unlink reply');
+        expect(reply['reply']).toEqual({ ok: true, integrations: [{ provider: 'github', available: false, connected: false }] });
+        await next((m) => m['type'] === 'integrations-changed', 'integrations-changed');
+        expect(JSON.stringify(messages)).not.toContain('ghp_COMPOSE_SENTINEL');
+        expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ v: 1, accounts: [] });
+    }, 20_000);
+});
+
 describe('starting an agent in a new workspace', () => {
     it('reports a launch still waiting at stop to the window that asked, before the socket closes', async () => {
         const paths = scratch();

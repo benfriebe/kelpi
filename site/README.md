@@ -26,8 +26,17 @@ open http://127.0.0.1:8765/
 
 ## Deploy
 
-Any static host works: publish the `site/` folder at the root of `kelpi.sh`. GitHub Pages and
-Cloudflare Pages both serve `404.html` for missing paths on their own.
+`.github/workflows/pages.yml` publishes `site/` to GitHub Pages on every push to `main` that
+touches it, and can be run by hand from the Actions tab. The custom domain `kelpi.sh` is set in
+Settings > Pages, with its DNS in Route 53:
+
+| Record | Type | Value |
+| --- | --- | --- |
+| `kelpi.sh` | A | `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153` |
+| `kelpi.sh` | AAAA | `2606:50c0:8000::153`, `2606:50c0:8001::153`, `2606:50c0:8002::153`, `2606:50c0:8003::153` |
+| `www.kelpi.sh` | CNAME | `benfriebe.github.io` |
+
+Pages serves `404.html` for missing paths on its own.
 
 ## Things that update themselves
 

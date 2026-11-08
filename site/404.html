@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page not found · Kelpi</title>
+  <meta name="description" content="This page does not exist on kelpi.sh.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <!-- Absolute paths: this page is served for any missing URL, at any depth -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preload" href="/assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <a class="skip-link button-sm" href="#main">Skip to content</a>
+
+  <header>
+    <nav class="nav" aria-label="Main">
+      <a class="nav-brand" href="/" aria-label="Kelpi home">
+        <img src="/favicon.svg" alt="" width="28" height="28">
+        <span class="title-3">Kelpi</span>
+      </a>
+    </nav>
+  </header>
+
+  <main id="main" class="page">
+    <div class="container not-found">
+      <div class="term">
+        <div class="term-bar caption-5">
+          <span class="dot waiting" aria-hidden="true"></span>
+          <span class="tag">kelpi</span>
+          <span>~</span>
+        </div>
+        <pre class="term-body code-lines"><code><span class="prompt">$</span> curl -I https://kelpi.sh<span data-path>/this-page</span>
+HTTP/2 404</code></pre>
+      </div>
+      <h1 class="heading-4 lg-heading-3">Page not found</h1>
+      <p class="body-3 sm-body-7 muted">The address may be mistyped, or the page has moved. Everything about Kelpi starts from the home page.</p>
+      <a class="btn btn-primary button-md" href="/">Back to the home page</a>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var target = document.querySelector('[data-path]');
+      if (target && location.pathname && location.pathname !== '/') target.textContent = location.pathname;
+    })();
+  </script>
+</body>
+</html>

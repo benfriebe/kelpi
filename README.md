@@ -17,27 +17,28 @@ so closing the window, restarting the app or updating it never kills an agent.
 
 ## Tour
 
-![The checkout-v2 workspace: a coordinator pane on top has split off worker-1 and worker-2 with kelpi pane split, sent them commands with kelpi pane send, and listed every pane with its status. worker-1 has run the unit tests, worker-2 shows the git log. The sidebar shows the Acme group with its acme-web repository, its workspaces and their status dots.](docs/assets/readme/hero.png)
+![The rest-days workspace: a coordinator pane on top has split off worker-1 and worker-2 with kelpi pane split, sent them commands with kelpi pane send, and listed every pane with its status. worker-1 has run the unit tests, worker-2 shows the git log. The sidebar shows the API and Web groups with their repositories, their workspaces and their status dots.](docs/assets/readme/hero.png)
 
 **Agents at work.** A coordinator splits off two workers with `kelpi pane split`, hands them work
 with `kelpi pane send` and reads the fleet back with `kelpi pane list`. Each pane's dot, the sidebar
-and the status bar show which agents are running and which are waiting for you. The `Acme` group
-carries a default repository, so every workspace in it starts in `acme-web`.
+and the status bar show which agents are running and which are waiting for you. Each group
+carries a default repository, so every workspace in `API` starts in `paddock-api` and every one in
+`Web` in `paddock-web`.
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/readme/web-pane.png" alt="The storefront workspace: a terminal running the dev server on the left, and a web pane on the right showing the checkout page it serves.">
+      <img src="docs/assets/readme/web-pane.png" alt="The preview workspace in the Web group: a terminal running the dev server on the left, and a web pane on the right showing the paddock map it serves.">
       <p><b>A browser beside the code.</b> <code>kelpi web open</code> puts a real Chromium page next to the dev server. Agents can read it, click it, watch its console and screenshot it with <code>kelpi web …</code>.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/assets/readme/markdown.png" alt="The design-docs workspace: a terminal on the left, and a rendered markdown preview of the checkout plan on the right, with a table and a task list.">
-      <p><b>Markdown next to the terminal.</b> <code>kelpi md docs/checkout-plan.md</code> opens a live preview, with the editor a click away. Scratchpad and diff panes open beside your terminals too.</p>
+      <img src="docs/assets/readme/markdown.png" alt="The spring-rotation workspace: a terminal on the left, and a rendered markdown preview of the rotation plan on the right, with a table and a task list.">
+      <p><b>Markdown next to the terminal.</b> <code>kelpi md docs/rotation-plan.md</code> opens a live preview, with the editor a click away. Scratchpad and diff panes open beside your terminals too.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/readme/new-workspace-worktree.png" alt="The New Workspace sheet creating search-autocomplete in the Acme group on a new git worktree, with its progress list: the default branch found, the latest main being fetched at 48 percent, then the worktree and the workspace still to come.">
+      <img src="docs/assets/readme/new-workspace-worktree.png" alt="The New Workspace sheet creating rain-chart in the Web group on a new git worktree, with its progress list: the default branch found, the latest main being fetched at 48 percent, then the worktree and the workspace still to come.">
       <p><b>A worktree per task.</b> New Workspace in a group with a repository cuts a git worktree off the latest <code>origin/main</code> and shows each step as it runs, with Cancel leaving nothing behind.</p>
     </td>
     <td width="50%" valign="top">
@@ -100,7 +101,7 @@ This generation uses protocol 2 and `kelpi-v2.db`; see the
 <table>
   <tr>
     <td width="33%" valign="top" align="center">
-      <img src="docs/assets/readme/theme-nord.png" alt="The checkout-v2 workspace from the tour under the Nord theme: slate blue-grey chrome and terminals with Nord's frost-blue accents.">
+      <img src="docs/assets/readme/theme-nord.png" alt="The rest-days workspace from the tour under the Nord theme: slate blue-grey chrome and terminals with Nord's frost-blue accents.">
       <b>Nord</b>
     </td>
     <td width="33%" valign="top" align="center">
@@ -133,8 +134,8 @@ Spawn workers from a coordinator agent's pane, start agents in them, and read th
 ```bash
 kelpi pane split --name worker-1
 kelpi pane split --target worker-1 --direction vertical --name worker-2
-kelpi pane send --target worker-1 'claude "Fix the flaky test in test/cart.test.js"'
-kelpi pane send --target worker-2 'codex "Add a shipping step to the checkout"'
+kelpi pane send --target worker-1 'claude "Fix the flaky test in test/grazing.test.js"'
+kelpi pane send --target worker-2 'codex "Add a rain gauge chart to the map"'
 kelpi pane capture --target worker-1 --lines 40
 kelpi pane list
 kelpi pane split --name logs --focus      # this one takes the cursor
@@ -146,9 +147,9 @@ Give each task its own workspace on a fresh worktree:
 kelpi workspace create --name fix-login --worktree fix-login --update-main
 
 # or let a group carry the repository, so every new workspace in it starts there
-kelpi group create Acme
-kelpi group set-repo Acme ~/code/acme-web --worktree
-kelpi workspace create --name search --worktree search --group Acme
+kelpi group create Web
+kelpi group set-repo Web ~/code/paddock-web --worktree
+kelpi workspace create --name rain-chart --worktree rain-chart --group Web
 
 kelpi workspace rename fix-login "fix-login: SSO redirect"
 ```

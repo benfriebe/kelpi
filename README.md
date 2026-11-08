@@ -923,3 +923,9 @@ npx vitest run packages/daemon/tests/compat                                  # t
 KELPI_COMPAT_CLI="$PWD/packages/cli/dist/kelpi.js" \
   npx vitest run packages/daemon/tests/compat                                # the TypeScript CLI
 ```
+
+## License
+
+Kelpi is released under the [MIT License](LICENSE). The license covers the code; the Kelpi name
+and the kelpie logo are covered by [TRADEMARKS.md](TRADEMARKS.md). The vendored terminal engine
+in `vendor/ghostty-web-patched` keeps its own MIT license.

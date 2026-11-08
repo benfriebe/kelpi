@@ -1,5 +1,6 @@
 {
   "name": "kelpi",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.1",

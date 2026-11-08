@@ -1,0 +1,46 @@
+name: Pages
+
+# Publishes site/ (the kelpi.sh landing page) to GitHub Pages whenever it changes on main.
+# Pages can only serve a branch's root or docs/ folder on its own, and docs/ holds the specs,
+# so this uploads site/ as the Pages artifact instead. The custom domain lives in
+# Settings > Pages; an Actions deployment ignores CNAME files, so the site has none.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one halfway through.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site/
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -287,8 +287,157 @@
     });
   }
 
+  // ---------- The session recording: plays in view, chapters, a speed badge ----------
+
+  function setupSession() {
+    var figure = document.querySelector('[data-session]');
+    var video = figure && figure.querySelector('video');
+    if (!video) return;
+
+    var toggle = figure.querySelector('[data-session-toggle]');
+    var list = figure.querySelector('[data-session-chapters]');
+    var now = figure.querySelector('[data-session-now]');
+    var badge = figure.querySelector('[data-session-speed]');
+    var badgeText = figure.querySelector('[data-session-speed-text]');
+    var timeline = null;
+    var fills = [];
+    var current = -1;
+    var userPaused = false;
+    var inView = false;
+    var frame = 0;
+
+    // The page drives playback, so the browser's own controls step aside.
+    video.removeAttribute('controls');
+    if (toggle) toggle.hidden = false;
+
+    function setPausedLook() {
+      if (!toggle) return;
+      toggle.classList.toggle('is-paused', video.paused);
+      toggle.setAttribute('aria-label', video.paused ? 'Play the recording' : 'Pause the recording');
+    }
+
+    function wanted() {
+      return inView && !userPaused && !reduceMotion.matches;
+    }
+
+    function sync() {
+      if (wanted()) {
+        var playing = video.play();
+        if (playing && playing.catch) playing.catch(function () { setPausedLook(); });
+      } else if (!video.paused) {
+        video.pause();
+      }
+    }
+
+    function render() {
+      frame = 0;
+      if (!timeline) return;
+      var t = video.currentTime;
+      var chapters = timeline.chapters || [];
+      var index = 0;
+      chapters.forEach(function (chapter, i) { if (t >= chapter.start) index = i; });
+      chapters.forEach(function (chapter, i) {
+        var span = Math.max(0.01, chapter.end - chapter.start);
+        var p = i < index ? 1 : i > index ? 0 : Math.min(1, Math.max(0, (t - chapter.start) / span));
+        if (fills[i]) fills[i].style.transform = 'scaleX(' + p.toFixed(4) + ')';
+      });
+      if (index !== current && now && chapters[index]) {
+        current = index;
+        var text = chapters[index].text;
+        if (reduceMotion.matches) {
+          now.textContent = text;
+        } else {
+          now.classList.add('is-changing');
+          window.setTimeout(function () {
+            now.textContent = text;
+            now.classList.remove('is-changing');
+          }, 200);
+        }
+      }
+      var fast = (timeline.fastForward || []).filter(function (span) { return t >= span.start && t < span.end; })[0];
+      if (badge) {
+        badge.classList.toggle('is-on', Boolean(fast));
+        if (fast && badgeText) badgeText.textContent = fast.speed + '× speed';
+      }
+      if (!video.paused) frame = window.requestAnimationFrame(render);
+    }
+
+    function schedule() {
+      if (!frame) frame = window.requestAnimationFrame(render);
+    }
+
+    function buildChapters(data) {
+      timeline = data;
+      if (!list) return;
+      list.textContent = '';
+      fills = (data.chapters || []).map(function (chapter, i) {
+        var item = document.createElement('li');
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'chapter-btn';
+        button.setAttribute('aria-label', 'Chapter ' + (i + 1) + ': ' + chapter.text);
+        var bar = document.createElement('span');
+        bar.className = 'chapter-bar';
+        var fill = document.createElement('span');
+        fill.className = 'chapter-fill';
+        bar.appendChild(fill);
+        button.appendChild(bar);
+        button.addEventListener('click', function () {
+          video.currentTime = chapter.start + 0.05;
+          schedule();
+        });
+        item.appendChild(button);
+        list.appendChild(item);
+        return fill;
+      });
+      schedule();
+    }
+
+    if (window.fetch) {
+      fetch('assets/video/kelpi-session.json')
+        .then(function (response) { if (!response.ok) throw new Error(String(response.status)); return response.json(); })
+        .then(buildChapters)
+        .catch(function () { /* no chapters: the caption keeps its summary */ });
+    }
+
+    if (toggle) {
+      toggle.addEventListener('click', function () {
+        if (video.paused) {
+          userPaused = false;
+          var playing = video.play();
+          if (playing && playing.catch) playing.catch(function () {});
+        } else {
+          userPaused = true;
+          video.pause();
+        }
+      });
+    }
+
+    video.addEventListener('play', function () { setPausedLook(); schedule(); });
+    video.addEventListener('pause', function () { setPausedLook(); schedule(); });
+    video.addEventListener('seeked', schedule);
+    video.addEventListener('loadedmetadata', schedule);
+
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        inView = entries[0].isIntersecting;
+        sync();
+      }, { threshold: 0.35 }).observe(video);
+    } else {
+      inView = true;
+      sync();
+    }
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { if (!video.paused) video.pause(); } else { sync(); }
+    });
+    reduceMotion.addEventListener('change', sync);
+    setPausedLook();
+  }
+
   function init() {
     loadRelease();
+    setupSession();
     setupMenu();
     setupCurrentSection();
     setupReveals();

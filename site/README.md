@@ -15,6 +15,7 @@ site/
     herd-field.js the flock of faint dots behind the whole page, herded by the pointer
     fonts/        Geist and Geist Mono variable fonts (SIL OFL, see OFL.txt)
     img/          screenshots from docs/assets/readme
+    video/        the session recording, its poster and its timeline (scripts/landing-video.mjs)
 ```
 
 ## Preview
@@ -65,11 +66,21 @@ dog, so the flock parts around it, and its canvas blanks the cells it draws so d
 the dog. The flock slides against the scroll, stops in a hidden tab, and is drawn once,
 already settled, under reduced motion. The tuning constants sit at the top of the file.
 
+## The session recording
+
+`assets/video/kelpi-session.mp4` is a real take: `node scripts/landing-video.mjs` boots a
+sandboxed Kelpi, runs real Claude Code agents in it, records the window and edits it (the
+script's header has the whole story and what it costs). It writes the video, its poster
+(`kelpi-session.jpg`) and `kelpi-session.json`, the chapters and the stretches it sped up,
+which `main.js` turns into the captions, chapter bars and speed badge under the video. Every
+take is different, so watch one before committing it. `--edit <take-dir>` re-cuts a recorded
+take after a change to the script's `EDIT` or `CHAPTERS`.
+
 ## Things to keep in step by hand
 
 - **FAQ structured data.** The `FAQPage` JSON-LD in the `<head>` of `index.html` repeats the
   visible FAQ text. Change both together.
-- **Screenshots.** `assets/img/hero.png` and `web-pane.png` are copies of
-  `docs/assets/readme/`; `new-workspace-sheet.png` is a crop of `new-workspace-worktree.png`.
+- **Screenshots.** `assets/img/web-pane.png` is a copy of `docs/assets/readme/`;
+  `new-workspace-sheet.png` is a crop of `new-workspace-worktree.png`.
   Regenerate them with `scripts/readme-screenshots.mjs` and copy them over when the UI changes.
 - **Product facts.** Theme counts, the Codex version floor and the rest come from the README.

@@ -1,0 +1,47 @@
+{
+  "duration": 40.5,
+  "chapters": [
+    {
+      "start": 0,
+      "text": "Start a task in the API group: a new workspace on its own git worktree, with Claude ready",
+      "end": 14.5
+    },
+    {
+      "start": 14.5,
+      "text": "The coordinator writes the plan and opens it beside its terminal",
+      "end": 22.5
+    },
+    {
+      "start": 22.5,
+      "text": "It starts a worker in each group, each on its own worktree, and the dots show who is running",
+      "end": 28.5
+    },
+    {
+      "start": 28.5,
+      "text": "The web worker opens the map it changed in a pane beside it",
+      "end": 33.5
+    },
+    {
+      "start": 33.5,
+      "text": "The API worker opens its diff for review",
+      "end": 37
+    },
+    {
+      "start": 37,
+      "text": "Back with the coordinator, which marks the plan done once both workers finish",
+      "end": 40.5
+    }
+  ],
+  "fastForward": [
+    {
+      "start": 3.43,
+      "end": 12.37,
+      "speed": 1.6
+    },
+    {
+      "start": 22.5,
+      "end": 28.5,
+      "speed": 2.2
+    }
+  ]
+}

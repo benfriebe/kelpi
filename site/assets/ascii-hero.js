@@ -1,8 +1,9 @@
 // The hero's ASCII kelpie. The logo SVG is rasterised once, split into stroke, face and
 // background cells, then drawn as terminal characters on a canvas: dense glyphs on the
 // line art, a slow ripple through the face, a sparse dot field around it. Characters
-// decode out of noise on load, scramble around the pointer, and now and then an edge
-// glints in the app's running green or waiting blue.
+// decode out of noise on load, part around the pointer like a flock around a dog and
+// spring back when it moves on, and now and then an edge glints in the app's running
+// green or waiting blue.
 (function () {
   'use strict';
 
@@ -24,7 +25,7 @@
 
   var field = null;   // rasterised logo masks
   var grid = null;    // cells for the current canvas size
-  var pointer = { x: -9999, y: -9999, active: false };
+  var pointer = { x: -9999, y: -9999, sx: -9999, sy: -9999, active: false, strength: 0 };
   var glints = [];
   var startTime = 0;
   var lastFrame = 0;
@@ -245,7 +246,9 @@
     return {
       cols: cols, rows: rows, cellW: cellW, cellH: cellH, xPad: xPad,
       width: rect.width, height: rect.height,
-      type: type, edge: edge, glyph: glyph, seed: seed, dist: dist, edges: edges
+      type: type, edge: edge, glyph: glyph, seed: seed, dist: dist, edges: edges,
+      offX: new Float32Array(n), offY: new Float32Array(n),
+      velX: new Float32Array(n), velY: new Float32Array(n)
     };
   }
 
@@ -256,46 +259,92 @@
     var g = grid;
     var t = (now - startTime) / 1000;
     var intro = reduceMotion.matches ? 1 : Math.min(1, (now - startTime) / INTRO_MS);
-    var lens = pointer.active && !reduceMotion.matches ? Math.min(g.width, g.height) * 0.16 : 0;
+    var animate = !reduceMotion.matches;
     var tick = Math.floor(t * 14);
 
-    ctx.clearRect(0, 0, g.width, g.height);
-    ctx.fillStyle = '#ffffff';
+    // The pointer is the dog: characters within reach get pushed straight away from it,
+    // then ride a damped spring back home, so the dog parts the art the way it parts the
+    // flock behind the page.
+    var reach = Math.min(g.width, g.height) * 0.2;
+    var push = g.cellW * 4.5;
+    if (animate) {
+      if (pointer.sx < -9000) { pointer.sx = pointer.x; pointer.sy = pointer.y; }
+      pointer.sx += (pointer.x - pointer.sx) * 0.35;
+      pointer.sy += (pointer.y - pointer.sy) * 0.35;
+      pointer.strength += ((pointer.active ? 1 : 0) - pointer.strength) * 0.15;
+    }
 
+    ctx.clearRect(0, 0, g.width, g.height);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#000000';
+
+    // Pass one: move every art cell and blank its home, so dots from the page's flock
+    // never show through the dog. Characters are drawn in pass two, on top of every
+    // blank, so one pushed into its neighbour's home is never painted over.
     for (var r = 0; r < g.rows; r++) {
-      var y = r * g.cellH;
       for (var c = 0; c < g.cols; c++) {
         var i = r * g.cols + c;
-        var type = g.type[i];
-        var seed = g.seed[i];
-        var x = c * g.cellW;
+        if (g.type[i] === 0) continue;
 
-        // pointer lens
-        var k = 0;
-        if (lens) {
-          var dx = x + g.cellW / 2 - pointer.x;
-          var dy = y + g.cellH / 2 - pointer.y;
-          var d = Math.sqrt(dx * dx + dy * dy);
-          if (d < lens) { k = 1 - d / lens; k = k * k; }
+        if (animate) {
+          var tx = 0, ty = 0;
+          if (pointer.strength > 0.01) {
+            var dx = (c + 0.5) * g.cellW - pointer.sx;
+            var dy = (r + 0.5) * g.cellH - pointer.sy;
+            var d = Math.sqrt(dx * dx + dy * dy);
+            if (d < reach) {
+              var k = 1 - d / reach;
+              var f = push * k * k * pointer.strength;
+              if (d < 0.5) { dx = g.seed[i] - 0.5; dy = 0.5; d = Math.sqrt(dx * dx + dy * dy); }
+              tx = (dx / d) * f;
+              ty = (dy / d) * f;
+            }
+          }
+          var ox = g.offX[i], oy = g.offY[i];
+          if (tx || ty || ox * ox + oy * oy > 0.0004 || Math.abs(g.velX[i]) + Math.abs(g.velY[i]) > 0.02) {
+            g.velX[i] = (g.velX[i] + (tx - ox) * 0.2) * 0.74;
+            g.velY[i] = (g.velY[i] + (ty - oy) * 0.2) * 0.74;
+            g.offX[i] = ox + g.velX[i];
+            g.offY[i] = oy + g.velY[i];
+          } else {
+            g.offX[i] = g.offY[i] = g.velX[i] = g.velY[i] = 0;
+          }
         }
 
+        var revealAt0 = (r / g.rows) * 0.7 + g.seed[i] * 0.3;
+        if (intro >= revealAt0) ctx.fillRect(c * g.cellW, r * g.cellH, g.cellW + 0.5, g.cellH + 0.5);
+      }
+    }
+
+    ctx.fillStyle = '#ffffff';
+
+    // Pass two: the characters.
+    for (var r2 = 0; r2 < g.rows; r2++) {
+      var y = r2 * g.cellH;
+      for (var c2 = 0; c2 < g.cols; c2++) {
+        var j = r2 * g.cols + c2;
+        var type = g.type[j];
+        if (type === 0) continue;
+        var seed = g.seed[j];
+        var x = c2 * g.cellW;
+
         // intro: rows decode top to bottom with some scatter
-        var revealAt = (r / g.rows) * 0.7 + seed * 0.3;
+        var revealAt = (r2 / g.rows) * 0.7 + seed * 0.3;
         var revealed = intro >= revealAt;
 
         var ch = '';
         var alpha = 0;
 
         if (type === 2) {
-          var flick = hash(c, tick + Math.floor(seed * 40)) > 0.992;
-          ch = flick ? DENSE[(hash(r, tick) * DENSE.length) | 0] : g.glyph[i];
-          alpha = 0.82 + 0.18 * g.edge[i];
-        } else if (type === 1) {
-          var w1 = Math.sin(c * 0.21 + r * 0.42 - t * 1.15);
-          var w2 = Math.sin(c * 0.06 - r * 0.17 + t * 0.55);
+          var flick = hash(c2, tick + Math.floor(seed * 40)) > 0.992;
+          ch = flick ? DENSE[(hash(r2, tick) * DENSE.length) | 0] : g.glyph[j];
+          alpha = 0.82 + 0.18 * g.edge[j];
+        } else {
+          var w1 = Math.sin(c2 * 0.21 + r2 * 0.42 - t * 1.15);
+          var w2 = Math.sin(c2 * 0.06 - r2 * 0.17 + t * 0.55);
           var wave = (w1 * 0.6 + w2 * 0.4) * 0.5 + 0.5;
-          var glow = Math.exp(-g.dist[i] / 2.4);
-          var light = 1 - r / g.rows;
+          var glow = Math.exp(-g.dist[j] / 2.4);
+          var light = 1 - r2 / g.rows;
           var level = 0.08 + 0.42 * wave + 0.3 * glow + 0.1 * light;
           var idx = Math.max(1, Math.min(FILL.length - 1, Math.round(level * (FILL.length - 1))));
           ch = FILL[idx];
@@ -303,29 +352,21 @@
         }
 
         if (!revealed) {
-          if (type === 0 || intro === 0) continue;
-          ch = SCRAMBLE[Math.floor(hash(c, r + tick) * SCRAMBLE.length)];
+          if (intro === 0) continue;
+          ch = SCRAMBLE[Math.floor(hash(c2, r2 + tick) * SCRAMBLE.length)];
           alpha = 0.18 + 0.2 * (revealAt - intro);
-        } else if (!reduceMotion.matches && intro < 1) {
+        } else if (animate && intro < 1) {
           var settle = Math.min(1, (intro - revealAt) / 0.12);
           alpha *= easeOut(settle);
         }
 
-        if (k > 0.04) {
-          ch = SCRAMBLE[Math.floor(hash(c + tick, r) * SCRAMBLE.length)];
-          alpha = Math.max(alpha, 0.16 + 0.8 * k);
-        }
-
-        if (type !== 0 && revealed) {
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = '#000000';
-          ctx.fillRect(x, y, g.cellW + 0.5, g.cellH + 0.5);
-          ctx.fillStyle = '#ffffff';
-        }
+        // a pushed character catches a little more light
+        var moved = g.offX[j] * g.offX[j] + g.offY[j] * g.offY[j];
+        if (moved > 1) alpha += 0.25 * Math.min(1, Math.sqrt(moved) / push);
 
         if (!ch || ch === ' ' || alpha <= 0.01) continue;
         ctx.globalAlpha = Math.min(1, alpha);
-        ctx.fillText(ch, x + g.xPad, y);
+        ctx.fillText(ch, x + g.offX[j] + g.xPad, y + g.offY[j]);
       }
     }
 
@@ -336,9 +377,10 @@
         var p = (now - glint.born) / glint.life;
         if (p >= 1) { glints.splice(gi, 1); continue; }
         var gc = glint.cell % g.cols, gr = (glint.cell / g.cols) | 0;
-        var gx = gc * g.cellW, gy = gr * g.cellH;
+        var gx = gc * g.cellW + g.offX[glint.cell], gy = gr * g.cellH + g.offY[glint.cell];
         ctx.globalAlpha = 1;
-        ctx.clearRect(gx, gy, g.cellW, g.cellH);
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(gx, gy, g.cellW, g.cellH);
         ctx.globalAlpha = Math.sin(Math.PI * p);
         ctx.fillStyle = 'rgb(' + glint.color + ')';
         ctx.fillText(g.glyph[glint.cell], gx + g.xPad, gy);
@@ -413,11 +455,21 @@
       start();
     }
 
+    var area = canvas.closest('.hero') || canvas;
     if (finePointer.matches) {
-      var area = canvas.closest('.hero') || canvas;
       area.addEventListener('pointermove', onPointer, { passive: true });
       area.addEventListener('pointerleave', function () { pointer.active = false; });
     }
+
+    // On a phone a finger parts the characters while it touches the art.
+    function onTouch(event) {
+      var touch = event.touches[0];
+      if (touch) onPointer(touch);
+    }
+    area.addEventListener('touchstart', onTouch, { passive: true });
+    area.addEventListener('touchmove', onTouch, { passive: true });
+    area.addEventListener('touchend', function () { pointer.active = false; }, { passive: true });
+    area.addEventListener('touchcancel', function () { pointer.active = false; }, { passive: true });
 
     if ('ResizeObserver' in window) {
       var pending = 0;

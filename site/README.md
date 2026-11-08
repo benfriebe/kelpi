@@ -51,8 +51,8 @@ Pages serves `404.html` for missing paths on its own.
 `ascii-hero.js` rasterises `favicon.svg` once, floods the outline to find the face, and draws a
 character grid on a canvas. Line art cells pick `- _ / | \` from the direction of the stroke
 through them, the face gets a slow ripple of `. : ; + *`, and a sparse dot field sits around it.
-Rows decode out of noise on load, glyphs scramble under the pointer (fine pointers only), and
-edge cells glint in the app's running green and waiting blue. It draws at 30 frames a second,
+Rows decode out of noise on load, characters part around the pointer (or a finger on a
+phone) and spring back once it moves on, like the flock behind the page, and edge cells glint in the app's running green and waiting blue. It draws at 30 frames a second,
 pauses when off screen or in a hidden tab, and draws one still frame under reduced motion.
 Change the logo and the art follows.
 

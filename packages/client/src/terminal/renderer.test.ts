@@ -1375,6 +1375,7 @@ describe('ghostty loader (mocked module)', () => {
                 engine: 'ghostty',
                 fontFamily: DEFAULT_FONT_FAMILY,
                 fontSize: 13,
+                cellHeightAdjust: 6,
                 theme: DEFAULT_TERMINAL_THEME,
                 cols: 80,
                 rows: 24,
@@ -1384,6 +1385,9 @@ describe('ghostty loader (mocked module)', () => {
                 allowTransparency: false
             });
             const terminal = handle.terminal as unknown as FakeGhosttyTerminal;
+            // The engine gets the pixel adjustment at construction, which is the only time it
+            // is set (a change rebuilds the engine, like a font change).
+            expect((terminal.options as { cellHeightAdjust?: number }).cellHeightAdjust).toBe(6);
 
             // The measured cell comes straight from the engine's metrics (CSS px).
             expect(handle.cellSize?.()).toEqual({ width: 8, height: 17 });

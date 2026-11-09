@@ -101,6 +101,8 @@ export interface TerminalRendererOptions {
     readonly engine?: TerminalEngine | undefined;
     readonly fontFamily?: string | undefined;
     readonly fontSize?: number | undefined;
+    /** Extra CSS pixels of row height (negative: fewer). ghostty engine only; default 0. */
+    readonly cellHeightAdjust?: number | undefined;
     readonly theme?: TerminalTheme | undefined;
     readonly cols?: number | undefined;
     readonly rows?: number | undefined;
@@ -641,6 +643,7 @@ export interface ResolvedRendererOptions {
     readonly engine: TerminalEngine;
     readonly fontFamily: string;
     readonly fontSize: number;
+    readonly cellHeightAdjust: number;
     readonly theme: TerminalTheme;
     readonly cols: number;
     readonly rows: number;
@@ -1035,6 +1038,7 @@ function resolveOptions(options: TerminalRendererOptions | undefined, engine: Te
         engine,
         fontFamily: options?.fontFamily ?? DEFAULT_FONT_FAMILY,
         fontSize: options?.fontSize ?? DEFAULT_FONT_SIZE,
+        cellHeightAdjust: Math.round(options?.cellHeightAdjust ?? 0) || 0,
         theme: options?.theme ?? DEFAULT_TERMINAL_THEME,
         cols: Math.max(1, Math.trunc(options?.cols ?? 80)),
         rows: Math.max(1, Math.trunc(options?.rows ?? 24)),
@@ -1616,7 +1620,9 @@ class AdapterRenderer implements TerminalRenderer {
     cellSize(): CellSize {
         const measured = this.handle?.cellSize?.();
         if (measured !== undefined && measured.width > 0 && measured.height > 0) return measured;
-        return estimateCellSize(this.options.fontSize, this.options.fontFamily);
+        const estimate = estimateCellSize(this.options.fontSize, this.options.fontFamily);
+        if (this.options.engine !== 'ghostty' || this.options.cellHeightAdjust === 0) return estimate;
+        return { width: estimate.width, height: Math.max(1, estimate.height + this.options.cellHeightAdjust) };
     }
 
     repaint(): void {
@@ -2326,6 +2332,7 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         rows: options.rows,
         fontSize: options.fontSize,
         fontFamily: options.fontFamily,
+        cellHeightAdjust: options.cellHeightAdjust,
         theme: compactTheme(options.theme),
         // BYTES here, not lines (ghostty-web#140).
         scrollback: options.scrollbackBytes,

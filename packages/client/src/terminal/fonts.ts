@@ -216,6 +216,20 @@ export function measureCellSize(fontSize: number, fontFamily: string): MeasuredC
     return measured;
 }
 
+/**
+ * ghostty's `adjust-cell-height` as whole CSS pixels. A percentage is of the font's own row
+ * height, measured here the way the engine measures it, so it follows a per-pane font size.
+ */
+export function resolveCellHeightAdjust(
+    adjust: { readonly unit: 'px' | 'percent'; readonly value: number } | null | undefined,
+    fontSize: number,
+    fontFamily: string
+): number {
+    if (adjust === null || adjust === undefined || !Number.isFinite(adjust.value)) return 0;
+    if (adjust.unit === 'px') return Math.round(adjust.value);
+    return Math.round((measureCellSize(fontSize, fontFamily).height * adjust.value) / 100);
+}
+
 function fallbackCell(fontSize: number): MeasuredCell {
     return {
         width: Math.max(1, Math.ceil(fontSize * 0.6)),

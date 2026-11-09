@@ -13,6 +13,7 @@ import {
     measureCellSize,
     onTerminalFontsReady,
     resetTerminalFontsForTests,
+    resolveCellHeightAdjust,
     terminalFontStack,
     terminalFontsReady
 } from './fonts';
@@ -157,6 +158,17 @@ describe('measureCellSize', () => {
     it('derives the line box from the ascent + descent, plus the engine +2', () => {
         stubCanvas(8);
         expect(measureCellSize(13, 'Menlo').height).toBe(15);
+    });
+
+    it('turns adjust-cell-height into whole pixels, a percentage of the measured row height', () => {
+        stubCanvas(8); // row height 15
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 4 }, 13, 'Menlo')).toBe(4);
+        expect(resolveCellHeightAdjust({ unit: 'px', value: -2 }, 13, 'Menlo')).toBe(-2);
+        expect(resolveCellHeightAdjust({ unit: 'percent', value: 40 }, 13, 'Menlo')).toBe(6);
+        expect(resolveCellHeightAdjust({ unit: 'percent', value: -20 }, 13, 'Menlo')).toBe(-3);
+        // Unset means no change at all, not a zero-percent measurement.
+        expect(resolveCellHeightAdjust(null, 13, 'Menlo')).toBe(0);
+        expect(resolveCellHeightAdjust(undefined, 13, 'Menlo')).toBe(0);
     });
 
     it('falls back to font-derived ratios without a 2D context', () => {

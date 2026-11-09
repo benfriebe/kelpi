@@ -388,6 +388,11 @@ export const DEFAULT_WS_TERMINAL_THEME: WsTerminalThemeResolution = {
  * `fontFamily` / `fontSize` are `null` when the ghostty config does not set them, which means
  * "use the host's own default" rather than a value this package would have to keep in sync.
  */
+export interface WsCellHeightAdjust {
+    readonly unit: 'px' | 'percent';
+    readonly value: number;
+}
+
 export interface WsAppearanceSettings {
     /** `#rrggbb` (lowercase). Always concrete — `isDark` is derived from it. */
     readonly backgroundColor: string;
@@ -405,6 +410,13 @@ export interface WsAppearanceSettings {
      */
     readonly windowPaddingX: number | null;
     readonly windowPaddingY: number | null;
+    /**
+     * ghostty `adjust-cell-height`: extra (or, negative, fewer) pixels of height for every
+     * terminal row, whole pixels or a percentage of the font's own row height. Null = key unset,
+     * rows keep the font's height. Additive: a daemon that predates it omits the field and the
+     * hydrator fills null.
+     */
+    readonly cellHeightAdjust: WsCellHeightAdjust | null;
     /** The luminance rule against `backgroundColor`. */
     readonly isDark: boolean;
     /** ghostty's own `theme = <name>` value, passed through opaquely. Null when unset. */
@@ -502,6 +514,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         fontSize: null,
         windowPaddingX: null,
         windowPaddingY: null,
+        cellHeightAdjust: null,
         isDark: true,
         theme: null,
         terminalTheme: DEFAULT_WS_TERMINAL_THEME

@@ -1,4 +1,4 @@
-var p = /* @__PURE__ */ ((g) => (g[g.CURSOR_KEY_APPLICATION = 0] = "CURSOR_KEY_APPLICATION", g[g.KEYPAD_KEY_APPLICATION = 1] = "KEYPAD_KEY_APPLICATION", g[g.IGNORE_KEYPAD_WITH_NUMLOCK = 2] = "IGNORE_KEYPAD_WITH_NUMLOCK", g[g.ALT_ESC_PREFIX = 3] = "ALT_ESC_PREFIX", g[g.MODIFY_OTHER_KEYS_STATE_2 = 4] = "MODIFY_OTHER_KEYS_STATE_2", g[g.KITTY_KEYBOARD_FLAGS = 5] = "KITTY_KEYBOARD_FLAGS", g))(p || {}), AA = /* @__PURE__ */ ((g) => (g[g.RELEASE = 0] = "RELEASE", g[g.PRESS = 1] = "PRESS", g[g.REPEAT = 2] = "REPEAT", g))(AA || {}), w = /* @__PURE__ */ ((g) => (g[g.UNIDENTIFIED = 0] = "UNIDENTIFIED", g[g.GRAVE = 1] = "GRAVE", g[g.BACKSLASH = 2] = "BACKSLASH", g[g.BRACKET_LEFT = 3] = "BRACKET_LEFT", g[g.BRACKET_RIGHT = 4] = "BRACKET_RIGHT", g[g.COMMA = 5] = "COMMA", g[g.ZERO = 6] = "ZERO", g[g.ONE = 7] = "ONE", g[g.TWO = 8] = "TWO", g[g.THREE = 9] = "THREE", g[g.FOUR = 10] = "FOUR", g[g.FIVE = 11] = "FIVE", g[g.SIX = 12] = "SIX", g[g.SEVEN = 13] = "SEVEN", g[g.EIGHT = 14] = "EIGHT", g[g.NINE = 15] = "NINE", g[g.EQUAL = 16] = "EQUAL", g[g.INTL_BACKSLASH = 17] = "INTL_BACKSLASH", g[g.INTL_RO = 18] = "INTL_RO", g[g.INTL_YEN = 19] = "INTL_YEN", g[g.A = 20] = "A", g[g.B = 21] = "B", g[g.C = 22] = "C", g[g.D = 23] = "D", g[g.E = 24] = "E", g[g.F = 25] = "F", g[g.G = 26] = "G", g[g.H = 27] = "H", g[g.I = 28] = "I", g[g.J = 29] = "J", g[g.K = 30] = "K", g[g.L = 31] = "L", g[g.M = 32] = "M", g[g.N = 33] = "N", g[g.O = 34] = "O", g[g.P = 35] = "P", g[g.Q = 36] = "Q", g[g.R = 37] = "R", g[g.S = 38] = "S", g[g.T = 39] = "T", g[g.U = 40] = "U", g[g.V = 41] = "V", g[g.W = 42] = "W", g[g.X = 43] = "X", g[g.Y = 44] = "Y", g[g.Z = 45] = "Z", g[g.MINUS = 46] = "MINUS", g[g.PERIOD = 47] = "PERIOD", g[g.QUOTE = 48] = "QUOTE", g[g.SEMICOLON = 49] = "SEMICOLON", g[g.SLASH = 50] = "SLASH", g[g.ALT_LEFT = 51] = "ALT_LEFT", g[g.ALT_RIGHT = 52] = "ALT_RIGHT", g[g.BACKSPACE = 53] = "BACKSPACE", g[g.CAPS_LOCK = 54] = "CAPS_LOCK", g[g.CONTEXT_MENU = 55] = "CONTEXT_MENU", g[g.CONTROL_LEFT = 56] = "CONTROL_LEFT", g[g.CONTROL_RIGHT = 57] = "CONTROL_RIGHT", g[g.ENTER = 58] = "ENTER", g[g.META_LEFT = 59] = "META_LEFT", g[g.META_RIGHT = 60] = "META_RIGHT", g[g.SHIFT_LEFT = 61] = "SHIFT_LEFT", g[g.SHIFT_RIGHT = 62] = "SHIFT_RIGHT", g[g.SPACE = 63] = "SPACE", g[g.TAB = 64] = "TAB", g[g.CONVERT = 65] = "CONVERT", g[g.KANA_MODE = 66] = "KANA_MODE", g[g.NON_CONVERT = 67] = "NON_CONVERT", g[g.DELETE = 68] = "DELETE", g[g.END = 69] = "END", g[g.HELP = 70] = "HELP", g[g.HOME = 71] = "HOME", g[g.INSERT = 72] = "INSERT", g[g.PAGE_DOWN = 73] = "PAGE_DOWN", g[g.PAGE_UP = 74] = "PAGE_UP", g[g.DOWN = 75] = "DOWN", g[g.LEFT = 76] = "LEFT", g[g.RIGHT = 77] = "RIGHT", g[g.UP = 78] = "UP", g[g.NUM_LOCK = 79] = "NUM_LOCK", g[g.KP_0 = 80] = "KP_0", g[g.KP_1 = 81] = "KP_1", g[g.KP_2 = 82] = "KP_2", g[g.KP_3 = 83] = "KP_3", g[g.KP_4 = 84] = "KP_4", g[g.KP_5 = 85] = "KP_5", g[g.KP_6 = 86] = "KP_6", g[g.KP_7 = 87] = "KP_7", g[g.KP_8 = 88] = "KP_8", g[g.KP_9 = 89] = "KP_9", g[g.KP_PLUS = 90] = "KP_PLUS", g[g.KP_BACKSPACE = 91] = "KP_BACKSPACE", g[g.KP_CLEAR = 92] = "KP_CLEAR", g[g.KP_CLEAR_ENTRY = 93] = "KP_CLEAR_ENTRY", g[g.KP_COMMA = 94] = "KP_COMMA", g[g.KP_PERIOD = 95] = "KP_PERIOD", g[g.KP_DIVIDE = 96] = "KP_DIVIDE", g[g.KP_ENTER = 97] = "KP_ENTER", g[g.KP_EQUAL = 98] = "KP_EQUAL", g[g.KP_MEMORY_ADD = 99] = "KP_MEMORY_ADD", g[g.KP_MEMORY_CLEAR = 100] = "KP_MEMORY_CLEAR", g[g.KP_MEMORY_RECALL = 101] = "KP_MEMORY_RECALL", g[g.KP_MEMORY_STORE = 102] = "KP_MEMORY_STORE", g[g.KP_MEMORY_SUBTRACT = 103] = "KP_MEMORY_SUBTRACT", g[g.KP_MULTIPLY = 104] = "KP_MULTIPLY", g[g.KP_PAREN_LEFT = 105] = "KP_PAREN_LEFT", g[g.KP_PAREN_RIGHT = 106] = "KP_PAREN_RIGHT", g[g.KP_MINUS = 107] = "KP_MINUS", g[g.KP_SEPARATOR = 108] = "KP_SEPARATOR", g[g.NUMPAD_UP = 109] = "NUMPAD_UP", g[g.NUMPAD_DOWN = 110] = "NUMPAD_DOWN", g[g.NUMPAD_RIGHT = 111] = "NUMPAD_RIGHT", g[g.NUMPAD_LEFT = 112] = "NUMPAD_LEFT", g[g.NUMPAD_BEGIN = 113] = "NUMPAD_BEGIN", g[g.NUMPAD_HOME = 114] = "NUMPAD_HOME", g[g.NUMPAD_END = 115] = "NUMPAD_END", g[g.NUMPAD_INSERT = 116] = "NUMPAD_INSERT", g[g.NUMPAD_DELETE = 117] = "NUMPAD_DELETE", g[g.NUMPAD_PAGE_UP = 118] = "NUMPAD_PAGE_UP", g[g.NUMPAD_PAGE_DOWN = 119] = "NUMPAD_PAGE_DOWN", g[g.ESCAPE = 120] = "ESCAPE", g[g.F1 = 121] = "F1", g[g.F2 = 122] = "F2", g[g.F3 = 123] = "F3", g[g.F4 = 124] = "F4", g[g.F5 = 125] = "F5", g[g.F6 = 126] = "F6", g[g.F7 = 127] = "F7", g[g.F8 = 128] = "F8", g[g.F9 = 129] = "F9", g[g.F10 = 130] = "F10", g[g.F11 = 131] = "F11", g[g.F12 = 132] = "F12", g[g.F13 = 133] = "F13", g[g.F14 = 134] = "F14", g[g.F15 = 135] = "F15", g[g.F16 = 136] = "F16", g[g.F17 = 137] = "F17", g[g.F18 = 138] = "F18", g[g.F19 = 139] = "F19", g[g.F20 = 140] = "F20", g[g.F21 = 141] = "F21", g[g.F22 = 142] = "F22", g[g.F23 = 143] = "F23", g[g.F24 = 144] = "F24", g[g.F25 = 145] = "F25", g[g.FN_LOCK = 146] = "FN_LOCK", g[g.PRINT_SCREEN = 147] = "PRINT_SCREEN", g[g.SCROLL_LOCK = 148] = "SCROLL_LOCK", g[g.PAUSE = 149] = "PAUSE", g[g.BROWSER_BACK = 150] = "BROWSER_BACK", g[g.BROWSER_FAVORITES = 151] = "BROWSER_FAVORITES", g[g.BROWSER_FORWARD = 152] = "BROWSER_FORWARD", g[g.BROWSER_HOME = 153] = "BROWSER_HOME", g[g.BROWSER_REFRESH = 154] = "BROWSER_REFRESH", g[g.BROWSER_SEARCH = 155] = "BROWSER_SEARCH", g[g.BROWSER_STOP = 156] = "BROWSER_STOP", g[g.EJECT = 157] = "EJECT", g[g.LAUNCH_APP_1 = 158] = "LAUNCH_APP_1", g[g.LAUNCH_APP_2 = 159] = "LAUNCH_APP_2", g[g.LAUNCH_MAIL = 160] = "LAUNCH_MAIL", g[g.MEDIA_PLAY_PAUSE = 161] = "MEDIA_PLAY_PAUSE", g[g.MEDIA_SELECT = 162] = "MEDIA_SELECT", g[g.MEDIA_STOP = 163] = "MEDIA_STOP", g[g.MEDIA_TRACK_NEXT = 164] = "MEDIA_TRACK_NEXT", g[g.MEDIA_TRACK_PREVIOUS = 165] = "MEDIA_TRACK_PREVIOUS", g[g.POWER = 166] = "POWER", g[g.SLEEP = 167] = "SLEEP", g[g.AUDIO_VOLUME_DOWN = 168] = "AUDIO_VOLUME_DOWN", g[g.AUDIO_VOLUME_MUTE = 169] = "AUDIO_VOLUME_MUTE", g[g.AUDIO_VOLUME_UP = 170] = "AUDIO_VOLUME_UP", g[g.WAKE_UP = 171] = "WAKE_UP", g[g.COPY = 172] = "COPY", g[g.CUT = 173] = "CUT", g[g.PASTE = 174] = "PASTE", g))(w || {}), q = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.SHIFT = 1] = "SHIFT", g[g.CTRL = 2] = "CTRL", g[g.ALT = 4] = "ALT", g[g.SUPER = 8] = "SUPER", g[g.CAPSLOCK = 16] = "CAPSLOCK", g[g.NUMLOCK = 32] = "NUMLOCK", g))(q || {}), u = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.PARTIAL = 1] = "PARTIAL", g[g.FULL = 2] = "FULL", g))(u || {});
+var p = /* @__PURE__ */ ((g) => (g[g.CURSOR_KEY_APPLICATION = 0] = "CURSOR_KEY_APPLICATION", g[g.KEYPAD_KEY_APPLICATION = 1] = "KEYPAD_KEY_APPLICATION", g[g.IGNORE_KEYPAD_WITH_NUMLOCK = 2] = "IGNORE_KEYPAD_WITH_NUMLOCK", g[g.ALT_ESC_PREFIX = 3] = "ALT_ESC_PREFIX", g[g.MODIFY_OTHER_KEYS_STATE_2 = 4] = "MODIFY_OTHER_KEYS_STATE_2", g[g.KITTY_KEYBOARD_FLAGS = 5] = "KITTY_KEYBOARD_FLAGS", g))(p || {}), AA = /* @__PURE__ */ ((g) => (g[g.RELEASE = 0] = "RELEASE", g[g.PRESS = 1] = "PRESS", g[g.REPEAT = 2] = "REPEAT", g))(AA || {}), w = /* @__PURE__ */ ((g) => (g[g.UNIDENTIFIED = 0] = "UNIDENTIFIED", g[g.GRAVE = 1] = "GRAVE", g[g.BACKSLASH = 2] = "BACKSLASH", g[g.BRACKET_LEFT = 3] = "BRACKET_LEFT", g[g.BRACKET_RIGHT = 4] = "BRACKET_RIGHT", g[g.COMMA = 5] = "COMMA", g[g.ZERO = 6] = "ZERO", g[g.ONE = 7] = "ONE", g[g.TWO = 8] = "TWO", g[g.THREE = 9] = "THREE", g[g.FOUR = 10] = "FOUR", g[g.FIVE = 11] = "FIVE", g[g.SIX = 12] = "SIX", g[g.SEVEN = 13] = "SEVEN", g[g.EIGHT = 14] = "EIGHT", g[g.NINE = 15] = "NINE", g[g.EQUAL = 16] = "EQUAL", g[g.INTL_BACKSLASH = 17] = "INTL_BACKSLASH", g[g.INTL_RO = 18] = "INTL_RO", g[g.INTL_YEN = 19] = "INTL_YEN", g[g.A = 20] = "A", g[g.B = 21] = "B", g[g.C = 22] = "C", g[g.D = 23] = "D", g[g.E = 24] = "E", g[g.F = 25] = "F", g[g.G = 26] = "G", g[g.H = 27] = "H", g[g.I = 28] = "I", g[g.J = 29] = "J", g[g.K = 30] = "K", g[g.L = 31] = "L", g[g.M = 32] = "M", g[g.N = 33] = "N", g[g.O = 34] = "O", g[g.P = 35] = "P", g[g.Q = 36] = "Q", g[g.R = 37] = "R", g[g.S = 38] = "S", g[g.T = 39] = "T", g[g.U = 40] = "U", g[g.V = 41] = "V", g[g.W = 42] = "W", g[g.X = 43] = "X", g[g.Y = 44] = "Y", g[g.Z = 45] = "Z", g[g.MINUS = 46] = "MINUS", g[g.PERIOD = 47] = "PERIOD", g[g.QUOTE = 48] = "QUOTE", g[g.SEMICOLON = 49] = "SEMICOLON", g[g.SLASH = 50] = "SLASH", g[g.ALT_LEFT = 51] = "ALT_LEFT", g[g.ALT_RIGHT = 52] = "ALT_RIGHT", g[g.BACKSPACE = 53] = "BACKSPACE", g[g.CAPS_LOCK = 54] = "CAPS_LOCK", g[g.CONTEXT_MENU = 55] = "CONTEXT_MENU", g[g.CONTROL_LEFT = 56] = "CONTROL_LEFT", g[g.CONTROL_RIGHT = 57] = "CONTROL_RIGHT", g[g.ENTER = 58] = "ENTER", g[g.META_LEFT = 59] = "META_LEFT", g[g.META_RIGHT = 60] = "META_RIGHT", g[g.SHIFT_LEFT = 61] = "SHIFT_LEFT", g[g.SHIFT_RIGHT = 62] = "SHIFT_RIGHT", g[g.SPACE = 63] = "SPACE", g[g.TAB = 64] = "TAB", g[g.CONVERT = 65] = "CONVERT", g[g.KANA_MODE = 66] = "KANA_MODE", g[g.NON_CONVERT = 67] = "NON_CONVERT", g[g.DELETE = 68] = "DELETE", g[g.END = 69] = "END", g[g.HELP = 70] = "HELP", g[g.HOME = 71] = "HOME", g[g.INSERT = 72] = "INSERT", g[g.PAGE_DOWN = 73] = "PAGE_DOWN", g[g.PAGE_UP = 74] = "PAGE_UP", g[g.DOWN = 75] = "DOWN", g[g.LEFT = 76] = "LEFT", g[g.RIGHT = 77] = "RIGHT", g[g.UP = 78] = "UP", g[g.NUM_LOCK = 79] = "NUM_LOCK", g[g.KP_0 = 80] = "KP_0", g[g.KP_1 = 81] = "KP_1", g[g.KP_2 = 82] = "KP_2", g[g.KP_3 = 83] = "KP_3", g[g.KP_4 = 84] = "KP_4", g[g.KP_5 = 85] = "KP_5", g[g.KP_6 = 86] = "KP_6", g[g.KP_7 = 87] = "KP_7", g[g.KP_8 = 88] = "KP_8", g[g.KP_9 = 89] = "KP_9", g[g.KP_PLUS = 90] = "KP_PLUS", g[g.KP_BACKSPACE = 91] = "KP_BACKSPACE", g[g.KP_CLEAR = 92] = "KP_CLEAR", g[g.KP_CLEAR_ENTRY = 93] = "KP_CLEAR_ENTRY", g[g.KP_COMMA = 94] = "KP_COMMA", g[g.KP_PERIOD = 95] = "KP_PERIOD", g[g.KP_DIVIDE = 96] = "KP_DIVIDE", g[g.KP_ENTER = 97] = "KP_ENTER", g[g.KP_EQUAL = 98] = "KP_EQUAL", g[g.KP_MEMORY_ADD = 99] = "KP_MEMORY_ADD", g[g.KP_MEMORY_CLEAR = 100] = "KP_MEMORY_CLEAR", g[g.KP_MEMORY_RECALL = 101] = "KP_MEMORY_RECALL", g[g.KP_MEMORY_STORE = 102] = "KP_MEMORY_STORE", g[g.KP_MEMORY_SUBTRACT = 103] = "KP_MEMORY_SUBTRACT", g[g.KP_MULTIPLY = 104] = "KP_MULTIPLY", g[g.KP_PAREN_LEFT = 105] = "KP_PAREN_LEFT", g[g.KP_PAREN_RIGHT = 106] = "KP_PAREN_RIGHT", g[g.KP_MINUS = 107] = "KP_MINUS", g[g.KP_SEPARATOR = 108] = "KP_SEPARATOR", g[g.NUMPAD_UP = 109] = "NUMPAD_UP", g[g.NUMPAD_DOWN = 110] = "NUMPAD_DOWN", g[g.NUMPAD_RIGHT = 111] = "NUMPAD_RIGHT", g[g.NUMPAD_LEFT = 112] = "NUMPAD_LEFT", g[g.NUMPAD_BEGIN = 113] = "NUMPAD_BEGIN", g[g.NUMPAD_HOME = 114] = "NUMPAD_HOME", g[g.NUMPAD_END = 115] = "NUMPAD_END", g[g.NUMPAD_INSERT = 116] = "NUMPAD_INSERT", g[g.NUMPAD_DELETE = 117] = "NUMPAD_DELETE", g[g.NUMPAD_PAGE_UP = 118] = "NUMPAD_PAGE_UP", g[g.NUMPAD_PAGE_DOWN = 119] = "NUMPAD_PAGE_DOWN", g[g.ESCAPE = 120] = "ESCAPE", g[g.F1 = 121] = "F1", g[g.F2 = 122] = "F2", g[g.F3 = 123] = "F3", g[g.F4 = 124] = "F4", g[g.F5 = 125] = "F5", g[g.F6 = 126] = "F6", g[g.F7 = 127] = "F7", g[g.F8 = 128] = "F8", g[g.F9 = 129] = "F9", g[g.F10 = 130] = "F10", g[g.F11 = 131] = "F11", g[g.F12 = 132] = "F12", g[g.F13 = 133] = "F13", g[g.F14 = 134] = "F14", g[g.F15 = 135] = "F15", g[g.F16 = 136] = "F16", g[g.F17 = 137] = "F17", g[g.F18 = 138] = "F18", g[g.F19 = 139] = "F19", g[g.F20 = 140] = "F20", g[g.F21 = 141] = "F21", g[g.F22 = 142] = "F22", g[g.F23 = 143] = "F23", g[g.F24 = 144] = "F24", g[g.F25 = 145] = "F25", g[g.FN_LOCK = 146] = "FN_LOCK", g[g.PRINT_SCREEN = 147] = "PRINT_SCREEN", g[g.SCROLL_LOCK = 148] = "SCROLL_LOCK", g[g.PAUSE = 149] = "PAUSE", g[g.BROWSER_BACK = 150] = "BROWSER_BACK", g[g.BROWSER_FAVORITES = 151] = "BROWSER_FAVORITES", g[g.BROWSER_FORWARD = 152] = "BROWSER_FORWARD", g[g.BROWSER_HOME = 153] = "BROWSER_HOME", g[g.BROWSER_REFRESH = 154] = "BROWSER_REFRESH", g[g.BROWSER_SEARCH = 155] = "BROWSER_SEARCH", g[g.BROWSER_STOP = 156] = "BROWSER_STOP", g[g.EJECT = 157] = "EJECT", g[g.LAUNCH_APP_1 = 158] = "LAUNCH_APP_1", g[g.LAUNCH_APP_2 = 159] = "LAUNCH_APP_2", g[g.LAUNCH_MAIL = 160] = "LAUNCH_MAIL", g[g.MEDIA_PLAY_PAUSE = 161] = "MEDIA_PLAY_PAUSE", g[g.MEDIA_SELECT = 162] = "MEDIA_SELECT", g[g.MEDIA_STOP = 163] = "MEDIA_STOP", g[g.MEDIA_TRACK_NEXT = 164] = "MEDIA_TRACK_NEXT", g[g.MEDIA_TRACK_PREVIOUS = 165] = "MEDIA_TRACK_PREVIOUS", g[g.POWER = 166] = "POWER", g[g.SLEEP = 167] = "SLEEP", g[g.AUDIO_VOLUME_DOWN = 168] = "AUDIO_VOLUME_DOWN", g[g.AUDIO_VOLUME_MUTE = 169] = "AUDIO_VOLUME_MUTE", g[g.AUDIO_VOLUME_UP = 170] = "AUDIO_VOLUME_UP", g[g.WAKE_UP = 171] = "WAKE_UP", g[g.COPY = 172] = "COPY", g[g.CUT = 173] = "CUT", g[g.PASTE = 174] = "PASTE", g))(w || {}), S = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.SHIFT = 1] = "SHIFT", g[g.CTRL = 2] = "CTRL", g[g.ALT = 4] = "ALT", g[g.SUPER = 8] = "SUPER", g[g.CAPSLOCK = 16] = "CAPSLOCK", g[g.NUMLOCK = 32] = "NUMLOCK", g))(S || {}), u = /* @__PURE__ */ ((g) => (g[g.NONE = 0] = "NONE", g[g.PARTIAL = 1] = "PARTIAL", g[g.FULL = 2] = "FULL", g))(u || {});
 const j = 80;
 var J = /* @__PURE__ */ ((g) => (g[g.BOLD = 1] = "BOLD", g[g.ITALIC = 2] = "ITALIC", g[g.UNDERLINE = 4] = "UNDERLINE", g[g.STRIKETHROUGH = 8] = "STRIKETHROUGH", g[g.INVERSE = 16] = "INVERSE", g[g.INVISIBLE = 32] = "INVISIBLE", g[g.BLINK = 64] = "BLINK", g[g.FAINT = 128] = "FAINT", g))(J || {});
 class L {
@@ -143,7 +143,7 @@ class IA {
     this.encoder && (this.exports.ghostty_key_encoder_free(this.encoder), this.encoder = 0);
   }
 }
-const QA = class l {
+const QA = class Y {
   constructor(A, Q, B = 80, E = 24, C, I) {
     var D;
     if (this.recreate = I, this.viewportBufferPtr = 0, this.viewportBufferSize = 0, this.cellPool = [], this.graphemeBuffer = null, this.graphemeBufferPtr = 0, this.exports = A, this.memory = Q, this._cols = B, this._rows = E, C) {
@@ -276,7 +276,7 @@ const QA = class l {
    * Returns a reusable cell array (zero allocation after warmup).
    */
   getViewport() {
-    const A = this._cols * this._rows, Q = A * l.CELL_SIZE;
+    const A = this._cols * this._rows, Q = A * Y.CELL_SIZE;
     return (!this.viewportBufferPtr || this.viewportBufferSize < Q) && (this.viewportBufferPtr && this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize), this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(Q), this.viewportBufferSize = Q), this.exports.ghostty_render_state_get_viewport(
       this.handle,
       this.viewportBufferPtr,
@@ -372,7 +372,7 @@ const QA = class l {
    * @param offset 0 = oldest line, (length-1) = most recent scrollback line
    */
   getScrollbackLine(A) {
-    const Q = this._cols * l.CELL_SIZE;
+    const Q = this._cols * Y.CELL_SIZE;
     (!this.viewportBufferPtr || this.viewportBufferSize < Q) && (this.viewportBufferPtr && this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize), this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(Q), this.viewportBufferSize = Q), this.update();
     const B = this.exports.ghostty_terminal_get_scrollback_line(
       this.handle,
@@ -382,9 +382,9 @@ const QA = class l {
     );
     if (B < 0)
       return null;
-    const E = [], C = this.memory.buffer, I = new Uint8Array(C, this.viewportBufferPtr, B * l.CELL_SIZE), D = new DataView(C, this.viewportBufferPtr, B * l.CELL_SIZE);
+    const E = [], C = this.memory.buffer, I = new Uint8Array(C, this.viewportBufferPtr, B * Y.CELL_SIZE), D = new DataView(C, this.viewportBufferPtr, B * Y.CELL_SIZE);
     for (let i = 0; i < B; i++) {
-      const o = i * l.CELL_SIZE;
+      const o = i * Y.CELL_SIZE;
       E.push({
         codepoint: D.getUint32(o, !0),
         fg_r: I[o + 4],
@@ -478,9 +478,9 @@ const QA = class l {
         });
   }
   parseCellsIntoPool(A, Q) {
-    const B = this.memory.buffer, E = new Uint8Array(B, A, Q * l.CELL_SIZE), C = new DataView(B, A, Q * l.CELL_SIZE);
+    const B = this.memory.buffer, E = new Uint8Array(B, A, Q * Y.CELL_SIZE), C = new DataView(B, A, Q * Y.CELL_SIZE);
     for (let I = 0; I < Q; I++) {
-      const D = I * l.CELL_SIZE, i = this.cellPool[I];
+      const D = I * Y.CELL_SIZE, i = this.cellPool[I];
       i.codepoint = C.getUint32(D, !0), i.fg_r = E[D + 4], i.fg_g = E[D + 5], i.fg_b = E[D + 6], i.bg_r = E[D + 7], i.bg_g = E[D + 8], i.bg_b = E[D + 9], i.flags = E[D + 10], i.width = E[D + 11], i.hyperlink_id = C.getUint16(D + 12, !0), i.grapheme_len = E[D + 14];
     }
   }
@@ -545,7 +545,7 @@ const QA = class l {
 };
 QA.CELL_SIZE = 16;
 let DA = QA;
-class Y {
+class l {
   constructor() {
     this.listeners = [], this.event = (A) => (this.listeners.push(A), {
       dispose: () => {
@@ -564,7 +564,7 @@ class Y {
 }
 class iA {
   constructor(A) {
-    this.bufferChangeEmitter = new Y(), this.terminal = A;
+    this.bufferChangeEmitter = new l(), this.terminal = A;
   }
   get active() {
     const A = this.terminal.wasmTerm;
@@ -931,8 +931,8 @@ const wA = {
    * @returns Mods flags
    */
   extractModifiers(A) {
-    let Q = q.NONE;
-    return A.shiftKey && (Q |= q.SHIFT), A.ctrlKey && (Q |= q.CTRL), A.altKey && (Q |= q.ALT), A.metaKey && (Q |= q.SUPER), Q;
+    let Q = S.NONE;
+    return A.shiftKey && (Q |= S.SHIFT), A.ctrlKey && (Q |= S.CTRL), A.altKey && (Q |= S.ALT), A.metaKey && (Q |= S.SUPER), Q;
   }
   /**
    * Handle keydown event
@@ -1497,8 +1497,8 @@ function $(g, A, Q, B, E = m(g)) {
         U.offset <= F && (K = U);
       if (!(K !== void 0 && N(K.row, F - K.offset)))
         for (const U of c) {
-          const R = Math.max(F, U.offset) - U.offset, M = Math.min(F + C.length, U.offset + U.text.text.length) - U.offset - 1;
-          e(U.row, U.text, R, M, !1);
+          const q = Math.max(F, U.offset) - U.offset, M = Math.min(F + C.length, U.offset + U.text.text.length) - U.offset - 1;
+          e(U.row, U.text, q, M, !1);
         }
     }
   }
@@ -1625,13 +1625,13 @@ const JA = 1, W = {
   brightCyan: "#29b8db",
   brightWhite: "#ffffff"
 };
-class S {
+class R {
   constructor(A, Q = {}) {
     this.terminalDefaultBackgroundRGB = null, this.terminalDefaultForegroundRGB = null, this.cursorVisible = !0, this.paintedCursor = { x: 0, y: 0, drawn: !1, style: "block", focused: !0 }, this.cursorShowable = !0, this.paintSuspended = !1, this.scrollbarWasPainted = !1, this.lastViewportY = 0, this.currentBuffer = null, this.searchHighlighter = new FA(), this.invalidateListener = null, this.searchHighlightListener = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.linkUnderline = null, this.linkUnderlineRows = /* @__PURE__ */ new Set(), this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.canvas = A;
     const B = A.getContext("2d", { alpha: !0 });
     if (!B)
       throw new Error("Failed to get 2D rendering context");
-    this.ctx = B, this.fontSize = Q.fontSize ?? 15, this.fontFamily = Q.fontFamily ?? "monospace", this.cursorStyle = Q.cursorStyle ?? "block", this.cursorBlink = Q.cursorBlink ?? !1, this.theme = { ...W, ...Q.theme }, this.allowTransparency = Q.allowTransparency ?? !1, this.focused = Q.focused ?? !0, this.defaultBackgroundRGB = S.parseRGB(this.theme.background), this.devicePixelRatio = Q.devicePixelRatio ?? window.devicePixelRatio ?? 1, this.palette = [
+    this.ctx = B, this.fontSize = Q.fontSize ?? 15, this.fontFamily = Q.fontFamily ?? "monospace", this.cellHeightAdjust = R.wholePixels(Q.cellHeightAdjust), this.cursorStyle = Q.cursorStyle ?? "block", this.cursorBlink = Q.cursorBlink ?? !1, this.theme = { ...W, ...Q.theme }, this.allowTransparency = Q.allowTransparency ?? !1, this.focused = Q.focused ?? !0, this.defaultBackgroundRGB = R.parseRGB(this.theme.background), this.devicePixelRatio = Q.devicePixelRatio ?? window.devicePixelRatio ?? 1, this.palette = [
       this.theme.black,
       this.theme.red,
       this.theme.green,
@@ -1656,8 +1656,11 @@ class S {
   measureFont() {
     const Q = document.createElement("canvas").getContext("2d");
     Q.font = `${this.fontSize}px ${this.fontFamily}`;
-    const B = Q.measureText("M"), E = Math.ceil(B.width), C = B.actualBoundingBoxAscent || this.fontSize * 0.8, I = B.actualBoundingBoxDescent || this.fontSize * 0.2, D = Math.ceil(C + I) + 2, i = Math.ceil(C) + 1;
-    return { width: E, height: D, baseline: i };
+    const B = Q.measureText("M"), E = Math.ceil(B.width), C = B.actualBoundingBoxAscent || this.fontSize * 0.8, I = B.actualBoundingBoxDescent || this.fontSize * 0.2, D = Math.ceil(C + I) + 2, i = Math.ceil(C) + 1, o = Math.max(1, D + this.cellHeightAdjust), s = i + Math.floor((o - D) / 2);
+    return { width: E, height: o, baseline: s };
+  }
+  static wholePixels(A) {
+    return typeof A == "number" && Number.isFinite(A) ? Math.round(A) : 0;
   }
   /**
    * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
@@ -1788,13 +1791,13 @@ class S {
    * Render the terminal buffer to canvas
    */
   render(A, Q = !1, B = 0, E, C = 1) {
-    var R;
+    var q;
     if (this.paintSuspended)
       return;
     const I = B;
     B = Math.max(0, Math.floor(B)), this.currentBuffer = A;
     const D = A.getCursor(), i = A.getDimensions(), o = E ? E.getScrollbackLength() : 0;
-    (R = A.needsFullRedraw) != null && R.call(A) && (Q = !0);
+    (q = A.needsFullRedraw) != null && q.call(A) && (Q = !0);
     const s = !!E && C > 0;
     this.scrollbarWasPainted && !s && (Q = !0), this.scrollbarWasPainted = s, (this.canvas.width !== Math.floor(i.cols * this.metrics.width * this.devicePixelRatio) || this.canvas.height !== Math.floor(i.rows * this.metrics.height * this.devicePixelRatio)) && (this.resize(i.cols, i.rows), Q = !0), B !== this.lastViewportY && (Q = !0, this.lastViewportY = B);
     let a = null;
@@ -2129,7 +2132,7 @@ class S {
    * Update theme colors
    */
   setTheme(A) {
-    this.invalidate(), this.theme = { ...W, ...A }, this.defaultBackgroundRGB = S.parseRGB(this.theme.background), this.palette = [
+    this.invalidate(), this.theme = { ...W, ...A }, this.defaultBackgroundRGB = R.parseRGB(this.theme.background), this.palette = [
       this.theme.black,
       this.theme.red,
       this.theme.green,
@@ -2162,7 +2165,7 @@ class S {
    * numbers. See `liveThemeColor` for what the renderer does with them.
    */
   setTerminalDefaultColors(A, Q) {
-    this.invalidate(), this.terminalDefaultBackgroundRGB = S.rgbFromInt(A), this.terminalDefaultForegroundRGB = S.rgbFromInt(Q);
+    this.invalidate(), this.terminalDefaultBackgroundRGB = R.rgbFromInt(A), this.terminalDefaultForegroundRGB = R.rgbFromInt(Q);
   }
   /**
    * Update font size
@@ -2175,6 +2178,12 @@ class S {
    */
   setFontFamily(A) {
     this.invalidate(), this.fontFamily = A, this.metrics = this.measureFont();
+  }
+  /**
+   * Update the extra cell height in CSS pixels (vendor 0.4.0-kelpi.26)
+   */
+  setCellHeightAdjust(A) {
+    this.invalidate(), this.cellHeightAdjust = R.wholePixels(A), this.metrics = this.measureFont();
   }
   /**
    * Update cursor style
@@ -2364,7 +2373,7 @@ class S {
 const v = class P {
   // ms between scroll steps
   constructor(A, Q, B, E) {
-    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownTarget = null, this.unitAnchor = null, this.pressSelectedWord = !1, this.pressPoint = null, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new Y(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = B, this.textarea = E, this.attachEventListeners();
+    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownTarget = null, this.unitAnchor = null, this.pressSelectedWord = !1, this.pressPoint = null, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new l(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = B, this.textarea = E, this.attachEventListeners();
   }
   // -1 = up, 0 = none, 1 = down
   /**
@@ -2881,7 +2890,7 @@ const T = class H {
       get activeVersion() {
         return "15.1";
       }
-    }, this.surfaceFocused = !0, this.paintSuspended = !1, this.searchHighlight = null, this.linkUnderline = null, this.imeCaretLeft = -1, this.imeCaretTop = -1, this.imeCaretWidth = 0, this.imeCaretHeight = 0, this.imePreeditText = "", this.dataEmitter = new Y(), this.resizeEmitter = new Y(), this.bellEmitter = new Y(), this.selectionChangeEmitter = new Y(), this.keyEmitter = new Y(), this.titleChangeEmitter = new Y(), this.scrollEmitter = new Y(), this.renderEmitter = new Y(), this.cursorMoveEmitter = new Y(), this.searchHighlightEmitter = new Y(), this.onData = this.dataEmitter.event, this.onResize = this.resizeEmitter.event, this.onBell = this.bellEmitter.event, this.onSelectionChange = this.selectionChangeEmitter.event, this.onKey = this.keyEmitter.event, this.onTitleChange = this.titleChangeEmitter.event, this.onScroll = this.scrollEmitter.event, this.onRender = this.renderEmitter.event, this.onCursorMove = this.cursorMoveEmitter.event, this.onSearchHighlightChange = this.searchHighlightEmitter.event, this.isOpen = !1, this.isDisposed = !1, this.idleFrames = 0, this.addons = [], this.currentTitle = "", this._viewportY = 0, this.targetViewportY = 0, this.lastCursorY = 0, this.isDraggingScrollbar = !1, this.scrollbarDragStart = null, this.scrollbarDragStartViewportY = 0, this.scrollbarVisible = !1, this._scrollbarOpacity = 0, this.SCROLLBAR_HIDE_DELAY_MS = 1500, this.SCROLLBAR_FADE_DURATION_MS = 200, this.animateScroll = () => {
+    }, this.surfaceFocused = !0, this.paintSuspended = !1, this.searchHighlight = null, this.linkUnderline = null, this.imeCaretLeft = -1, this.imeCaretTop = -1, this.imeCaretWidth = 0, this.imeCaretHeight = 0, this.imePreeditText = "", this.dataEmitter = new l(), this.resizeEmitter = new l(), this.bellEmitter = new l(), this.selectionChangeEmitter = new l(), this.keyEmitter = new l(), this.titleChangeEmitter = new l(), this.scrollEmitter = new l(), this.renderEmitter = new l(), this.cursorMoveEmitter = new l(), this.searchHighlightEmitter = new l(), this.onData = this.dataEmitter.event, this.onResize = this.resizeEmitter.event, this.onBell = this.bellEmitter.event, this.onSelectionChange = this.selectionChangeEmitter.event, this.onKey = this.keyEmitter.event, this.onTitleChange = this.titleChangeEmitter.event, this.onScroll = this.scrollEmitter.event, this.onRender = this.renderEmitter.event, this.onCursorMove = this.cursorMoveEmitter.event, this.onSearchHighlightChange = this.searchHighlightEmitter.event, this.isOpen = !1, this.isDisposed = !1, this.idleFrames = 0, this.addons = [], this.currentTitle = "", this._viewportY = 0, this.targetViewportY = 0, this.lastCursorY = 0, this.isDraggingScrollbar = !1, this.scrollbarDragStart = null, this.scrollbarDragStartViewportY = 0, this.scrollbarVisible = !1, this._scrollbarOpacity = 0, this.SCROLLBAR_HIDE_DELAY_MS = 1500, this.SCROLLBAR_FADE_DURATION_MS = 200, this.animateScroll = () => {
       if (!this.wasmTerm || this.scrollAnimationStartTime === void 0)
         return;
       const B = this.options.smoothScrollDuration ?? 100, E = this.targetViewportY - this.viewportY;
@@ -2975,7 +2984,7 @@ const T = class H {
       }
     }, this.handleMouseUp = () => {
       this.isDraggingScrollbar && (this.isDraggingScrollbar = !1, this.scrollbarDragStart = null, this.canvas && (this.canvas.style.userSelect = "", this.canvas.style.webkitUserSelect = ""), this.scrollbarVisible && this.getScrollbackLength() > 0 && this.showScrollbar());
-    }, this.ghostty = A.ghostty ?? lA();
+    }, this.ghostty = A.ghostty ?? YA();
     const Q = {
       cols: A.cols ?? 80,
       rows: A.rows ?? 24,
@@ -2985,6 +2994,7 @@ const T = class H {
       scrollback: A.scrollback ?? 1e4,
       fontSize: A.fontSize ?? 15,
       fontFamily: A.fontFamily ?? "monospace",
+      cellHeightAdjust: A.cellHeightAdjust ?? 0,
       allowTransparency: A.allowTransparency ?? !1,
       convertEol: A.convertEol ?? !1,
       disableStdin: A.disableStdin ?? !1,
@@ -3039,6 +3049,9 @@ const T = class H {
           break;
         case "fontSize":
           this.renderer && (this.renderer.setFontSize(this.options.fontSize), this.handleFontChange());
+          break;
+        case "cellHeightAdjust":
+          this.renderer && (this.renderer.setCellHeightAdjust(this.options.cellHeightAdjust), this.handleFontChange());
           break;
         case "fontFamily":
           this.renderer && (this.renderer.setFontFamily(this.options.fontFamily), this.handleFontChange());
@@ -3149,9 +3162,10 @@ const T = class H {
         C.target === A && (C.preventDefault(), B.focus({ preventScroll: !0 }));
       }), A.addEventListener("focus", () => {
         B.focus({ preventScroll: !0 });
-      }), this.renderer = new S(this.canvas, {
+      }), this.renderer = new R(this.canvas, {
         fontSize: this.options.fontSize,
         fontFamily: this.options.fontFamily,
+        cellHeightAdjust: this.options.cellHeightAdjust,
         cursorStyle: this.options.cursorStyle,
         cursorBlink: this.options.cursorBlink,
         theme: this.options.theme,
@@ -3742,10 +3756,10 @@ const T = class H {
       var k, c, G, n;
       if (N !== this.currentHoveredLink && ((c = (k = this.currentHoveredLink) == null ? void 0 : k.hover) == null || c.call(k, !1), this.currentHoveredLink = N, (G = N == null ? void 0 : N.hover) == null || G.call(N, !0), this.element && (this.element.style.cursor = N ? "pointer" : "text"), this.renderer))
         if (N) {
-          const F = ((n = this.wasmTerm) == null ? void 0 : n.getScrollbackLength()) || 0, K = this.getViewportY(), U = Math.max(0, Math.floor(K)), R = N.range.start.y - F + U, M = N.range.end.y - F + U;
-          R < this.rows && M >= 0 ? this.renderer.setHoveredLinkRange({
+          const F = ((n = this.wasmTerm) == null ? void 0 : n.getScrollbackLength()) || 0, K = this.getViewportY(), U = Math.max(0, Math.floor(K)), q = N.range.start.y - F + U, M = N.range.end.y - F + U;
+          q < this.rows && M >= 0 ? this.renderer.setHoveredLinkRange({
             startX: N.range.start.x,
-            startY: Math.max(0, R),
+            startY: Math.max(0, q),
             endX: N.range.end.x,
             endY: Math.min(this.rows - 1, M)
           }) : this.renderer.setHoveredLinkRange(null);
@@ -3878,7 +3892,7 @@ T.WAKE_EVENTS = [
 ];
 T.RENDER_HEARTBEAT_MS = 2e3;
 let LA = T;
-const nA = 2, KA = 1, yA = 15, YA = 100;
+const nA = 2, KA = 1, yA = 15, lA = 100;
 class RA {
   constructor() {
     this._isResizing = !1;
@@ -3963,7 +3977,7 @@ class RA {
     (A = this._terminal) != null && A.element && (this._resizeObserver || (this._resizeObserver = new ResizeObserver((Q) => {
       this._isResizing || !Q[0] || (this._resizeDebounceTimer && clearTimeout(this._resizeDebounceTimer), this._resizeDebounceTimer = setTimeout(() => {
         this.fit();
-      }, YA));
+      }, lA));
     }), this._resizeObserver.observe(this._terminal.element)));
   }
 }
@@ -3971,7 +3985,7 @@ let f = null;
 async function qA() {
   f || (f = await L.load());
 }
-function lA() {
+function YA() {
   if (!f)
     throw new Error(
       `ghostty-web not initialized. Call init() before creating Terminal instances.
@@ -3988,9 +4002,9 @@ For tests, pass a Ghostty instance directly:
   return f;
 }
 export {
-  S as CanvasRenderer,
+  R as CanvasRenderer,
   J as CellFlags,
-  Y as EventEmitter,
+  l as EventEmitter,
   RA as FitAddon,
   L as Ghostty,
   DA as GhosttyTerminal,
@@ -4002,6 +4016,6 @@ export {
   UA as SelectionManager,
   LA as Terminal,
   eA as UrlRegexProvider,
-  lA as getGhostty,
+  YA as getGhostty,
   qA as init
 };

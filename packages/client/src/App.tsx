@@ -2976,6 +2976,10 @@ function Shell(props: AppProps): ReactElement {
     // it is missing — Powerline separators, Nerd Font icons — has to come from the bundled
     // face rather than from tofu, which is exactly what libghostty did for the Swift app
     // (`terminal/fonts.ts`).
+    // Primitives, not the settings object: every snapshot builds a new one, and a new object
+    // here would rebuild every engine.
+    const cellHeightUnit = settings.appearance.cellHeightAdjust?.unit ?? null;
+    const cellHeightValue = settings.appearance.cellHeightAdjust?.value ?? null;
     const terminalFont = useMemo(
         () => ({
             fontFamily: terminalFontStack(settings.appearance.fontFamily),
@@ -2983,13 +2987,20 @@ function Shell(props: AppProps): ReactElement {
             // ghostty `window-padding-x`/`-y` (Settings ▸ Appearance ▸ Terminal padding);
             // null = the pane's shipped 4px defaults.
             paddingX: settings.appearance.windowPaddingX,
-            paddingY: settings.appearance.windowPaddingY
+            paddingY: settings.appearance.windowPaddingY,
+            // ghostty `adjust-cell-height`; null = rows keep the font's height.
+            cellHeightAdjust:
+                cellHeightUnit === null || cellHeightValue === null
+                    ? null
+                    : { unit: cellHeightUnit, value: cellHeightValue }
         }),
         [
             settings.appearance.fontFamily,
             settings.appearance.fontSize,
             settings.appearance.windowPaddingX,
-            settings.appearance.windowPaddingY
+            settings.appearance.windowPaddingY,
+            cellHeightUnit,
+            cellHeightValue
         ]
     );
 
@@ -4573,6 +4584,9 @@ function Shell(props: AppProps): ReactElement {
                         {...(terminalFontSize !== null ? { fontSize: terminalFontSize } : {})}
                         {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
                         {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
+                        {...(terminalFont.cellHeightAdjust !== null
+                            ? { cellHeightAdjust: terminalFont.cellHeightAdjust }
+                            : {})}
                         // #171: whether ⌥ composes a character or is the Alt modifier.
                         macosOptionAsAlt={optionAsAlt}
                         onFocusRequest={onTerminalFocus}
@@ -4709,6 +4723,9 @@ function Shell(props: AppProps): ReactElement {
                             {...(terminalFontSize !== null ? { fontSize: terminalFontSize } : {})}
                             {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
                             {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
+                            {...(terminalFont.cellHeightAdjust !== null
+                                ? { cellHeightAdjust: terminalFont.cellHeightAdjust }
+                                : {})}
                             // #171: whether ⌥ composes a character or is the Alt modifier.
                             macosOptionAsAlt={optionAsAlt}
                             onFocusRequest={onTerminalFocus}

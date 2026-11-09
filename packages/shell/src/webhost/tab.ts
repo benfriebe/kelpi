@@ -103,6 +103,16 @@ export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 /** In-flight `Network.requestWillBeSent` records; bounded so a chatty page cannot grow it. */
 const REQUEST_CACHE_LIMIT = 512;
 
+/**
+ * `Network.enable` with no response-body buffers. Left at its defaults, Chromium keeps up to
+ * 200 MB of response bodies per document in the page's renderer, for `Network.getResponseBody`.
+ * This tab only reads the Network EVENTS (the console's failed-resource lines) and never asks
+ * for a body, so a buffer is all cost: a GitHub tab left open for days fills it. Measured on
+ * Electron 43.4 with a page that fetched 300 MB of JSON: the renderer settled at 18 MB with no
+ * debugger, 229 MB after a bare `Network.enable`, and 21 MB with these.
+ */
+const NETWORK_ENABLE_PARAMS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 } as const;
+
 /** Host → daemon events this tab produces (`host-event` payloads, HOST_PROTOCOL §4). */
 export interface TabEventSink {
     console(paneID: string, tabID: string, payload: ConsoleLinePayload): void;
@@ -467,7 +477,7 @@ class ElectronTab implements HostTab {
         // context→frame map the binding guard reads.
         await this.send('Runtime.enable');
         await this.send('Log.enable');
-        await this.send('Network.enable');
+        await this.send('Network.enable', NETWORK_ENABLE_PARAMS);
         // WEB-073, and before the real navigation on purpose: an out-of-process frame that the
         // first page creates must find auto-attach already armed, or its document-start lines
         // are gone before anyone could subscribe. Failures are absorbed inside `start()`.

@@ -22,7 +22,9 @@
  *     into the same sink with the same tab attribution (WEB-073, the `forMainFrameOnly:false`
  *     flag's job in the Swift host).
  *   - **Background tabs keep running JS** (`backgroundThrottling: false`): agents race a `wait`
- *     in one tab while another is the visible one.
+ *     in one tab while another is the visible one. A tab that was on screen and has been parked
+ *     for a minute is put to sleep so it gives its GPU memory back, and its timers still run at
+ *     full speed (`./park-sleep.ts`, issue #466).
  *   - **`did-fail-load` ignores `-3` (ERR_ABORTED)**: a navigation the user (or a redirect)
  *     replaced is not a failure, and WKWebView never surfaced those either.
  *
@@ -74,6 +76,7 @@ import { isWebErrorPageURL, reportedTabURL, webErrorPageDataURL } from './error-
 import { createFrameSessions, type FrameSessions } from './frames.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
 import { chordLabel, forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
+import { createParkSleep, parkedTabSleepDelay, type ParkSleep, type ParkWakeReason } from './park-sleep.js';
 import {
     BATCH_MARKER_CHANNEL,
     BINDING_NAME,
@@ -304,6 +307,8 @@ class ElectronTab implements HostTab {
     private pinned = false;
     /** Pin and unpin run one at a time, each behind `ready` - see `queueViewport`. */
     private viewportOps: Promise<void> = Promise.resolve();
+    /** #466: when a parked view gives its GPU memory back, and what wakes it (`./park-sleep.ts`). */
+    private readonly parkSleep: ParkSleep;
     /** §N29: tells the shell's own `focus()` calls from the user's clicks (`./view-focus.ts`). */
     private readonly focusGate: ViewFocusGate;
     /** §N30: keeps a committing navigation from moving the keyboard (`./nav-focus.ts`). */
@@ -369,6 +374,21 @@ class ElectronTab implements HostTab {
             }
         });
         this.contents = this.view.webContents;
+        // Before the first `navigate` below, which counts as using the page.
+        this.parkSleep = createParkSleep(
+            {
+                doze: () => {
+                    this.doze();
+                },
+                wake: (reason) => {
+                    this.wakeFromSleep(reason);
+                },
+                onError: (error, context) => {
+                    this.report(error, context);
+                }
+            },
+            { delayMs: parkedTabSleepDelay(process.env) }
+        );
         // Built before `bootstrap` so the very first `Target.attachedToTarget` has somewhere to
         // land: auto-attach is armed inside the bootstrap and Chromium can answer immediately.
         this.frames = createFrameSessions({
@@ -980,6 +1000,7 @@ class ElectronTab implements HostTab {
 
     navigate(url: string): void {
         if (url === '') return;
+        this.parkSleep.use()();
         this.lastAttemptedURL = url;
         this.failedLoad = false;
         // From here on the tab has been asked to show something, so its load brackets are real
@@ -1004,12 +1025,14 @@ class ElectronTab implements HostTab {
 
     back(): void {
         if (this.disposed || this.contents.isDestroyed()) return;
+        this.parkSleep.use()();
         this.failedLoad = false;
         if (this.contents.navigationHistory.canGoBack()) this.contents.navigationHistory.goBack();
     }
 
     forward(): void {
         if (this.disposed || this.contents.isDestroyed()) return;
+        this.parkSleep.use()();
         this.failedLoad = false;
         if (this.contents.navigationHistory.canGoForward()) this.contents.navigationHistory.goForward();
     }
@@ -1112,6 +1135,7 @@ class ElectronTab implements HostTab {
 
     reload(hard: boolean): void {
         if (this.disposed || this.contents.isDestroyed()) return;
+        this.parkSleep.use()();
         // §4.3: a tab that failed its last load retries what it was asked for rather than
         // reloading the failure.
         if (this.failedLoad && this.lastAttemptedURL !== '') {
@@ -1123,6 +1147,16 @@ class ElectronTab implements HostTab {
     }
 
     async evaluate(expression: string): Promise<EvalOutcome> {
+        // #466: awake for the whole evaluation, a `wait` included, and for the delay after it.
+        const release = this.parkSleep.use();
+        try {
+            return await this.evaluateAwake(expression);
+        } finally {
+            release();
+        }
+    }
+
+    private async evaluateAwake(expression: string): Promise<EvalOutcome> {
         await this.ready;
         if (this.disposed || this.contents.isDestroyed()) {
             return { ok: false, error: `web pane has no live tab ${this.tabID}` };
@@ -1165,11 +1199,18 @@ class ElectronTab implements HostTab {
      * is deterministic without asking Chromium to render past the viewport.
      */
     async screenshot(): Promise<Uint8Array> {
-        await this.ready;
-        const result = await this.send('Page.captureScreenshot', { format: 'png' });
-        const data = isRecord(result) ? text(result['data']) : undefined;
-        if (data === undefined) throw new Error('no screenshot data');
-        return Buffer.from(data, 'base64');
+        // #466: never on a sleeping tab. A capture taken asleep leaves the PAGE hidden, and a
+        // hidden page's timers drop to one wake-up a second until it is next placed (measured).
+        const release = this.parkSleep.use();
+        try {
+            await this.ready;
+            const result = await this.send('Page.captureScreenshot', { format: 'png' });
+            const data = isRecord(result) ? text(result['data']) : undefined;
+            if (data === undefined) throw new Error('no screenshot data');
+            return Buffer.from(data, 'base64');
+        } finally {
+            release();
+        }
     }
 
     /**
@@ -1263,6 +1304,11 @@ class ElectronTab implements HostTab {
     setEmbedded(embedded: boolean): void {
         if (this.disposed || this.embedded === embedded) return;
         this.embedded = embedded;
+        // #466: a placement wakes a sleeping view (after `./index.ts` has added it to the window,
+        // so the view is already shown and only the throttling flag changes); a park starts the
+        // count towards sleep.
+        if (embedded) this.parkSleep.placed();
+        else this.parkSleep.parked();
         // A placement clears a pin an automation read left; a park keeps the page as it is - 
         // `./viewport-pin.ts` for why that second half is the whole point.
         void this.queueViewport(embedded ? 'placed' : 'parked');
@@ -1271,7 +1317,38 @@ class ElectronTab implements HostTab {
     /** `HostTab.pinViewport`: a parked view lays out at the automation viewport before a read. */
     pinViewport(): Promise<void> {
         if (this.disposed) return Promise.resolve();
-        return this.queueViewport('automation-read');
+        const release = this.parkSleep.use();
+        return this.queueViewport('automation-read').finally(release);
+    }
+
+    /**
+     * #466: put this parked view to sleep (`./park-sleep.ts` decides when).
+     *
+     * Throttling on is what lets Chromium tell the renderer it is hidden; the hide-and-show is the
+     * visibility change that delivers it. The view ends VISIBLE in the holder whatever it was
+     * before, because that is the only state the hide was measured to hold from: on Electron 43.4
+     * a view the registry had hidden (an inactive tab) kept compositing when hidden again, and
+     * gave its tiles back once shown. Nothing in the holder is ever drawn, and a tab switch or a
+     * placement sets the view's visibility again anyway.
+     */
+    private doze(): void {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        this.contents.setBackgroundThrottling(true);
+        if (this.view.getVisible()) this.view.setVisible(false);
+        this.view.setVisible(true);
+        log(`web pane ${this.paneID} tab ${this.tabID}: asleep (parked, nothing using it)`);
+    }
+
+    /**
+     * #466: wake a view `doze` put to sleep. Throttling off again, so the next park leaves it
+     * awake, as every parked view used to be. On a view that is still in the holder this also
+     * shows it to its renderer (Electron's `setBackgroundThrottling` calls `WasShown()` on a
+     * hidden view), which is what makes a capture on it leave the page visible.
+     */
+    private wakeFromSleep(reason: ParkWakeReason): void {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        this.contents.setBackgroundThrottling(false);
+        log(`web pane ${this.paneID} tab ${this.tabID}: awake (${reason === 'placed' ? 'placed' : 'in use'})`);
     }
 
     /**
@@ -1295,6 +1372,7 @@ class ElectronTab implements HostTab {
     dispose(reason: DestroyReason): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.parkSleep.dispose();
         // Issue #351: a hand-back waiting for this view to be placed has nothing left to focus.
         this.deferredFocus?.forgetTab(this.paneID, this.tabID);
         // §N29: a held focus event must not fire into a tab that no longer exists.

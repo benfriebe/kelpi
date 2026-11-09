@@ -380,7 +380,9 @@ function startShell(sandbox) {
         ['.', `--user-data-dir=${sandbox.userData}`, `--remote-debugging-port=${String(sandbox.debugPort)}`],
         {
             cwd: shellRoot,
-            env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+            // Issue #466: a parked view goes to sleep after 1.5 s here rather than a minute, so the
+            // sleep and wake checks below fit in the run (`webhost/park-sleep.ts`).
+            env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1', KELPI_WEB_TAB_SLEEP_MS: '1500' },
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: true
         }
@@ -1430,6 +1432,59 @@ async function webPhase() {
                 stillDrivable.code === 0 && stillDrivable.stdout.includes('Hello from the smoke page'),
                 stillDrivable.stdout.slice(0, 80).trim()
             );
+
+            /*
+             * Issue #466: a view that was on screen and is now parked gives its GPU memory back
+             * once nothing has used it for the delay (1.5 s in this run, a minute in the app),
+             * and an agent verb wakes it first. The verb here is the case the throttling flag
+             * exists for: a page timer in a tab nobody is looking at has to run at full speed.
+             */
+            const asleepMark = `web pane ${paneID} tab ${activeTabID}: asleep`;
+            const asleepCount = () => shell.lines.filter((line) => line.includes(asleepMark)).length;
+            const dozed = await shell.waitForLine(
+                new RegExp(asleepMark.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+                'the parked view to go to sleep',
+                20_000
+            );
+            check('a parked view that was on screen goes to sleep once nothing uses it', dozed.includes(asleepMark), dozed.trim());
+            const dozesBefore = asleepCount();
+            const timers = await cli.run([
+                'web',
+                'exec',
+                ...at(),
+                'return await new Promise((resolve) => { let n = 0; const t = setInterval(() => { n += 1; }, 50); setTimeout(() => { clearInterval(t); resolve(n); }, 1000); })'
+            ]);
+            const ticks = Number.parseInt(timers.stdout.trim(), 10);
+            check(
+                'a verb on a sleeping view runs with page timers at full speed',
+                timers.code === 0 && ticks >= 10,
+                `${String(ticks)} ticks of a 50 ms interval in 1 s ${timers.stderr.trim()}`
+            );
+            const woke = shell.lines.find((line) => line.includes(`web pane ${paneID} tab ${activeTabID}: awake (in use)`));
+            check('the verb woke the sleeping view first', woke !== undefined, woke?.trim() ?? 'no awake line');
+            await waitFor('the view to go back to sleep once the verb is done', () => asleepCount() > dozesBefore, 20_000);
+            check('the view goes back to sleep once the verb is done', asleepCount() > dozesBefore, `${String(asleepCount())} sleeps`);
+
+            probe.geometry({
+                paneID,
+                rect: { x: 24, y: 60, w: 800, h: 420 },
+                visible: true,
+                devicePixelRatio: 2,
+                shellWindowID: windowID
+            });
+            const awakePlaced = await shell.waitForLine(
+                new RegExp(`web pane ${paneID} tab ${activeTabID}: awake \\(placed\\)`),
+                'the placement to wake the sleeping view',
+                20_000
+            );
+            check('placing a sleeping view wakes it', awakePlaced.includes('awake (placed)'), awakePlaced.trim());
+            probe.geometry({
+                paneID,
+                rect: { x: 0, y: 0, w: 0, h: 0 },
+                visible: false,
+                devicePixelRatio: 2,
+                shellWindowID: windowID
+            });
         } finally {
             probe.close();
         }

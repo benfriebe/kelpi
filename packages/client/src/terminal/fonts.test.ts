@@ -166,6 +166,10 @@ describe('measureCellSize', () => {
         expect(resolveCellHeightAdjust({ unit: 'px', value: -2 }, 13, 'Menlo')).toBe(-2);
         expect(resolveCellHeightAdjust({ unit: 'percent', value: 40 }, 13, 'Menlo')).toBe(6);
         expect(resolveCellHeightAdjust({ unit: 'percent', value: -20 }, 13, 'Menlo')).toBe(-3);
+        // A row never shrinks past half its height, whichever unit asked: -16px on a 15px row
+        // would be a 1px row, and the pane would report hundreds of them to the pty.
+        expect(resolveCellHeightAdjust({ unit: 'px', value: -16 }, 13, 'Menlo')).toBe(-7);
+        expect(resolveCellHeightAdjust({ unit: 'percent', value: -90 }, 13, 'Menlo')).toBe(-7);
         // Unset means no change at all, not a zero-percent measurement.
         expect(resolveCellHeightAdjust(null, 13, 'Menlo')).toBe(0);
         expect(resolveCellHeightAdjust(undefined, 13, 'Menlo')).toBe(0);

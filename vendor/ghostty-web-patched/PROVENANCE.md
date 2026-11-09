@@ -76,6 +76,9 @@ terminal option is mutable: `setCellHeightAdjust` remeasures, wakes the on-deman
 (`-kelpi.25`) and `handleFontChange` resizes the canvas, as for a font size change. Percentages
 are the embedder's business: Kelpi turns `adjust-cell-height = 50%` into pixels before it gets here.
 
+**Known limit.** Box-drawing and Powerline glyphs are plain font glyphs here, so in a taller row a
+border that crosses rows shows small gaps. Native Ghostty draws them to fill the cell.
+
 ## Kelpi adaptation: the render loop runs on demand (`0.4.0-kelpi.25`, 2026-10-23)
 
 **The defect.** Upstream's `startRenderLoop` chained `requestAnimationFrame` unconditionally, one

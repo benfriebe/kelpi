@@ -59,6 +59,7 @@ mouse-hide-while-typing = true
         const parse = (line: string) => parseGhosttyAppearance(`${line}\n`).cellHeightAdjust;
         expect(parse('adjust-cell-height = 4')).toEqual({ unit: 'px', value: 4 });
         expect(parse('adjust-cell-height = -2')).toEqual({ unit: 'px', value: -2 });
+        expect(parse('adjust-cell-height = +4')).toEqual({ unit: 'px', value: 4 });
         expect(parse('adjust-cell-height = 50%')).toEqual({ unit: 'percent', value: 50 });
         expect(parse('adjust-cell-height = 12.6%')).toEqual({ unit: 'percent', value: 13 });
         // A runaway value must not collapse a row or make one taller than the pane.
@@ -67,7 +68,7 @@ mouse-hide-while-typing = true
         expect(parse('adjust-cell-height = 900%')).toEqual({ unit: 'percent', value: MAX_CELL_HEIGHT_ADJUST_PERCENT });
         expect(parse('adjust-cell-height = -99%')).toEqual({ unit: 'percent', value: MIN_CELL_HEIGHT_ADJUST_PERCENT });
         // Unparseable values are not an adjustment: the key stays unset, rows keep the font's height.
-        for (const junk of ['tall', '', '10 %', '%', '1e2', '5px']) {
+        for (const junk of ['tall', '10 %', '%', '1e2', '5px']) {
             expect(parse(`adjust-cell-height = ${junk}`)).toBeNull();
         }
         expect(parseGhosttyAppearance('font-size = 15\n').cellHeightAdjust).toBeNull();
@@ -79,6 +80,8 @@ mouse-hide-while-typing = true
             unit: 'px',
             value: 4
         });
+        // An empty value resets the key, the way ghostty reads it.
+        expect(parseGhosttyAppearance('adjust-cell-height = 4\nadjust-cell-height =\n').cellHeightAdjust).toBeNull();
     });
 
     it('window-padding: non-negative whole pixels, clamped, later line wins, junk refused', () => {

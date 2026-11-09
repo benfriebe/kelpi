@@ -377,6 +377,12 @@ export const DEFAULT_WS_TERMINAL_THEME: WsTerminalThemeResolution = {
     error: null
 };
 
+/** ghostty's `adjust-cell-height`: whole pixels, or a percentage of the font's own row height. */
+export interface WsCellHeightAdjust {
+    readonly unit: 'px' | 'percent';
+    readonly value: number;
+}
+
 /**
  * `~/.config/ghostty/config` appearance (content-panes.md §3.1, §3.8).
  *
@@ -388,11 +394,6 @@ export const DEFAULT_WS_TERMINAL_THEME: WsTerminalThemeResolution = {
  * `fontFamily` / `fontSize` are `null` when the ghostty config does not set them, which means
  * "use the host's own default" rather than a value this package would have to keep in sync.
  */
-export interface WsCellHeightAdjust {
-    readonly unit: 'px' | 'percent';
-    readonly value: number;
-}
-
 export interface WsAppearanceSettings {
     /** `#rrggbb` (lowercase). Always concrete — `isDark` is derived from it. */
     readonly backgroundColor: string;

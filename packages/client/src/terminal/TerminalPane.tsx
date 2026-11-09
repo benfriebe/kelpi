@@ -1680,7 +1680,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         releasePosterWhenPainted,
         props.fontFamily,
         props.fontSize,
-        props.cellHeightAdjust
+        // The unit and value, not the object: a caller passing a fresh literal must not rebuild it.
+        props.cellHeightAdjust?.unit,
+        props.cellHeightAdjust?.value
     ]);
 
     // A failed engine shows its error placeholder, and a poster must not cover it.

@@ -439,6 +439,60 @@ describe('TerminalPane — resize', () => {
     });
 });
 
+describe('TerminalPane — row height adjustment', () => {
+    function pane(
+        renderers: ReturnType<typeof createFakeRendererFactory>,
+        pty: ReturnType<typeof createFakePtyApi>,
+        cellHeightAdjust: { unit: 'px' | 'percent'; value: number } | undefined
+    ): React.ReactElement {
+        return (
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+                {...(cellHeightAdjust === undefined ? {} : { cellHeightAdjust })}
+            />
+        );
+    }
+
+    it('hands the engine whole pixels, and rebuilds it only when the unit or value changes', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        const view = render(pane(renderers, pty, { unit: 'px', value: 6 }));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.last().options?.cellHeightAdjust).toBe(6);
+
+        // A fresh object with the same values, as every settings snapshot builds one.
+        view.rerender(pane(renderers, pty, { unit: 'px', value: 6 }));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+
+        view.rerender(pane(renderers, pty, { unit: 'px', value: 8 }));
+        await settle();
+        expect(renderers.instances).toHaveLength(2);
+        expect(renderers.last().options?.cellHeightAdjust).toBe(8);
+    });
+
+    it('turns a percentage into pixels of the measured row, and passes nothing it was not given', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        render(pane(renderers, pty, { unit: 'percent', value: 50 }));
+        await settle();
+        // jsdom has no 2D context, so the row is the font-derived fallback (13px font: 18px).
+        expect(renderers.last().options?.cellHeightAdjust).toBe(9);
+
+        cleanup();
+        const plain = createFakeRendererFactory();
+        render(pane(plain, pty, undefined));
+        await settle();
+        expect(plain.last().options?.cellHeightAdjust).toBe(0);
+    });
+});
+
 describe('TerminalPane — input and focus', () => {
     it('forwards engine output upstream as pane input', async () => {
         const renderers = createFakeRendererFactory();

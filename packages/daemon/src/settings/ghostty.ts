@@ -51,7 +51,8 @@ export interface GhosttyAppearance {
      * `adjust-cell-height`: how much taller (or shorter) every terminal row is than the font's
      * own height, as whole pixels or a percentage of that height (`4`, `-2`, `50%`). Null = unset
      * or unparseable, rows keep the font's height. Clamped (see `MIN_/MAX_CELL_HEIGHT_ADJUST_*`)
-     * so a runaway value cannot collapse a row or make one taller than the pane.
+     * so a runaway value cannot make a row absurd. The client also stops a shrink at half the
+     * row, because only it knows the font a pane really uses.
      */
     readonly cellHeightAdjust: GhosttyCellHeightAdjust | null;
     /**
@@ -86,7 +87,7 @@ export const MAX_CELL_HEIGHT_ADJUST_PX = 64;
 export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -50;
 export const MAX_CELL_HEIGHT_ADJUST_PERCENT = 200;
 
-const CELL_HEIGHT_ADJUST = /^(-?\d+(?:\.\d+)?)(%?)$/;
+const CELL_HEIGHT_ADJUST = /^([+-]?\d+(?:\.\d+)?)(%?)$/;
 
 function clamp(value: number, min: number, max: number): number {
     return Math.min(max, Math.max(min, value));
@@ -208,6 +209,11 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
                 break;
             }
             case 'adjust-cell-height': {
+                // ghostty: an empty value resets the key to its default, like `font-family`.
+                if (value.trim() === '') {
+                    cellHeightAdjust = null;
+                    break;
+                }
                 const parsed = parseCellHeightAdjust(value);
                 if (parsed !== null) cellHeightAdjust = parsed;
                 break;

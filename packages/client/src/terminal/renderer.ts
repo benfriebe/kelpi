@@ -1038,7 +1038,7 @@ function resolveOptions(options: TerminalRendererOptions | undefined, engine: Te
         engine,
         fontFamily: options?.fontFamily ?? DEFAULT_FONT_FAMILY,
         fontSize: options?.fontSize ?? DEFAULT_FONT_SIZE,
-        cellHeightAdjust: Math.round(options?.cellHeightAdjust ?? 0) || 0,
+        cellHeightAdjust: Number.isFinite(options?.cellHeightAdjust) ? Math.round(options?.cellHeightAdjust ?? 0) : 0,
         theme: options?.theme ?? DEFAULT_TERMINAL_THEME,
         cols: Math.max(1, Math.trunc(options?.cols ?? 80)),
         rows: Math.max(1, Math.trunc(options?.rows ?? 24)),

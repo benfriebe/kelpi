@@ -1656,7 +1656,7 @@ class R {
   measureFont() {
     const Q = document.createElement("canvas").getContext("2d");
     Q.font = `${this.fontSize}px ${this.fontFamily}`;
-    const B = Q.measureText("M"), E = Math.ceil(B.width), C = B.actualBoundingBoxAscent || this.fontSize * 0.8, I = B.actualBoundingBoxDescent || this.fontSize * 0.2, D = Math.ceil(C + I) + 2, i = Math.ceil(C) + 1, o = Math.max(1, D + this.cellHeightAdjust), s = i + Math.floor((o - D) / 2);
+    const B = Q.measureText("M"), E = Math.ceil(B.width), C = B.actualBoundingBoxAscent || this.fontSize * 0.8, I = B.actualBoundingBoxDescent || this.fontSize * 0.2, D = Math.ceil(C + I) + 2, i = Math.ceil(C) + 1, o = Math.max(D - 2, D + this.cellHeightAdjust), s = i + Math.floor((o - D) / 2);
     return { width: E, height: o, baseline: s };
   }
   static wholePixels(A) {

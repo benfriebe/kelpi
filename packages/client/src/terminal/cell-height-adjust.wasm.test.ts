@@ -89,16 +89,17 @@ describe('cellHeightAdjust (0.4.0-kelpi.26)', () => {
         }
     });
 
-    it('can shrink a row, but never below one pixel', () => {
+    it('can shrink a row, but only by the 2px of padding, so the glyph and underline still fit', () => {
         const small = open(-2);
         try {
-            expect(small.term.renderer!.getMetrics().height).toBe(10);
+            // Natural row is 12 (10 of glyph plus 2 of padding); the baseline moves up by one.
+            expect(small.term.renderer!.getMetrics()).toMatchObject({ height: 10, baseline: 8 });
         } finally {
             small.done();
         }
         const floor = open(-500);
         try {
-            expect(floor.term.renderer!.getMetrics().height).toBe(1);
+            expect(floor.term.renderer!.getMetrics()).toMatchObject({ height: 10, baseline: 8 });
         } finally {
             floor.done();
         }

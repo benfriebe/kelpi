@@ -467,9 +467,10 @@ export interface TerminalRenderer {
      * Re-measure the cell after a font has loaded. Optional because a fake or a third engine
      * may have nothing to re-measure; the pane calls it when the bundled face settles AFTER
      * the engine was built (a slow link), which is the only way to correct metrics that were
-     * taken against the fallback.
+     * taken against the fallback. `cellHeightAdjust` is the row adjustment resolved against the
+     * font that arrived, since a percentage measured on the fallback is wrong for it.
      */
-    remeasure?(): void;
+    remeasure?(cellHeightAdjust?: number): void;
     /**
      * Is the engine currently holding its paint across a resize→replay window? (§N24.)
      *
@@ -553,9 +554,10 @@ export interface EngineHandle {
     setTheme?(theme: TerminalTheme): void;
     /**
      * Re-measure the font after it has loaded. The engines measure their cell once, at
-     * construction; a face that arrives later leaves them drawing at fallback metrics.
+     * construction; a face that arrives later leaves them drawing at fallback metrics. An engine
+     * with a row-height option takes the freshly resolved adjustment here.
      */
-    remeasure?(): void;
+    remeasure?(cellHeightAdjust?: number): void;
     /** Force a full redraw. */
     repaint?(): void;
     /**
@@ -1631,9 +1633,9 @@ class AdapterRenderer implements TerminalRenderer {
         this.guard(() => this.handle?.repaint?.(), 'repaint');
     }
 
-    remeasure(): void {
+    remeasure(cellHeightAdjust?: number): void {
         if (this.disposed || this.poisoned) return;
-        this.swallow(() => this.handle?.remeasure?.());
+        this.swallow(() => this.handle?.remeasure?.(cellHeightAdjust));
     }
 
     revealMatch(match: TerminalMatchLocation): void {
@@ -2400,9 +2402,12 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
              */
             renderer?.clear();
         },
-        remeasure: (): void => {
+        remeasure: (cellHeightAdjust?: number): void => {
             // Belt and braces: the loader already awaited the font, but a face that landed
             // during `open()` would otherwise leave the cell at fallback metrics forever.
+            if (cellHeightAdjust !== undefined && Number.isFinite(cellHeightAdjust)) {
+                terminal.options.cellHeightAdjust = Math.round(cellHeightAdjust);
+            }
             terminal.renderer?.remeasureFont();
         },
         // §N20 — `ghostty_surface_set_focus`'s port. Safe before `open()`: the engine keeps the

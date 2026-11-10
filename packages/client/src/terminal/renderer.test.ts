@@ -130,6 +130,8 @@ class StubEngine {
     readonly themes: TerminalTheme[] = [];
     repaints = 0;
     remeasures = 0;
+    /** The row adjustment each `remeasure` call carried, in order (`undefined` when none). */
+    readonly remeasureArgs: (number | undefined)[] = [];
     onRemeasure: (() => void) | undefined;
     cell: CellSize | undefined;
     /** §N20 — every surface-focus report the handle received, in order. */
@@ -166,8 +168,9 @@ class StubEngine {
             repaint: (): void => {
                 this.repaints += 1;
             },
-            remeasure: (): void => {
+            remeasure: (cellHeightAdjust?: number): void => {
                 this.remeasures += 1;
+                this.remeasureArgs.push(cellHeightAdjust);
                 this.onRemeasure?.();
             },
             setSurfaceFocus: (focused: boolean): void => {
@@ -318,6 +321,22 @@ describe('TerminalRenderer adapter', () => {
         expect(order).toEqual(['remeasure', 'resize', 'write']);
         expect(engine.terminal.cols).toBe(120);
         expect(engine.terminal.rows).toBe(40);
+        renderer.dispose();
+    });
+
+    it('hands a re-resolved row adjustment to the engine when the font arrives late', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader, { cellHeightAdjust: 4 });
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+        // The open itself re-measures with nothing to say about rows.
+        expect(engine.remeasureArgs).toEqual([undefined]);
+
+        renderer.remeasure?.(9);
+        expect(engine.remeasureArgs).toEqual([undefined, 9]);
+        renderer.remeasure?.();
+        expect(engine.remeasureArgs).toEqual([undefined, 9, undefined]);
         renderer.dispose();
     });
 

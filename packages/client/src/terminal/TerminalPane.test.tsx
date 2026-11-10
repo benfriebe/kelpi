@@ -16,6 +16,7 @@ import {
 import { PhoneKeyBar } from './PhoneKeyBar';
 import { restartUI } from '../app/reload';
 import { registerModal } from '../chrome/modal-presence';
+import { TERMINAL_FONT_WAIT_MS, resetTerminalFontsForTests } from './fonts';
 import { paneHandle, type TerminalLinkCommands } from './pane-registry';
 import type { TerminalHistoryAt } from '../connection';
 import { lastSelection, recordSelection, resetSelectionBufferForTests } from './selection-buffer';
@@ -490,6 +491,74 @@ describe('TerminalPane — row height adjustment', () => {
         render(pane(plain, pty, undefined));
         await settle();
         expect(plain.last().options?.cellHeightAdjust).toBe(0);
+    });
+
+    describe('when the bundled font arrives after the pane opened', () => {
+        // One pending load per font weight; `finishLoad` lets them all go.
+        const loads: (() => void)[] = [];
+        const finishLoad = (): void => {
+            for (const release of loads.splice(0)) release();
+        };
+
+        beforeEach(() => {
+            resetTerminalFontsForTests();
+            loads.length = 0;
+            // A FontFaceSet whose loads stay pending until the test lets them go.
+            Object.defineProperty(document, 'fonts', {
+                configurable: true,
+                value: {
+                    load: () =>
+                        new Promise<unknown[]>((resolve) => {
+                            loads.push(() => resolve([]));
+                        }),
+                    ready: Promise.resolve()
+                }
+            });
+        });
+
+        afterEach(() => {
+            Reflect.deleteProperty(document, 'fonts');
+            resetTerminalFontsForTests();
+        });
+
+        async function openOnFallbackFont(
+            renderers: ReturnType<typeof createFakeRendererFactory>,
+            cellHeightAdjust: { unit: 'px' | 'percent'; value: number } | undefined
+        ): Promise<void> {
+            render(pane(renderers, createFakePtyApi(), cellHeightAdjust));
+            // The pane waits for the font, gives up after the bounded wait, and opens anyway.
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(TERMINAL_FONT_WAIT_MS);
+            });
+            await settle();
+            expect(renderers.instances).toHaveLength(1);
+        }
+
+        it('resolves the row height again against the real font, not the fallback it opened on', async () => {
+            const renderers = createFakeRendererFactory();
+            await openOnFallbackFont(renderers, { unit: 'percent', value: 50 });
+            expect(renderers.last().remeasures).toEqual([]);
+
+            await act(async () => {
+                finishLoad();
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            // jsdom has no 2D context, so both measurements are the same 18px estimate: what
+            // this pins is that the pane hands the engine a resolved value at all.
+            expect(renderers.last().remeasures).toEqual([9]);
+        });
+
+        it('leaves the row height alone when none was configured', async () => {
+            const renderers = createFakeRendererFactory();
+            await openOnFallbackFont(renderers, undefined);
+            await act(async () => {
+                finishLoad();
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(renderers.last().remeasures).toEqual([undefined]);
+        });
     });
 });
 

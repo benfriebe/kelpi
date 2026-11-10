@@ -519,7 +519,9 @@ describe('vendored ghostty-web engine', () => {
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
         expect(bundle).toContain('setCellHeightAdjust');
         const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
-        expect(rendererSource).toContain('const height = Math.max(1, naturalHeight + this.cellHeightAdjust);');
+        expect(rendererSource).toContain(
+            'const height = Math.max(naturalHeight - 2, naturalHeight + this.cellHeightAdjust);'
+        );
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

@@ -1767,7 +1767,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         return onTerminalFontsReady(() => {
             const renderer = rendererRef.current;
             if (renderer === null) return;
-            renderer.remeasure?.();
+            // A percentage row height was measured on the fallback face; resolve it again.
+            const current = latest.current;
+            renderer.remeasure?.(
+                current.cellHeightAdjust === undefined
+                    ? undefined
+                    : resolveCellHeightAdjust(
+                          current.cellHeightAdjust,
+                          current.fontSize ?? DEFAULT_FONT_SIZE,
+                          current.fontFamily ?? DEFAULT_FONT_FAMILY
+                      )
+            );
             syncGeometry(true);
             renderer.repaint();
         });

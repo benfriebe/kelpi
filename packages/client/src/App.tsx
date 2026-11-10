@@ -275,6 +275,7 @@ import {
     paneHandle,
     resolveTerminalTheme,
     terminalFontStack,
+    configuredTerminalEngine,
     terminalPaletteCssVars,
     terminalThemePreset,
     probeLinkURLVia,
@@ -2978,8 +2979,11 @@ function Shell(props: AppProps): ReactElement {
     // (`terminal/fonts.ts`).
     // Primitives, not the settings object: every snapshot builds a new one, and a new object
     // here would rebuild every engine.
-    const cellHeightUnit = settings.appearance.cellHeightAdjust?.unit ?? null;
-    const cellHeightValue = settings.appearance.cellHeightAdjust?.value ?? null;
+    // The xterm engine ignores the key, so it gets none: a change would rebuild its panes for
+    // nothing and drop their selection.
+    const rowHeightApplies = configuredTerminalEngine() === 'ghostty';
+    const cellHeightUnit = rowHeightApplies ? (settings.appearance.cellHeightAdjust?.unit ?? null) : null;
+    const cellHeightValue = rowHeightApplies ? (settings.appearance.cellHeightAdjust?.value ?? null) : null;
     const terminalFont = useMemo(
         () => ({
             fontFamily: terminalFontStack(settings.appearance.fontFamily),

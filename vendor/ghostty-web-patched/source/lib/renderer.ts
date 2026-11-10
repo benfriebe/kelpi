@@ -363,8 +363,9 @@ export class CanvasRenderer {
     const naturalHeight = Math.ceil(ascent + descent) + 2;
     const naturalBaseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
 
-    // vendor 0.4.0-kelpi.26: the adjustment can shrink a cell, but never below one pixel.
-    const height = Math.max(1, naturalHeight + this.cellHeightAdjust);
+    // vendor 0.4.0-kelpi.26: the adjustment can shrink a cell, but only by the 2px of padding
+    // above. Past that the glyph and its underline no longer fit the row and get clipped.
+    const height = Math.max(naturalHeight - 2, naturalHeight + this.cellHeightAdjust);
     // The glyph stays in the middle of the cell: half of the change goes above it.
     const baseline = naturalBaseline + Math.floor((height - naturalHeight) / 2);
 

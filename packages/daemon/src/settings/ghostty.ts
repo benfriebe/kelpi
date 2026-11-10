@@ -82,9 +82,9 @@ export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
 export type GhosttyCellHeightAdjust = WsCellHeightAdjust;
 
 /** See `GhosttyAppearance.cellHeightAdjust` — the range a parsed value is clamped to. */
-export const MIN_CELL_HEIGHT_ADJUST_PX = -16;
+export const MIN_CELL_HEIGHT_ADJUST_PX = -2;
 export const MAX_CELL_HEIGHT_ADJUST_PX = 64;
-export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -50;
+export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -10;
 export const MAX_CELL_HEIGHT_ADJUST_PERCENT = 200;
 
 const CELL_HEIGHT_ADJUST = /^([+-]?\d+(?:\.\d+)?)(%?)$/;

@@ -28,6 +28,8 @@ import {
     type WsWritableGhosttyKey
 } from '@kelpi/protocol';
 
+import { WEB_TAB_DISCARD_MINUTES_MAX } from '@kelpi/core/config';
+
 import { AGENT_DISPLAY_NAMES } from '../chrome/types';
 import { ACTION_CATALOG, SETTINGS_TABS, VISIBLE_CATEGORIES } from './catalog';
 import {
@@ -154,6 +156,13 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 title: 'Links',
                 hint: null,
                 testID: 'general-links'
+            },
+            {
+                id: 'general-web-panes',
+                sectionID: 'general',
+                title: 'Web panes',
+                hint: null,
+                testID: 'general-web-panes'
             },
             {
                 id: 'general-updates',
@@ -750,6 +759,24 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         default: true,
         read: (settings) => settings.general.linksReuseWebPane,
         encode: BOOLEAN
+    },
+    {
+        id: 'general.webTabDiscardMinutes',
+        sectionID: 'general',
+        groupID: 'general-web-panes',
+        // #467. A number rather than a menu of durations: the config file takes any whole number
+        // of minutes, and a value typed there has to read back here as itself.
+        kind: 'number',
+        label: 'Unload tabs unused for (minutes)',
+        detail: 'A web tab that has not been on screen or driven by an agent for this long gives its memory back. It stays in its pane, and loads again where you left it when you switch to it or an agent uses it. Tabs playing audio, with dev tools open, or with unsaved changes stay loaded. 0 keeps every tab loaded.',
+        testID: 'web-tab-discard-minutes',
+        target: { file: 'kelpi', key: 'web-tab-discard-minutes' },
+        default: 60,
+        min: 0,
+        max: WEB_TAB_DISCARD_MINUTES_MAX,
+        step: 1,
+        read: (settings) => settings.general.webTabDiscardMinutes,
+        encode: (value) => String(Math.trunc(value))
     },
     {
         id: 'general.autoUpdate',

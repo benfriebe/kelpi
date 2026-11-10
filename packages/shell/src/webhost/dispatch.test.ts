@@ -990,3 +990,69 @@ describe('the automation viewport (lazy pin)', () => {
         await expect(dispatcher.call('actuate', { ...scope, method: 'click', args: [] })).resolves.toMatchObject({ ok: true });
     });
 });
+
+/**
+ * Issue #467: a discarded tab is still the daemon's. A verb that needs the page brings it back
+ * first; one that only looks at what is loaded leaves it discarded.
+ */
+describe('discarded tabs', () => {
+    const discard = (registry: TabRegistry<FakeTab>) => {
+        expect(
+            registry.discard('P1', 'T1', { url: 'https://example.com/left', title: 'Left', restore: { saved: true } })
+        ).toBe(true);
+    };
+
+    it('answers url from what the tab was showing, without loading it', async () => {
+        const { dispatcher, registry, tabs } = harness();
+        discard(registry);
+        await expect(dispatcher.call('url', scope)).resolves.toEqual({
+            ok: true,
+            url: 'https://example.com/left',
+            title: 'Left'
+        });
+        await expect(dispatcher.call('url', { paneID: 'P1', tabID: '' })).resolves.toMatchObject({ url: 'https://example.com/left' });
+        expect(tabs).toHaveLength(1);
+    });
+
+    it('answers a meta capture from the record too, since it is url by another name', async () => {
+        const { dispatcher, registry, tabs } = harness();
+        discard(registry);
+        await expect(dispatcher.call('capture', { ...scope, mode: 'meta' })).resolves.toEqual({
+            ok: true,
+            url: 'https://example.com/left',
+            title: 'Left'
+        });
+        expect(tabs).toHaveLength(1);
+    });
+
+    it('brings the tab back for a read, and the read runs on the rebuilt page', async () => {
+        const { dispatcher, registry, tabs } = harness();
+        discard(registry);
+        const reply = await dispatcher.call('capture', { ...scope, mode: 'text' });
+        expect(reply['ok']).toBe(true);
+        expect(tabs).toHaveLength(2);
+        const rebuilt = tabs[1] as FakeTab;
+        expect(rebuilt.url()).toBe('https://example.com/left');
+        expect(rebuilt.evaluated).toHaveLength(1);
+        expect(registry.view('P1', 'T1')).toBe(rebuilt);
+    });
+
+    it('brings the tab back for a navigation, and navigates the rebuilt one', async () => {
+        const { dispatcher, registry, tabs } = harness();
+        discard(registry);
+        await expect(dispatcher.call('navigate', { ...scope, url: 'https://example.com/next' })).resolves.toEqual({ ok: true });
+        expect(tabs[1]?.navigated).toEqual(['https://example.com/next']);
+    });
+
+    it('leaves it discarded for a stop, a poster and the batch markers', async () => {
+        const { dispatcher, registry, tabs } = harness();
+        discard(registry);
+        await expect(dispatcher.call('stop', scope)).resolves.toEqual({ ok: true });
+        await expect(dispatcher.call('poster', scope)).resolves.toMatchObject({ ok: false, transient: true });
+        dispatcher.notify('batch-markers', { ...scope, items: [{ id: 'b1', selector: '#x', label: '1', comment: '' }] });
+        dispatcher.notify('batch-clear', { paneID: 'P1' });
+        dispatcher.notify('inspect-disarm', { paneID: 'P1' });
+        expect(tabs).toHaveLength(1);
+        expect(registry.discarded('P1', 'T1')).not.toBeNull();
+    });
+});

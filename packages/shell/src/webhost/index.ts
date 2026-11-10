@@ -33,6 +33,14 @@
  * straight back. Geometry from any other client (a browser, another machine) is ignored — those
  * clients keep drawing the placeholder card, which is why the automation surface is unaffected
  * by all of this.
+ *
+ * ## A third state: discarded (issue #467)
+ *
+ * A tab nobody has shown or driven for `web-tab-discard-minutes` (an hour by default) gives its
+ * renderer back. The tab asks (`./idle-discard.ts`), this module answers for what only it can
+ * see (`mayDiscard`: the pane's placement, a console follower), the page answers for itself
+ * (`beforeunload`, `./tab.ts`), and the registry keeps the record in the view's place. Placing
+ * the pane (`resolveView` below) or a verb that needs the page (`./dispatch.ts`) rebuilds it.
  */
 
 import { BaseWindow, screen, type BrowserWindow } from 'electron';
@@ -46,6 +54,7 @@ import type { DaemonLocation } from '../daemon.js';
 import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
+import { DEFAULT_DISCARD_MINUTES, discardDelay } from './idle-discard.js';
 import { chordCommand, chordLabel, setForwardedKeybindLines, startsHeldGesture } from './keys.js';
 import { parkKeyboardDecision, releaseBeforeHide } from './park-keyboard.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
@@ -54,6 +63,7 @@ import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
 import { describeKeyboardOwner, type KeyboardOwner } from './nav-focus.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
+import type { TabRestore } from './tab-restore.js';
 import { traceFocus } from './view-focus.js';
 import { createPaneSessions } from './sessions.js';
 import { DEFAULT_VIEWPORT, createTabHooks, type HostTab } from './tab.js';
@@ -347,11 +357,54 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         return window === null || window.isDestroyed() || window.isFocusable();
     };
 
+    /*
+     * #467: `web-tab-discard-minutes`, from the daemon's settings (`client.onDiscardMinutes`).
+     * The default holds until the first `welcome` says otherwise, which is a moment after launch
+     * and long before any tab has been idle for a minute, let alone an hour.
+     */
+    let discardMinutes = DEFAULT_DISCARD_MINUTES;
+    const currentDiscardDelay = (): number | null => discardDelay(discardMinutes, process.env);
+    const describeDiscardDelay = (delay: number | null): string =>
+        delay === null ? 'off' : `after ${String(Math.round(delay / 1000))} s unused`;
+    log(`web host: discarding unused web tabs ${describeDiscardDelay(currentDiscardDelay())}`);
+    /*
+     * #467: panes somebody is following the console of (`kelpi web console --follow`, a WS
+     * `web-console-subscribe`), from the daemon's `console-follow` notify. A discarded page logs
+     * nothing, so a follower would sit on a stream that had silently stopped.
+     */
+    const consoleFollowed = new Set<string>();
+
     const hooks = createTabHooks({
         keyboardOwner,
         restoreKeyboard,
         deferredFocus,
         windowMayBeKey,
+        discardDelay: currentDiscardDelay,
+        /*
+         * #467: the half of the rule the tab cannot see. Its pane's placement, whether on screen
+         * or one this shell parked and owes back (the window hidden, a recovery): that is the
+         * page the person was looking at, and it comes back as it was rather than reloading.
+         */
+        mayDiscard: (tab) => {
+            if (currentDiscardDelay() === null) return false;
+            const placement = embed.placementOf(tab.paneID);
+            if (placement !== null && placement.view === tab) {
+                log(`web pane ${tab.paneID} tab ${tab.tabID}: kept loaded (its placement is held)`);
+                return false;
+            }
+            if (consoleFollowed.has(tab.paneID)) {
+                log(`web pane ${tab.paneID} tab ${tab.tabID}: kept loaded (its console is being followed)`);
+                return false;
+            }
+            return true;
+        },
+        discarded: (tab, record) => {
+            // Placed in the moment the page was answering its `beforeunload`: the close went
+            // ahead anyway, so the pane gets the rebuilt view at once instead of a hole.
+            const wasPlaced = embed.placementOf(tab.paneID)?.view === tab;
+            registry.discard(tab.paneID, tab.tabID, record);
+            if (wasPlaced) embed.reapply(tab.paneID);
+        },
         holder: holderWindow,
         sessionFor: (paneID, isPrivate) => sessions.sessionFor(paneID, isPrivate),
         viewport,
@@ -468,7 +521,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         }
     });
 
-    const registry: TabRegistry<HostTab> = createTabRegistry<HostTab>({
+    const registry: TabRegistry<HostTab, TabRestore> = createTabRegistry<HostTab, TabRestore>({
         ...hooks,
         /*
          * A tab switch hides the outgoing view HERE, one notify before the geometry that parks
@@ -508,8 +561,8 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
     };
 
     const embed: EmbedController<HostTab> = createEmbedController<HostTab>({
-        resolveView: (paneID, tabID) =>
-            tabID === null ? registry.activeView(paneID) : registry.view(paneID, tabID),
+        // #467: placing a pane is showing its page, so a discarded tab is rebuilt here.
+        resolveView: (paneID, tabID) => registry.restore(paneID, tabID),
         metrics: windowMetrics,
         ...(options.windowID === undefined ? {} : { windowID: options.windowID }),
         hooks: {
@@ -984,6 +1037,24 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             return;
         }
         const paneID = typeof args['paneID'] === 'string' ? args['paneID'] : '';
+        // #467: who is following a pane's console. Host bookkeeping only, like geometry.
+        if (verb === 'console-follow') {
+            if (paneID === '') return;
+            if (args['following'] !== true) {
+                consoleFollowed.delete(paneID);
+                return;
+            }
+            consoleFollowed.add(paneID);
+            // A follower wants the pane's pages running, and one that starts after they were
+            // discarded would otherwise watch a stream nothing writes to.
+            const discarded = registry.tabIDs(paneID).filter((tabID) => registry.discarded(paneID, tabID) !== null);
+            if (discarded.length > 0) {
+                log(`web pane ${paneID}: its console is being followed; restoring ${String(discarded.length)} discarded tab(s)`);
+                for (const tabID of discarded) registry.restore(paneID, tabID);
+            }
+            return;
+        }
+        if (verb === 'pane-close' && paneID !== '') consoleFollowed.delete(paneID);
         // A private flip changes the partition, and the partition is sealed into the views —
         // dropping the handle first is what makes the rebuilt views land on the new store.
         if (verb === 'pane-set-private' && paneID !== '') sessions.forget(paneID);
@@ -1040,8 +1111,21 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         onKeybindLines: (lines) => {
             setForwardedKeybindLines(lines);
         },
+        /** #467: the discard setting, on every (re)connect and every config write. */
+        onDiscardMinutes: (minutes) => {
+            if (minutes === discardMinutes) return;
+            discardMinutes = minutes;
+            const delay = currentDiscardDelay();
+            log(`web host: discarding unused web tabs ${describeDiscardDelay(delay)}`);
+            for (const paneID of registry.paneIDs()) {
+                for (const tab of registry.pane(paneID)?.tabs ?? []) tab.view.setDiscardDelay(delay);
+            }
+        },
         onRegistered: (hostID, superseded) => {
             log(`web host ready (${hostID}${superseded ? ', took over' : ''}) — waiting for pane-open replay`);
+            // #467: the daemon replays its followed panes after the panes themselves; one that
+            // restarted has none of the followers this host last heard about.
+            consoleFollowed.clear();
             sweepUnclaimedPlacements();
         },
         onRevoked: (reason) => {

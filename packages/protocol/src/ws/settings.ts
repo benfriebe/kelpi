@@ -54,6 +54,13 @@ export interface WsGeneralSettings {
      */
     readonly linksReuseWebPane: boolean;
     /**
+     * `web-tab-discard-minutes`, default **60**: a web tab nobody has shown or driven for this
+     * long is discarded by the Electron shell and rebuilt when it is next needed (issue #467).
+     * `0` is never. The shell's web host reads it off its own `welcome.settings`; Settings ▸
+     * General ▸ Web panes renders it. A daemon that predates it omits it.
+     */
+    readonly webTabDiscardMinutes: number;
+    /**
      * `font-size-scope`, default `pane`: what ⌘= / ⌘- / ⌘0 resize, the focused terminal pane
      * (its own size, on the pane) or every terminal (the ghostty `font-size`). Read by the CLIENT.
      */
@@ -472,6 +479,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         workspaceDeleteWorktrees: 'ask',
         openLinksIn: 'browser',
         linksReuseWebPane: true,
+        webTabDiscardMinutes: 60,
         fontSizeScope: 'pane',
         workspaceDeleteBranches: true,
         confirmQuitWhenActive: true,
@@ -572,6 +580,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'open-links-in',
     // Whether a link opened in Kelpi joins the workspace's web pane as a tab. Same group.
     'links-reuse-web-pane',
+    // #467: how long an unused web tab stays loaded. Settings ▸ General ▸ Web panes writes it.
+    'web-tab-discard-minutes',
     // What ⌘= / ⌘- / ⌘0 resize. Settings ▸ Appearance ▸ Terminal writes it.
     'font-size-scope',
     // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q

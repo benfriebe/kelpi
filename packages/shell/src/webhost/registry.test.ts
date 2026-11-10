@@ -17,6 +17,7 @@ interface FakeView {
     readonly id: string;
     readonly url: string;
     readonly isPrivate: boolean;
+    readonly restore: string | undefined;
     visible: boolean;
     destroyed: DestroyReason | null;
 }
@@ -24,12 +25,13 @@ interface FakeView {
 function harness() {
     const created: FakeView[] = [];
     const destroyed: { view: FakeView; reason: DestroyReason }[] = [];
-    const registry = createTabRegistry<FakeView>({
-        create(input: CreateTabInput) {
+    const registry = createTabRegistry<FakeView, string>({
+        create(input: CreateTabInput<string>) {
             const view: FakeView = {
                 id: input.tabID,
                 url: input.url,
                 isPrivate: input.isPrivate,
+                restore: input.restore,
                 visible: false,
                 destroyed: null
             };
@@ -178,6 +180,135 @@ describe('tabs', () => {
         expect(registry.view('nope', 't1')).toBeNull();
         expect(registry.activeView('nope')).toBeNull();
         expect(registry.pane('nope')).toBeNull();
+    });
+});
+
+/**
+ * Issue #467: a tab nobody used for a while keeps its place in the pane without a view, and is
+ * rebuilt from what its view saved when something needs the page.
+ */
+describe('discard and restore', () => {
+    const record = (url: string) => ({ url, title: `title of ${url}`, restore: `history of ${url}` });
+
+    it('destroys the view but keeps the tab, its place and the active choice', () => {
+        const { registry, destroyed } = harness();
+        registry.openPane(pane(['t1', 't2', 't3'], 't2'));
+        expect(registry.discard('P1', 't2', record('https://t2/page'))).toBe(true);
+        expect(destroyed.map((entry) => [entry.view.id, entry.reason])).toEqual([['t2', 'discard']]);
+        expect(registry.activeTabID('P1')).toBe('t2');
+        expect(registry.discarded('P1', 't2')).toEqual(record('https://t2/page'));
+        expect(registry.discarded('P1', null)).toEqual(record('https://t2/page'));
+        expect(registry.discarded('P1', 't1')).toBeNull();
+    });
+
+    it('hides a discarded tab from everything that only looks at views', () => {
+        const { registry } = harness();
+        registry.openPane(pane(['t1', 't2'], 't1'));
+        registry.discard('P1', 't1', record('https://t1/'));
+        expect(registry.view('P1', 't1')).toBeNull();
+        expect(registry.activeView('P1')).toBeNull();
+        expect(registry.pane('P1')?.tabs.map((tab) => tab.id)).toEqual(['t2']);
+        expect(registry.locate((view) => view.id === 't1')).toBeNull();
+        // A discarded tab has no renderer to lose.
+        expect(registry.forgetTab('P1', 't1')).toBe(false);
+    });
+
+    it('restores a discarded tab from its record, shown only if it is the active one', () => {
+        const { registry, created } = harness();
+        registry.openPane(pane(['t1', 't2'], 't2'));
+        registry.discard('P1', 't1', record('https://t1/later'));
+        registry.discard('P1', 't2', record('https://t2/later'));
+
+        const background = registry.restore('P1', 't1');
+        expect(background).toMatchObject({ id: 't1', url: 'https://t1/later', restore: 'history of https://t1/later', visible: false });
+        const active = registry.restore('P1', null);
+        expect(active).toMatchObject({ id: 't2', url: 'https://t2/later', visible: true });
+        expect(registry.view('P1', 't2')).toBe(active);
+        expect(registry.discarded('P1', 't2')).toBeNull();
+        expect(created).toHaveLength(4);
+    });
+
+    it('lists every tab, discarded ones included, so a caller can bring a whole pane back', () => {
+        const { registry } = harness();
+        registry.openPane(pane(['t1', 't2', 't3'], 't1'));
+        registry.discard('P1', 't2', record('https://t2/'));
+        expect(registry.tabIDs('P1')).toEqual(['t1', 't2', 't3']);
+        expect(registry.tabIDs('nope')).toEqual([]);
+    });
+
+    it('restore answers a live tab with its view and builds nothing', () => {
+        const { registry, created } = harness();
+        registry.openPane(pane(['t1'], 't1'));
+        expect(registry.restore('P1', 't1')).toBe(created[0]);
+        expect(registry.restore('P1', null)).toBe(created[0]);
+        expect(created).toHaveLength(1);
+        expect(registry.restore('P1', 'nope')).toBeNull();
+        expect(registry.restore('nope', null)).toBeNull();
+    });
+
+    it('refuses to discard a tab it does not have, or one that is already discarded', () => {
+        const { registry, destroyed } = harness();
+        registry.openPane(pane(['t1'], 't1'));
+        expect(registry.discard('P1', 'nope', record('x'))).toBe(false);
+        expect(registry.discard('nope', 't1', record('x'))).toBe(false);
+        expect(registry.discard('P1', 't1', record('https://t1/'))).toBe(true);
+        expect(registry.discard('P1', 't1', record('https://t1/other'))).toBe(false);
+        expect(destroyed).toHaveLength(1);
+        expect(registry.discarded('P1', 't1')?.url).toBe('https://t1/');
+    });
+
+    it('keeps a discarded tab discarded across a pane-open replay, and drops it when the daemon does', () => {
+        const { registry, created } = harness();
+        registry.openPane(pane(['t1', 't2'], 't1'));
+        registry.discard('P1', 't2', record('https://t2/'));
+        registry.openPane(pane(['t1', 't2'], 't1'));
+        expect(created).toHaveLength(2);
+        expect(registry.discarded('P1', 't2')).not.toBeNull();
+        registry.openPane(pane(['t1'], 't1'));
+        expect(registry.discarded('P1', 't2')).toBeNull();
+        expect(registry.restore('P1', 't2')).toBeNull();
+    });
+
+    it('closing a discarded tab destroys nothing and activates the left neighbour', () => {
+        const { registry, destroyed } = harness();
+        registry.openPane(pane(['t1', 't2'], 't2'));
+        registry.discard('P1', 't2', record('https://t2/'));
+        expect(registry.closeTab('P1', 't2')).toBe(true);
+        expect(destroyed).toHaveLength(1);
+        expect(registry.activeTabID('P1')).toBe('t1');
+        expect(registry.activeView('P1')?.visible).toBe(true);
+    });
+
+    it('selecting a discarded tab hides the old one and leaves the new one to be restored', () => {
+        const { registry, created } = harness();
+        registry.openPane(pane(['t1', 't2'], 't1'));
+        registry.discard('P1', 't2', record('https://t2/'));
+        expect(registry.selectTab('P1', 't2')).toBe(true);
+        expect(created[0]?.visible).toBe(false);
+        expect(registry.activeView('P1')).toBeNull();
+        expect(registry.restore('P1', null)?.visible).toBe(true);
+    });
+
+    it('a private flip rebuilds every tab from the daemon\'s spec, discarded ones included', () => {
+        const { registry, created } = harness();
+        registry.openPane(pane(['t1', 't2'], 't1'));
+        registry.discard('P1', 't2', record('https://t2/later'));
+        registry.setPrivate(pane(['t1', 't2'], 't1', true));
+        expect(created.slice(2).map((view) => [view.id, view.url, view.isPrivate, view.restore])).toEqual([
+            ['t1', 'https://t1/', true, undefined],
+            ['t2', 'https://t2/', true, undefined]
+        ]);
+    });
+
+    it('closing the pane or disposing destroys only the live views', () => {
+        const { registry, destroyed } = harness();
+        registry.openPane(pane(['t1', 't2'], 't1'));
+        registry.discard('P1', 't2', record('https://t2/'));
+        expect(registry.closePane('P1')).toBe(true);
+        expect(destroyed.map((entry) => [entry.view.id, entry.reason])).toEqual([
+            ['t2', 'discard'],
+            ['t1', 'pane-close']
+        ]);
     });
 });
 

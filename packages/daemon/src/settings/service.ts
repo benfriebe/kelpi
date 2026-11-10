@@ -314,6 +314,8 @@ export function buildSettingsSnapshot(
             openLinksIn: general.openLinksIn,
             // Read by the window's link opening, never by the daemon.
             linksReuseWebPane: general.linksReuseWebPane,
+            // #467: read by the Electron shell's web host, never by the daemon.
+            webTabDiscardMinutes: general.webTabDiscardMinutes,
             // Read by the window's ⌘= / ⌘- / ⌘0, never by the daemon.
             fontSizeScope: general.fontSizeScope,
             workspaceDeleteBranches: general.workspaceDeleteBranches,

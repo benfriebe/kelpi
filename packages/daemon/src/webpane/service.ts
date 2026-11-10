@@ -270,6 +270,11 @@ export interface WebPaneService {
      * stream of them must not become host traffic.
      */
     notifyGeometry(report: GeometryReportInput): void;
+    /**
+     * A console follower (`kelpi web console --follow`, WS `web-console-subscribe`). The host is
+     * told when a pane gains its first follower and loses its last (`console-follow`,
+     * HOST_PROTOCOL §3.1), because it keeps a followed pane's tabs loaded (issue #467).
+     */
     subscribeConsole(paneID: string, subscriber: ConsoleSubscriber): () => void;
     close(): void;
 }
@@ -444,6 +449,14 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
     /** §5.2: when each pane was last rebuilt, so a page that dies on load cannot loop. */
     const rebuiltAt = new Map<string, number>();
+    /*
+     * #467: the panes the host has been told have a console follower. The shell discards a tab
+     * nobody has used for a while, and a discarded page logs nothing, so a follower would sit on
+     * a stream that had silently stopped; the host keeps a followed pane's tabs loaded instead.
+     * Only the edges are sent (first follower, last one gone), and the set is replayed onto a
+     * freshly registered host with the panes (`noteConsoleFollowers`, `syncHost`).
+     */
+    const followedPanes = new Set<string>();
 
     const webPaneOf = (paneID: string): { workspaceID: string; web: WebPaneState } | null => {
         if (store === undefined) return null;
@@ -495,6 +508,8 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             findState.disposePane(paneID);
             batchState.disposePane(paneID);
             rebuiltAt.delete(paneID);
+            // The host forgets a closed pane's followers with the pane itself.
+            followedPanes.delete(paneID);
             if (announced.delete(paneID)) host.notify('pane-close', { paneID });
         }
     };
@@ -552,6 +567,14 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         void callFind(paneID, tabID, 'search', session.needle);
     };
 
+    const noteConsoleFollowers = (paneID: string): void => {
+        const following = consoleStore.subscribers(paneID) > 0;
+        if (following === followedPanes.has(paneID)) return;
+        if (following) followedPanes.add(paneID);
+        else followedPanes.delete(paneID);
+        host.notify('console-follow', { paneID, following });
+    };
+
     /** Replay every known web pane onto a freshly registered host (it starts empty). */
     const syncHost = (): void => {
         if (store === undefined) return;
@@ -570,6 +593,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         // A new host starts with blank pages: anything the daemon is still holding open — a
         // batch's badges, an armed picker's needle — has to be pushed back onto them.
         for (const paneID of batchState.panes()) publishBatch(paneID);
+        for (const paneID of followedPanes) host.notify('console-follow', { paneID, following: true });
     };
 
     // Pane lifecycle mirroring: a web pane the GUI/CLI created must materialise in the host,
@@ -1227,7 +1251,12 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         },
 
         subscribeConsole(paneID, subscriber) {
-            return consoleStore.subscribe(paneID, subscriber);
+            const unsubscribe = consoleStore.subscribe(paneID, subscriber);
+            noteConsoleFollowers(paneID);
+            return () => {
+                unsubscribe();
+                noteConsoleFollowers(paneID);
+            };
         },
 
         close() {

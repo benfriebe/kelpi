@@ -81,6 +81,12 @@ export interface WebHostClientOptions {
      * config changed while it was away must not keep forwarding the old set.
      */
     readonly onKeybindLines?: ((lines: readonly string[]) => void) | undefined;
+    /**
+     * #467: `web-tab-discard-minutes` (`settings.general.webTabDiscardMinutes`), from the same
+     * two messages. Absent from a daemon that predates the setting, and then never called: the
+     * host keeps its default.
+     */
+    readonly onDiscardMinutes?: ((minutes: number) => void) | undefined;
     readonly onRegistered?: ((hostID: string, superseded: boolean) => void) | undefined;
     /**
      * The role is gone: another shell took over, the daemon is stopping, or the socket dropped.
@@ -152,6 +158,16 @@ function readKeybindLines(message: JsonRecord): readonly string[] | null {
     return lines.filter((line): line is string => typeof line === 'string');
 }
 
+/** #467: `settings.general.webTabDiscardMinutes`, or null when the message carries none. */
+export function readDiscardMinutes(message: Readonly<Record<string, unknown>>): number | null {
+    const settings = message['settings'];
+    if (!isRecord(settings)) return null;
+    const general = settings['general'];
+    if (!isRecord(general)) return null;
+    const minutes = general['webTabDiscardMinutes'];
+    return typeof minutes === 'number' && Number.isFinite(minutes) && minutes >= 0 ? minutes : null;
+}
+
 export function createWebHostClient(options: WebHostClientOptions): WebHostClient {
     let location = options.location;
     let socket: WebSocket | null = null;
@@ -207,6 +223,8 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
                 if (failed > 0) log(`web host ws: back after ${String(failed)} failed attempt(s)`);
                 const lines = readKeybindLines(parsed);
                 if (lines !== null) options.onKeybindLines?.(lines);
+                const minutes = readDiscardMinutes(parsed);
+                if (minutes !== null) options.onDiscardMinutes?.(minutes);
                 return;
             }
             // The config file changed under us (issue #33). Same payload shape as `welcome`'s,
@@ -215,6 +233,8 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
             case 'settings-changed': {
                 const lines = readKeybindLines(parsed);
                 if (lines !== null) options.onKeybindLines?.(lines);
+                const minutes = readDiscardMinutes(parsed);
+                if (minutes !== null) options.onDiscardMinutes?.(minutes);
                 return;
             }
             case 'host-registered': {

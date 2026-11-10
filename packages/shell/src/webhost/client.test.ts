@@ -16,7 +16,7 @@ import { WS_PROTOCOL_VERSION, type JsonObject } from '@kelpi/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
 import { setLogStreams } from '../log.js';
-import { createWebHostClient, type WebHostClient } from './client.js';
+import { createWebHostClient, readDiscardMinutes, type WebHostClient } from './client.js';
 
 type Handler = (...args: unknown[]) => void;
 
@@ -428,5 +428,24 @@ describe('asking the daemon to re-ask the clients (#75)', () => {
         test.latest().deliver({ type: 'host-revoked', reason: 'superseded' });
         test.client.requestGeometryResync();
         expect(test.latest().frames('web-geometry-resync-request')).toEqual([]);
+    });
+});
+
+describe('readDiscardMinutes (#467)', () => {
+    it('reads the setting off a welcome or settings-changed', () => {
+        expect(readDiscardMinutes({ type: 'welcome', settings: { general: { webTabDiscardMinutes: 30 } } })).toBe(30);
+        expect(readDiscardMinutes({ type: 'settings-changed', settings: { general: { webTabDiscardMinutes: 0 } } })).toBe(0);
+    });
+
+    it('is null when a daemon says nothing about it, so the host keeps its default', () => {
+        for (const message of [
+            { type: 'welcome' },
+            { type: 'welcome', settings: {} },
+            { type: 'welcome', settings: { general: {} } },
+            { type: 'welcome', settings: { general: { webTabDiscardMinutes: '30' } } },
+            { type: 'welcome', settings: { general: { webTabDiscardMinutes: -1 } } }
+        ]) {
+            expect(readDiscardMinutes(message)).toBeNull();
+        }
     });
 });

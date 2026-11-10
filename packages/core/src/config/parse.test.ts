@@ -131,6 +131,17 @@ describe('parseGeneralSettings', () => {
         expect(parseGeneralSettings('copy-on-select = false\ncopy-on-select = true').copyOnSelect).toBe(true);
     });
 
+    it('ships web-tab-discard-minutes at an hour, takes whole minutes up to a week, and 0 for never (#467)', () => {
+        expect(parseGeneralSettings('').webTabDiscardMinutes).toBe(60);
+        expect(parseGeneralSettings('web-tab-discard-minutes = 15').webTabDiscardMinutes).toBe(15);
+        expect(parseGeneralSettings('web-tab-discard-minutes = 0').webTabDiscardMinutes).toBe(0);
+        expect(parseGeneralSettings('web-tab-discard-minutes = 999999').webTabDiscardMinutes).toBe(10080);
+        for (const raw of ['-5', '1.5', 'never', '']) {
+            expect(parseGeneralSettings(`web-tab-discard-minutes = ${raw}`).webTabDiscardMinutes).toBe(60);
+        }
+        expect(parseGeneralSettings('web-tab-discard-minutes = 30\nweb-tab-discard-minutes = soon').webTabDiscardMinutes).toBe(30);
+    });
+
     it('ships links-reuse-web-pane ON and turns it off only for the literal "false"', () => {
         expect(parseGeneralSettings('').linksReuseWebPane).toBe(true);
         expect(parseGeneralSettings('links-reuse-web-pane = false').linksReuseWebPane).toBe(false);

@@ -188,6 +188,7 @@ describe('the projection', () => {
             'general-agents',
             'general-network',
             'general-links',
+            'general-web-panes',
             'general-updates'
         ]);
     });

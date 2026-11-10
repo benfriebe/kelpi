@@ -110,6 +110,7 @@ describe('the section catalog', () => {
             'general-agents',
             'general-network',
             'general-links',
+            'general-web-panes',
             'general-updates'
         ]);
         expect(settingsGroupsInSection('workspaces').map((group) => group.testID)).toEqual([
@@ -232,6 +233,7 @@ describe('the field table', () => {
             'tcp-port',
             'open-links-in',
             'links-reuse-web-pane-toggle',
+            'web-tab-discard-minutes',
             'auto-update-toggle'
         ]);
         expect(

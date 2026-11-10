@@ -503,6 +503,7 @@ describe('the snapshot', () => {
             'general-agents',
             'general-network',
             'general-links',
+            'general-web-panes',
             'general-updates'
         ]);
         for (const field of fields) expect(groups.some((group) => group.id === field.groupID)).toBe(true);

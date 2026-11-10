@@ -178,6 +178,11 @@ function fixtureBody(port) {
         '/second': `<!doctype html>
 <html><head><meta charset="utf-8"><title>Second Page</title></head>
 <body><h1 id="hello">the second page</h1></body></html>`,
+        // Issue #467: tall, with a form field, so a discarded tab can be seen to come back
+        // scrolled and filled in where it was.
+        '/long': `<!doctype html>
+<html><head><meta charset="utf-8"><title>Long Page</title></head>
+<body style="height: 6000px"><h1 id="hello">a long page</h1><form><input id="field" name="field" value=""></form></body></html>`,
         '/page.js': `console.log('page console line', 42);
 console.error('boom');
 console.assert(false, 'assert message');
@@ -372,7 +377,7 @@ function electronBinary() {
     throw new Error('electron is not installed (pnpm install)');
 }
 
-function startShell(sandbox) {
+function startShell(sandbox, extraEnv = {}) {
     assertDesktopActive();
     const lines = [];
     const child = spawn(
@@ -382,7 +387,7 @@ function startShell(sandbox) {
             cwd: shellRoot,
             // Issue #466: a parked view goes to sleep after 1.5 s here rather than a minute, so the
             // sleep and wake checks below fit in the run (`webhost/park-sleep.ts`).
-            env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1', KELPI_WEB_TAB_SLEEP_MS: '1500' },
+            env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1', KELPI_WEB_TAB_SLEEP_MS: '1500', ...extraEnv },
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: true
         }
@@ -1508,7 +1513,10 @@ async function webPhase() {
         const stateStill = await cli.json(['web', 'tabs', ...at(), '--json']);
         check('daemon-owned state survives the host (tabs still list)', stateStill.length >= 2, `${String(stateStill.length)} tabs`);
 
-        second = startShell(sandbox);
+        // Issue #467: this shell discards a tab after 6 s unused rather than an hour, so the
+        // discard checks below fit in the run. Long enough for Chromium to have recorded the
+        // page's scroll position and form values (measured: within 3 s) before the discard.
+        second = startShell(sandbox, { KELPI_WEB_TAB_DISCARD_MS: '6000' });
         await second.waitForLine(/web host registered/, 'the second registration');
         const replayed = await waitFor(
             'the replayed pane to be drivable again',
@@ -1519,6 +1527,97 @@ async function webPhase() {
             40_000
         );
         check('a new shell re-registers and the daemon replays the pane onto it', replayed.includes('Hello from the smoke page'), replayed.slice(0, 80).trim());
+
+        /*
+         * Issue #467: a tab nobody shows or drives is discarded, keeping its address and history,
+         * and the next verb that needs its page brings it back where it was. Nothing places a
+         * view in this shell, so every tab is idle from the moment the replay built it.
+         */
+        const replayedTabs = await cli.json(['web', 'tabs', ...at(), '--json']);
+        const activeID = replayedTabs.find((tab) => tab.active === true)?.id;
+        if (typeof activeID !== 'string') throw new Error(`no active tab in ${JSON.stringify(replayedTabs)}`);
+        const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const atURL = async (suffix) =>
+            waitFor(
+                `the tab to show ${suffix}`,
+                async () => {
+                    const result = await cli.run(['web', 'url', ...at()]);
+                    return result.stdout.includes(`${fixture.base}${suffix}`) && result.stdout.includes('Long Page') ? result.stdout : false;
+                },
+                20_000
+            );
+        await cli.run(['web', 'navigate', ...at(), `${fixture.base}/long`]);
+        await atURL('/long');
+        await cli.run(['web', 'navigate', ...at(), `${fixture.base}/long?again`]);
+        await atURL('/long?again');
+        const filled = await cli.run([
+            'web',
+            'exec',
+            ...at(),
+            'window.scrollTo(0, 1200); document.getElementById("field").value = "kept across a discard"; return scrollY'
+        ]);
+        check('the tab is scrolled and its field filled before it goes idle', filled.stdout.trim() === '1200', filled.stdout.trim());
+
+        const restoringMark = `web pane ${paneID} tab ${activeID}: restoring after a discard`;
+        const restorings = () => second.lines.filter((line) => line.includes(restoringMark)).length;
+        const discardedLine = await second.waitForLine(
+            new RegExp(escape(`web pane ${paneID} tab ${activeID}: discarded`)),
+            'the unused tab to be discarded',
+            30_000
+        );
+        check('a tab nobody shows or drives is discarded once the delay runs out', discardedLine.includes('discarded'), discardedLine.trim());
+
+        const remembered = await cli.run(['web', 'url', ...at()]);
+        check(
+            '`web url` on a discarded tab answers from what it was showing, without loading it',
+            remembered.stdout.includes(`${fixture.base}/long?again`) && restorings() === 0,
+            `${remembered.stdout.trim()} (${String(restorings())} restores)`
+        );
+
+        const restoredRead = await cli.run([
+            'web',
+            'exec',
+            ...at(),
+            'return JSON.stringify({ at: location.pathname + location.search, y: Math.round(scrollY), field: document.getElementById("field").value, length: history.length })'
+        ]);
+        let restoredState = {};
+        try {
+            restoredState = JSON.parse(restoredRead.stdout.trim());
+        } catch {
+            // Reported by the checks below.
+        }
+        check('a verb on a discarded tab brings it back first', restorings() === 1, `${String(restorings())} restores`);
+        check('the rebuilt tab is on the page it was discarded on', restoredState.at === '/long?again', restoredRead.stdout.trim());
+        check('the rebuilt page is scrolled where it was', Math.abs((restoredState.y ?? 0) - 1200) <= 2, `scrollY ${String(restoredState.y)}`);
+        check('the rebuilt page keeps what was typed into its form', restoredState.field === 'kept across a discard', String(restoredState.field));
+        check('the rebuilt tab keeps its back history', (restoredState.length ?? 0) >= 3, `history.length ${String(restoredState.length)}`);
+
+        await cli.run(['web', 'back', ...at()]);
+        const wentBack = await waitFor(
+            'back to the first long page',
+            async () => {
+                const result = await cli.run(['web', 'url', ...at()]);
+                return result.stdout.includes(`${fixture.base}/long`) && !result.stdout.includes('?again') ? result.stdout : false;
+            },
+            20_000
+        );
+        check('back on a rebuilt tab goes to the page before it', wentBack.includes('/long'), wentBack.trim());
+
+        // The page's own "unsaved changes" warning keeps it loaded, as it would keep a browser tab
+        // open: no dialog, no discard, and the next offer is another full delay away.
+        await cli.run(['web', 'exec', ...at(), 'addEventListener("beforeunload", (event) => { event.preventDefault(); }); return true']);
+        const stayed = await second.waitForLine(
+            new RegExp(escape(`web pane ${paneID} tab ${activeID}: kept loaded (the page asked to stay)`)),
+            'the page to refuse the discard',
+            30_000
+        );
+        check('a page that warns about unsaved changes keeps itself loaded', stayed.includes('asked to stay'), stayed.trim());
+        const stillLoaded = await cli.run(['web', 'exec', ...at(), 'return location.pathname']);
+        check(
+            '…and is still the same live page, not a rebuilt one',
+            stillLoaded.stdout.trim() === '/long' && restorings() === 1,
+            `${stillLoaded.stdout.trim()} (${String(restorings())} restores)`
+        );
 
         return { shellLog: `${shellLog}\n---- second shell ----\n${second.text()}`, daemonLog: daemon.log() };
     } finally {

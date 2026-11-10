@@ -25,6 +25,9 @@
  *     in one tab while another is the visible one. A tab that was on screen and has been parked
  *     for a minute is put to sleep so it gives its GPU memory back, and its timers still run at
  *     full speed (`./park-sleep.ts`, issue #466).
+ *   - **A tab nobody has shown or driven for an hour is discarded** (issue #467): its history is
+ *     saved, its view closed, and the registry rebuilds it from that record when it is next
+ *     shown or driven (`./idle-discard.ts` decides when, `./tab-restore.ts` how it comes back).
  *   - **`did-fail-load` ignores `-3` (ERR_ABORTED)**: a navigation the user (or a redirect)
  *     replaced is not a failure, and WKWebView never surfaced those either.
  *
@@ -74,9 +77,11 @@ import { clampZoom, type EvalOutcome, type FocusViewOutcome, type TabController 
 import type { DeferredFocus } from './deferred-focus.js';
 import { isWebErrorPageURL, reportedTabURL, webErrorPageDataURL } from './error-page.js';
 import { createFrameSessions, type FrameSessions } from './frames.js';
-import type { CreateTabInput, DestroyReason } from './registry.js';
+import { createIdleDiscard, type IdleDiscard } from './idle-discard.js';
+import type { CreateTabInput, DestroyReason, DiscardedTab } from './registry.js';
 import { chordLabel, forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
 import { createParkSleep, parkedTabSleepDelay, type ParkSleep, type ParkWakeReason } from './park-sleep.js';
+import { restorePlan, type RestorePlan, type TabRestore } from './tab-restore.js';
 import {
     BATCH_MARKER_CHANNEL,
     BINDING_NAME,
@@ -115,6 +120,16 @@ const REQUEST_CACHE_LIMIT = 512;
  * debugger, 229 MB after a bare `Network.enable`, and 21 MB with these.
  */
 const NETWORK_ENABLE_PARAMS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 } as const;
+
+/**
+ * #467: how long a verb on a just-restored tab waits for the restored page to finish loading
+ * before it runs anyway. Under the daemon's 5 s `actuate` budget, so a click on a slow page
+ * still gets a reply of its own rather than a timeout.
+ */
+const RESTORE_SETTLE_MS = 4_000;
+
+/** #467: what the registry keeps for a discarded tab (`./tab-restore.ts`). */
+export type TabDiscardRecord = DiscardedTab<TabRestore>;
 
 /** Host → daemon events this tab produces (`host-event` payloads, HOST_PROTOCOL §4). */
 export interface TabEventSink {
@@ -209,6 +224,22 @@ export interface TabFactoryOptions {
      * parked" (`./deferred-focus.ts`). Absent means a parked view is focused in place, as before.
      */
     readonly deferredFocus?: DeferredFocus | undefined;
+    /**
+     * #467: the discard delay right now, in milliseconds, or null when discarding is off. Read
+     * once at creation; `HostTab.setDiscardDelay` carries later changes. Absent means never.
+     */
+    readonly discardDelay?: (() => number | null) | undefined;
+    /**
+     * #467: the host's half of the discard rule, asked when the tab has been unused for the
+     * delay (the tab has already checked its own: audio, dev tools). False keeps it loaded.
+     */
+    readonly mayDiscard?: ((tab: HostTab) => boolean) | undefined;
+    /**
+     * #467: the tab's view has been closed for a discard. The host hands `record` to the
+     * registry, which takes the view down and keeps the record in its place. Both this and
+     * `mayDiscard` must be given for a tab to be discarded at all.
+     */
+    readonly discarded?: ((tab: HostTab, record: TabDiscardRecord) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
 }
@@ -252,6 +283,8 @@ export interface HostTab extends TabController {
      * commit cannot steal the keyboard in that state at all.
      */
     hasKeyboardFocus(): boolean;
+    /** #467: the discard setting changed (null: off). The count starts again from now. */
+    setDiscardDelay(delayMs: number | null): void;
     dispose(reason: DestroyReason): void;
     /**
      * The Electron view, for whoever owns the window layout: the holder by default, the shell
@@ -309,6 +342,23 @@ class ElectronTab implements HostTab {
     private viewportOps: Promise<void> = Promise.resolve();
     /** #466: when a parked view gives its GPU memory back, and what wakes it (`./park-sleep.ts`). */
     private readonly parkSleep: ParkSleep;
+    /** #467: when an unused tab is discarded (`./idle-discard.ts`). */
+    private readonly idleDiscard: IdleDiscard;
+    private readonly mayDiscard: ((tab: HostTab) => boolean) | undefined;
+    private readonly onDiscarded: ((tab: HostTab, record: TabDiscardRecord) => void) | undefined;
+    /**
+     * #467: set while the page is being asked whether it may be closed (`beforeunload`), so the
+     * `destroyed` that follows is a discard rather than the page going away on its own.
+     */
+    private discarding: TabDiscardRecord | null = null;
+    /**
+     * `ready`, and for a tab rebuilt after a discard also the restored page's load (capped at
+     * `RESTORE_SETTLE_MS`). What a verb that reads the page waits for: an agent that left a
+     * loaded page expects to read it, not the `about:blank` the rebuild starts on.
+     */
+    private readonly settled: Promise<void>;
+    /** #467: true until a rebuilt tab is back on the entry it was discarded on. */
+    private restoring = false;
     /** §N29: tells the shell's own `focus()` calls from the user's clicks (`./view-focus.ts`). */
     private readonly focusGate: ViewFocusGate;
     /** §N30: keeps a committing navigation from moving the keyboard (`./nav-focus.ts`). */
@@ -326,7 +376,7 @@ class ElectronTab implements HostTab {
     /** WEB-073: the child CDP sessions of this tab's out-of-process frames (`./frames.ts`). */
     private readonly frames: FrameSessions;
 
-    constructor(input: CreateTabInput, options: TabFactoryOptions) {
+    constructor(input: CreateTabInput<TabRestore>, options: TabFactoryOptions) {
         this.paneID = input.paneID;
         this.tabID = input.tabID;
         this.events = options.events;
@@ -353,7 +403,16 @@ class ElectronTab implements HostTab {
                 this.events.viewFocus(this.paneID, this.tabID);
             }
         });
+        // A rebuilt tab's `input.url` is what it was showing when it was discarded (a failed
+        // load's address included), so `url()` answers that while the restore is under way.
         this.lastAttemptedURL = input.url;
+        const restore = input.restore ?? null;
+        if (restore !== null) {
+            this.zoomFactor = restore.zoomFactor;
+            this.restoring = true;
+        }
+        this.mayDiscard = options.mayDiscard;
+        this.onDiscarded = options.discarded;
 
         const viewport = options.viewport ?? DEFAULT_VIEWPORT;
         this.viewport = viewport;
@@ -389,6 +448,17 @@ class ElectronTab implements HostTab {
             },
             { delayMs: parkedTabSleepDelay(process.env) }
         );
+        // #467: also before the first `navigate`, and counting from now: a tab nobody ever shows
+        // (a background tab, one of the panes built at launch) holds a renderer from birth.
+        this.idleDiscard = createIdleDiscard(
+            {
+                discard: () => this.tryDiscard(),
+                onError: (error, context) => {
+                    this.report(error, context);
+                }
+            },
+            { delayMs: options.discardDelay?.() ?? null }
+        );
         // Built before `bootstrap` so the very first `Target.attachedToTarget` has somewhere to
         // land: auto-attach is armed inside the bootstrap and Chromium can answer immediately.
         this.frames = createFrameSessions({
@@ -413,12 +483,26 @@ class ElectronTab implements HostTab {
         options.holder().contentView.addChildView(this.view);
 
         this.wireContentsEvents();
-        this.ready = this.bootstrap(viewport).catch((error: unknown) => {
+        const plan = restore === null ? null : restorePlan(restore);
+        this.ready = this.bootstrap(viewport, plan).catch((error: unknown) => {
             this.report(error, 'cdp-attach');
         });
-        // `navigate` awaits `ready`, so the real page is only loaded once the scripts are
-        // installed — which is what makes them run at document start.
-        if (input.url !== '') this.navigate(input.url);
+        if (plan === null) {
+            this.settled = this.ready;
+            // `navigate` awaits `ready`, so the real page is only loaded once the scripts are
+            // installed — which is what makes them run at document start.
+            if (input.url !== '') this.navigate(input.url);
+        } else {
+            log(`web pane ${this.paneID} tab ${this.tabID}: restoring after a discard (${String(plan.entries.length)} history entries)`);
+            this.settled = this.ready
+                .then(() => this.resumeHistory(plan, restore?.navigated ?? false))
+                .catch((error: unknown) => {
+                    this.report(error, 'restore');
+                })
+                .finally(() => {
+                    this.restoring = false;
+                });
+        }
     }
 
     // ── setup ───────────────────────────────────────────────────────────────────────
@@ -452,7 +536,7 @@ class ElectronTab implements HostTab {
      * `addScriptToEvaluateOnNewDocument` meaningful: the scripts are registered before the target
      * document exists, so they run at document start exactly as the `WKUserScript`s did.
      */
-    private async bootstrap(viewport: { width: number; height: number }): Promise<void> {
+    private async bootstrap(viewport: { width: number; height: number }, plan: RestorePlan | null): Promise<void> {
         try {
             this.contents.debugger.attach('1.3');
         } catch (error) {
@@ -483,9 +567,22 @@ class ElectronTab implements HostTab {
 
         // The renderer-raising load. It is a navigation the daemon must not see as a page state
         // change (`about:blank` is the placeholder §4.4 exists to ignore), which is why the
-        // `did-navigate` handler drops it.
-        await this.contents.loadURL('about:blank').catch((error: unknown) => {
-            this.report(error, 'bootstrap-blank');
+        // `did-navigate` handler drops it. A tab rebuilt after a discard raises its renderer by
+        // restoring its history at the `about:blank` entry, because `restore()` refuses a view
+        // that has loaded anything (`./tab-restore.ts`).
+        const raise =
+            plan === null
+                ? this.contents.loadURL('about:blank')
+                : this.contents.navigationHistory.restore({
+                      index: 0,
+                      entries: plan.entries.map((entry) => ({
+                          url: entry.url,
+                          title: entry.title,
+                          ...(entry.pageState === undefined ? {} : { pageState: entry.pageState })
+                      }))
+                  });
+        await raise.catch((error: unknown) => {
+            this.report(error, plan === null ? 'bootstrap-blank' : 'bootstrap-restore');
         });
 
         await this.send('Page.enable');
@@ -796,6 +893,15 @@ class ElectronTab implements HostTab {
         });
         contents.on('destroyed', () => {
             if (this.disposed) return; // our own teardown, already mirrored daemon-side
+            // #467: the page agreed to be closed for a discard. The tab is still the daemon's,
+            // so this is not a `tab-closed`: the registry keeps the record in the view's place.
+            const record = this.discarding;
+            if (record !== null) {
+                this.discarding = null;
+                log(`web pane ${this.paneID} tab ${this.tabID}: discarded (unused, nothing kept it loaded)`);
+                this.onDiscarded?.(this, record);
+                return;
+            }
             this.events.tabClosed(this.paneID, this.tabID);
         });
     }
@@ -1000,7 +1106,7 @@ class ElectronTab implements HostTab {
 
     navigate(url: string): void {
         if (url === '') return;
-        this.parkSleep.use()();
+        this.touch();
         this.lastAttemptedURL = url;
         this.failedLoad = false;
         // From here on the tab has been asked to show something, so its load brackets are real
@@ -1025,14 +1131,27 @@ class ElectronTab implements HostTab {
 
     back(): void {
         if (this.disposed || this.contents.isDestroyed()) return;
-        this.parkSleep.use()();
+        this.touch();
+        // #467: a rebuilt tab has no history until the restore lands; go back from where it was.
+        if (this.restoring) {
+            void this.settled.then(() => {
+                this.back();
+            });
+            return;
+        }
         this.failedLoad = false;
         if (this.contents.navigationHistory.canGoBack()) this.contents.navigationHistory.goBack();
     }
 
     forward(): void {
         if (this.disposed || this.contents.isDestroyed()) return;
-        this.parkSleep.use()();
+        this.touch();
+        if (this.restoring) {
+            void this.settled.then(() => {
+                this.forward();
+            });
+            return;
+        }
         this.failedLoad = false;
         if (this.contents.navigationHistory.canGoForward()) this.contents.navigationHistory.goForward();
     }
@@ -1135,7 +1254,14 @@ class ElectronTab implements HostTab {
 
     reload(hard: boolean): void {
         if (this.disposed || this.contents.isDestroyed()) return;
-        this.parkSleep.use()();
+        this.touch();
+        // #467: reload what the restore brought back, not the `about:blank` it starts on.
+        if (this.restoring) {
+            void this.settled.then(() => {
+                this.reload(hard);
+            });
+            return;
+        }
         // §4.3: a tab that failed its last load retries what it was asked for rather than
         // reloading the failure.
         if (this.failedLoad && this.lastAttemptedURL !== '') {
@@ -1148,7 +1274,8 @@ class ElectronTab implements HostTab {
 
     async evaluate(expression: string): Promise<EvalOutcome> {
         // #466: awake for the whole evaluation, a `wait` included, and for the delay after it.
-        const release = this.parkSleep.use();
+        // #467: and loaded, for the same span.
+        const release = this.use();
         try {
             return await this.evaluateAwake(expression);
         } finally {
@@ -1157,7 +1284,7 @@ class ElectronTab implements HostTab {
     }
 
     private async evaluateAwake(expression: string): Promise<EvalOutcome> {
-        await this.ready;
+        await this.settled;
         if (this.disposed || this.contents.isDestroyed()) {
             return { ok: false, error: `web pane has no live tab ${this.tabID}` };
         }
@@ -1201,9 +1328,9 @@ class ElectronTab implements HostTab {
     async screenshot(): Promise<Uint8Array> {
         // #466: never on a sleeping tab. A capture taken asleep leaves the PAGE hidden, and a
         // hidden page's timers drop to one wake-up a second until it is next placed (measured).
-        const release = this.parkSleep.use();
+        const release = this.use();
         try {
-            await this.ready;
+            await this.settled;
             const result = await this.send('Page.captureScreenshot', { format: 'png' });
             const data = isRecord(result) ? text(result['data']) : undefined;
             if (data === undefined) throw new Error('no screenshot data');
@@ -1282,6 +1409,7 @@ class ElectronTab implements HostTab {
     }
 
     setZoom(factor: number): number {
+        this.touch();
         this.zoomFactor = clampZoom(factor);
         this.applyZoom();
         return this.zoomFactor;
@@ -1309,6 +1437,9 @@ class ElectronTab implements HostTab {
         // count towards sleep.
         if (embedded) this.parkSleep.placed();
         else this.parkSleep.parked();
+        // #467: on screen is in use; the count towards a discard starts at the park.
+        if (embedded) this.idleDiscard.placed();
+        else this.idleDiscard.parked();
         // A placement clears a pin an automation read left; a park keeps the page as it is - 
         // `./viewport-pin.ts` for why that second half is the whole point.
         void this.queueViewport(embedded ? 'placed' : 'parked');
@@ -1317,7 +1448,7 @@ class ElectronTab implements HostTab {
     /** `HostTab.pinViewport`: a parked view lays out at the automation viewport before a read. */
     pinViewport(): Promise<void> {
         if (this.disposed) return Promise.resolve();
-        const release = this.parkSleep.use();
+        const release = this.use();
         return this.queueViewport('automation-read').finally(release);
     }
 
@@ -1352,12 +1483,129 @@ class ElectronTab implements HostTab {
     }
 
     /**
+     * Something is about to use the page: wake it (#466) and keep it loaded (#467) until the
+     * returned release, then for each one's delay again.
+     */
+    private use(): () => void {
+        const awake = this.parkSleep.use();
+        const loaded = this.idleDiscard.use();
+        return () => {
+            awake();
+            loaded();
+        };
+    }
+
+    /** `use` for a verb that is over as soon as it has started (a navigation, a zoom). */
+    private touch(): void {
+        this.use()();
+    }
+
+    setDiscardDelay(delayMs: number | null): void {
+        if (this.disposed) return;
+        this.idleDiscard.setDelay(delayMs);
+    }
+
+    /**
+     * #467: the tab has been unused for the delay. Returns true when the discard is under way.
+     *
+     * The page gets the last word through its own `beforeunload`: `close({waitForBeforeUnload})`
+     * asks it, and a page that would warn about unsaved changes (a half-written comment) keeps
+     * itself loaded, the way it would keep a browser tab open. Electron grants the page a user
+     * activation before asking, so any handler that cancels counts, and there is no dialog: an
+     * unanswered `will-prevent-unload` simply cancels the close. Measured on Electron 43.4: a page
+     * with no handler, or one whose handler does not cancel, is destroyed within a millisecond;
+     * one that cancels (with `preventDefault` or the legacy return string) stays loaded and
+     * working.
+     */
+    private tryDiscard(): boolean {
+        if (this.disposed || this.contents.isDestroyed() || this.discarding !== null) return false;
+        if (this.mayDiscard === undefined || this.onDiscarded === undefined) return false;
+        const keep = this.contents.isCurrentlyAudible()
+            ? 'playing audio'
+            : this.contents.isDevToolsOpened()
+              ? 'dev tools are open'
+              : null;
+        if (keep !== null) {
+            log(`web pane ${this.paneID} tab ${this.tabID}: kept loaded (${keep})`);
+            return false;
+        }
+        if (!this.mayDiscard(this)) return false;
+        const record = this.discardRecord();
+        const contents = this.contents;
+        contents.once('will-prevent-unload', () => {
+            if (this.discarding !== record) return;
+            this.discarding = null;
+            log(`web pane ${this.paneID} tab ${this.tabID}: kept loaded (the page asked to stay)`);
+            this.idleDiscard.restart();
+        });
+        // Before `close`: a page with no `beforeunload` is destroyed inside the call.
+        this.discarding = record;
+        try {
+            contents.close({ waitForBeforeUnload: true });
+        } catch (error) {
+            if (this.discarding === record) this.discarding = null;
+            this.report(error, 'discard-close');
+            return false;
+        }
+        return true;
+    }
+
+    /** #467: what the tab needs to come back as it was (`./tab-restore.ts`). */
+    private discardRecord(): TabDiscardRecord {
+        const history = this.contents.navigationHistory;
+        return {
+            url: this.url(),
+            title: this.title(),
+            restore: {
+                entries: history.getAllEntries(),
+                index: history.getActiveIndex(),
+                zoomFactor: this.zoomFactor,
+                lastAttemptedURL: this.lastAttemptedURL,
+                failedLoad: this.failedLoad,
+                navigated: this.navigated
+            }
+        };
+    }
+
+    /**
+     * #467: put a rebuilt tab back on the entry it was discarded on, with the scripts already in.
+     * A history navigation, so Chromium restores that entry's scroll position and form values.
+     */
+    private async resumeHistory(plan: RestorePlan, navigated: boolean): Promise<void> {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        // A tab that never left `about:blank` is back as it was.
+        if (plan.retryURL === null && plan.target === null) return;
+        // Only now: the restore's own `about:blank` load is the bootstrap's, and stays as silent
+        // as a fresh tab's (WEB-033).
+        this.navigated = navigated;
+        const loaded = this.loadSettled();
+        if (plan.retryURL !== null) this.navigate(plan.retryURL);
+        else if (plan.target !== null) this.contents.navigationHistory.goToIndex(plan.target);
+        await loaded;
+    }
+
+    /** Resolves on the next `did-stop-loading`, or after `RESTORE_SETTLE_MS` whatever happens. */
+    private loadSettled(): Promise<void> {
+        return new Promise((resolve) => {
+            const contents = this.contents;
+            const done = (): void => {
+                clearTimeout(timer);
+                if (!contents.isDestroyed()) contents.removeListener('did-stop-loading', done);
+                resolve();
+            };
+            const timer = setTimeout(done, RESTORE_SETTLE_MS);
+            contents.once('did-stop-loading', done);
+        });
+    }
+
+    /**
      * §16.5's `</>` button. Electron's `openDevTools({mode:'bottom'})` replaces the whole
      * WebKit private-SPI + container-view dance the Swift app needed; `undefined` means toggle,
      * which is what a button press is.
      */
     setDevTools(open?: boolean): boolean {
         if (this.disposed || this.contents.isDestroyed()) return false;
+        this.touch();
         const wanted = open ?? !this.contents.isDevToolsOpened();
         try {
             if (wanted) this.contents.openDevTools({ mode: 'bottom' });
@@ -1373,6 +1621,8 @@ class ElectronTab implements HostTab {
         if (this.disposed) return;
         this.disposed = true;
         this.parkSleep.dispose();
+        this.idleDiscard.dispose();
+        this.discarding = null;
         // Issue #351: a hand-back waiting for this view to be placed has nothing left to focus.
         this.deferredFocus?.forgetTab(this.paneID, this.tabID);
         // §N29: a held focus event must not fire into a tab that no longer exists.
@@ -1405,7 +1655,7 @@ class ElectronTab implements HostTab {
 
 /** Build the registry hooks that create/destroy/show real browser views. */
 export function createTabHooks(options: TabFactoryOptions): {
-    create(input: CreateTabInput): HostTab;
+    create(input: CreateTabInput<TabRestore>): HostTab;
     destroy(tab: HostTab, reason: DestroyReason): void;
     show(tab: HostTab, visible: boolean): void;
 } {

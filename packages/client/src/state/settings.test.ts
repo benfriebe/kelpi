@@ -83,6 +83,9 @@ describe('hydrateSettings', () => {
         expect(hydrateSettings({ general: {} })?.general.copyOnSelect).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.middleClickPaste).toBe(true);
         expect(hydrateSettings({ general: {} })?.general.linksReuseWebPane).toBe(true);
+        // #467: an older daemon says nothing; its shell has no discarding, the row reads 1 hour.
+        expect(hydrateSettings({ general: {} })?.general.webTabDiscardMinutes).toBe(60);
+        expect(hydrateSettings({ general: { webTabDiscardMinutes: 0 } })?.general.webTabDiscardMinutes).toBe(0);
         // The agent-start settings (wire-protocol.md §6.3), absent the way an older daemon sends
         // them: the shipped defaults stand, and no agent is preselected.
         expect(hydrateSettings({ general: {} })?.general).toMatchObject({

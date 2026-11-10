@@ -554,6 +554,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             openLinksIn: general['openLinksIn'] === 'kelpi' ? 'kelpi' : 'browser',
             // An older daemon omits it, and ignores the `reuse` it would gate anyway.
             linksReuseWebPane: bool(general['linksReuseWebPane'], fallbackGeneral.linksReuseWebPane),
+            // #467. An older daemon omits it; its shell discards nothing, and the row reads 1 hour.
+            webTabDiscardMinutes: Math.max(0, num(general['webTabDiscardMinutes'], fallbackGeneral.webTabDiscardMinutes)),
             // An older daemon omits it and has no `pane-font-size` either, so ⌘= keeps
             // resizing every terminal there, as it always has.
             fontSizeScope: general['fontSizeScope'] === 'pane' ? 'pane' : 'all',

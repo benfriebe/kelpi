@@ -56,6 +56,14 @@ export interface GeneralSettings {
      */
     readonly linksReuseWebPane: boolean;
     /**
+     * `web-tab-discard-minutes`, default **60**: how long a web tab can go unshown and undriven
+     * before the shell discards it, giving its renderer back and keeping its address and
+     * history to rebuild it from (web-pane.md §5.3, issue #467). `0` turns discarding off. Any
+     * other whole number of minutes is taken, up to a week; anything else keeps the prior value.
+     * Read by the Electron shell's web host off its own `welcome.settings`, never by the daemon.
+     */
+    readonly webTabDiscardMinutes: number;
+    /**
      * `font-size-scope`, default `pane`: what ⌘= / ⌘- / ⌘0 resize. `pane` gives the focused
      * terminal pane its own text size, kept on the pane (config-keybindings.md §7.6); `all` steps
      * the daemon-wide ghostty `font-size`, so every terminal follows. A CLIENT-side rule: the
@@ -267,6 +275,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     workspaceDeleteWorktrees: 'ask',
     openLinksIn: 'browser',
     linksReuseWebPane: true,
+    webTabDiscardMinutes: 60,
     fontSizeScope: 'pane',
     workspaceDeleteBranches: true,
     confirmQuitWhenActive: true,
@@ -287,6 +296,9 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     newWorkspaceAgent: 'none',
     newWorkspaceSendPrompt: false
 };
+
+/** A week: past that a tab is as good as never discarded, and timers stay well inside range. */
+export const WEB_TAB_DISCARD_MINUTES_MAX = 7 * 24 * 60;
 
 const INTEGER = /^[+-]?\d+$/;
 
@@ -354,6 +366,13 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
             case 'links-reuse-web-pane':
                 settings = { ...settings, linksReuseWebPane: lowered !== 'false' };
                 break;
+            case 'web-tab-discard-minutes': {
+                const parsed = parseInteger(value);
+                if (parsed !== null && parsed >= 0) {
+                    settings = { ...settings, webTabDiscardMinutes: Math.min(parsed, WEB_TAB_DISCARD_MINUTES_MAX) };
+                }
+                break;
+            }
             case 'font-size-scope':
                 if (lowered === 'pane' || lowered === 'all') {
                     settings = { ...settings, fontSizeScope: lowered };

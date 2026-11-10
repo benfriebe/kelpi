@@ -372,13 +372,31 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
      * Resolve the addressed tab. The daemon always names a concrete tab id, so a miss means the
      * host's view set and the daemon's state have diverged (a crashed renderer, a tab the page
      * closed on its own) — the spec's own error for that is `web pane has no live tab <uuid>`.
+     *
+     * #467: a verb that needs the PAGE (`restore`, the default) brings a discarded tab back
+     * first, so an agent driving a tab it left an hour ago never sees the discard. One that only
+     * touches what is already loaded (`live`: batch markers, the poster) does not: a discarded
+     * page has no markers to move and no frame to photograph, and loading it for that would undo
+     * the discard for nothing.
      */
-    const tabOf = (args: JsonObject): { tab: V } | { error: JsonObject } => {
+    const tabOf = (args: JsonObject, mode: 'restore' | 'live' = 'restore'): { tab: V } | { error: JsonObject } => {
         const paneID = str(args, 'paneID');
         const tabID = str(args, 'tabID');
-        const tab = tabID === '' ? registry.activeView(paneID) : registry.view(paneID, tabID);
+        const key = tabID === '' ? null : tabID;
+        const tab =
+            mode === 'restore'
+                ? registry.restore(paneID, key)
+                : key === null
+                  ? registry.activeView(paneID)
+                  : registry.view(paneID, key);
         if (tab === null) return { error: failure(noLiveTabError(tabID)) };
         return { tab };
+    };
+
+    /** #467: is the addressed tab discarded? Its record, so a read can answer without a load. */
+    const discardedOf = (args: JsonObject) => {
+        const tabID = str(args, 'tabID');
+        return registry.discarded(str(args, 'paneID'), tabID === '' ? null : tabID);
     };
 
     // ── capture (§8.4) ──────────────────────────────────────────────────────────────
@@ -510,7 +528,10 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
      * the budget, a capture that threw) really is about this host, and is not marked.
      */
     const poster = async (args: JsonObject): Promise<JsonObject> => {
-        const found = tabOf(args);
+        // #467: a discarded tab is never on screen, so it has no frame to give, the same answer
+        // a parked view gets.
+        if (discardedOf(args) !== null) return { ...failure(POSTER_UNAVAILABLE_ERROR), transient: true };
+        const found = tabOf(args, 'live');
         if ('error' in found) return found.error;
         const take = found.tab.poster?.bind(found.tab);
         if (take === undefined) return failure(POSTER_UNAVAILABLE_ERROR);
@@ -737,7 +758,8 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
      * looking at, and a sync for a pane whose views are gone is a silent no-op.
      */
     const batchEval = (args: JsonObject, expression: string): void => {
-        const found = tabOf(args);
+        // `live`: the daemon re-pushes the markers on the `page-state` a restored page sends.
+        const found = tabOf(args, 'live');
         if ('error' in found) return;
         void found.tab.evaluate(expression).catch((error: unknown) => {
             report(error, 'batch-markers');
@@ -834,7 +856,9 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 return OK;
             }
             case 'stop': {
-                const found = tabOf(args);
+                // #467: a discarded tab is loading nothing, and stopping it must not load it.
+                if (discardedOf(args) !== null) return OK;
+                const found = tabOf(args, 'live');
                 if ('error' in found) return found.error;
                 if (found.tab.stop === undefined) return failure('this host cannot stop a load');
                 found.tab.stop();
@@ -868,6 +892,10 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 return { ok: true, restored: deps.restoreClientKeyboard({ ringLeft: bool(args, 'ringLeft') }) };
             }
             case 'url': {
+                // #467: what a discarded tab was showing is what it will show again, and an agent
+                // asking every tab for its address must not load them all to find out.
+                const record = discardedOf(args);
+                if (record !== null) return { ok: true, url: record.url, title: record.title };
                 const found = tabOf(args);
                 if ('error' in found) return found.error;
                 return { ok: true, url: found.tab.url(), title: found.tab.title() };

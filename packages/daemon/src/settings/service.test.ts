@@ -457,6 +457,14 @@ describe('createSettingsService (write-through)', () => {
         expect(f.service.setGeneralSetting('links-reuse-web-pane', 'true').general.linksReuseWebPane).toBe(true);
     });
 
+    it('round-trips web-tab-discard-minutes, an hour until the file says otherwise (#467)', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general.webTabDiscardMinutes).toBe(60);
+        expect(f.service.setGeneralSetting('web-tab-discard-minutes', '0').general.webTabDiscardMinutes).toBe(0);
+        expect(f.read() ?? '').toContain('web-tab-discard-minutes = 0');
+        expect(f.service.setGeneralSetting('web-tab-discard-minutes', '240').general.webTabDiscardMinutes).toBe(240);
+    });
+
     it('round-trips middle-click-paste, which is on until the file says otherwise', () => {
         const f = fixture({ config: PRESERVED });
         expect(f.service.snapshot.general.middleClickPaste).toBe(true);

@@ -156,6 +156,13 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 testID: 'general-links'
             },
             {
+                id: 'general-web-panes',
+                sectionID: 'general',
+                title: 'Web panes',
+                hint: null,
+                testID: 'general-web-panes'
+            },
+            {
                 id: 'general-updates',
                 sectionID: 'general',
                 title: 'Updates',
@@ -440,6 +447,18 @@ const PLACEMENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
 const OPEN_LINKS_IN_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'browser', label: 'Default browser' }),
     Object.freeze({ value: 'kelpi', label: 'Kelpi web pane' })
+]);
+
+/**
+ * #467: the minutes an unused web tab stays loaded. The config file takes any whole number (0 is
+ * never); these are the ones Settings offers.
+ */
+const WEB_TAB_DISCARD_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: '15', label: 'After 15 minutes' }),
+    Object.freeze({ value: '30', label: 'After 30 minutes' }),
+    Object.freeze({ value: '60', label: 'After 1 hour' }),
+    Object.freeze({ value: '240', label: 'After 4 hours' }),
+    Object.freeze({ value: '0', label: 'Never' })
 ]);
 
 const FONT_SIZE_SCOPE_CHOICES: readonly SettingsChoice[] = Object.freeze([
@@ -750,6 +769,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         default: true,
         read: (settings) => settings.general.linksReuseWebPane,
         encode: BOOLEAN
+    },
+    {
+        id: 'general.webTabDiscardMinutes',
+        sectionID: 'general',
+        groupID: 'general-web-panes',
+        kind: 'select',
+        label: 'Unload tabs nobody is using',
+        detail: 'A web tab that has not been on screen or driven by an agent for this long gives its memory back. It stays in its pane, and loads again where you left it when you switch to it or an agent uses it. Tabs playing audio, with dev tools open, or with unsaved changes stay loaded.',
+        testID: 'web-tab-discard-minutes',
+        target: { file: 'kelpi', key: 'web-tab-discard-minutes' },
+        default: '60',
+        choices: WEB_TAB_DISCARD_CHOICES,
+        read: (settings) => String(settings.general.webTabDiscardMinutes),
+        encode: (value) => value
     },
     {
         id: 'general.autoUpdate',

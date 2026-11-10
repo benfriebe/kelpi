@@ -324,6 +324,54 @@ describe('client console subscription', () => {
         });
     });
 
+    /**
+     * Issue #467: the shell discards a tab nobody has used for a while, and a discarded page
+     * logs nothing. A followed pane is kept loaded, so the host is told about the first follower
+     * and the last one leaving, and a new host hears about the panes followed already.
+     */
+    it('tells the host when a pane gains its first console follower and loses its last', () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello());
+        host.session.handleMessage(JSON.stringify({ type: 'host-register', role: 'web-pane' }));
+        const follows = () =>
+            host.transport
+                .ofType('host-notify')
+                .filter((message) => message['verb'] === 'console-follow')
+                .map((message) => message['args']);
+        const subscribe = (client: ReturnType<Fixture['connect']>, id: string) => {
+            client.session.handleMessage(
+                JSON.stringify({ type: 'command', id, payload: { command: 'web-console-subscribe', pane_id: WEB_PANE } })
+            );
+        };
+        const first = f.connect();
+        first.session.handleMessage(hello({ kind: 'browser' }));
+        const second = f.connect();
+        second.session.handleMessage(hello({ kind: 'browser' }));
+
+        subscribe(first, 'a');
+        subscribe(second, 'b');
+        expect(follows()).toEqual([{ paneID: WEB_PANE, following: true }]);
+
+        const replacement = f.connect();
+        replacement.session.handleMessage(hello());
+        replacement.session.handleMessage(JSON.stringify({ type: 'host-register', role: 'web-pane' }));
+        expect(
+            replacement.transport.ofType('host-notify').map((message) => [message['verb'], message['args']])
+        ).toContainEqual(['console-follow', { paneID: WEB_PANE, following: true }]);
+
+        first.session.close();
+        second.session.close();
+        const after = replacement.transport
+            .ofType('host-notify')
+            .filter((message) => message['verb'] === 'console-follow')
+            .map((message) => message['args']);
+        expect(after).toEqual([
+            { paneID: WEB_PANE, following: true },
+            { paneID: WEB_PANE, following: false }
+        ]);
+    });
+
     it('drops a client subscription when its connection closes', () => {
         const f = fixture();
         const host = f.connect();

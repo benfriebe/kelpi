@@ -1014,6 +1014,17 @@ describe('discarded tabs', () => {
         expect(tabs).toHaveLength(1);
     });
 
+    it('answers a meta capture from the record too, since it is url by another name', async () => {
+        const { dispatcher, registry, tabs } = harness();
+        discard(registry);
+        await expect(dispatcher.call('capture', { ...scope, mode: 'meta' })).resolves.toEqual({
+            ok: true,
+            url: 'https://example.com/left',
+            title: 'Left'
+        });
+        expect(tabs).toHaveLength(1);
+    });
+
     it('brings the tab back for a read, and the read runs on the rebuilt page', async () => {
         const { dispatcher, registry, tabs } = harness();
         discard(registry);

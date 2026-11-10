@@ -72,7 +72,8 @@ export type { KeyBinding, KeyBindingMap, KeybindOverride } from './bindings.js';
 export {
     DEFAULT_GENERAL_SETTINGS,
     DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
-    parseGeneralSettings
+    parseGeneralSettings,
+    WEB_TAB_DISCARD_MINUTES_MAX
 } from './general.js';
 export type { GeneralSettings } from './general.js';
 export { parseKeybindOverrides } from './keybinds.js';

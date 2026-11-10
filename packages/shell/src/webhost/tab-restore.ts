@@ -32,9 +32,9 @@ export interface TabRestore {
     readonly index: number;
     /** Per tab, not per origin: `./tab.ts` re-applies it after every load. */
     readonly zoomFactor: number;
-    /** §4.3: the address a failed load was for, so the rebuilt tab retries it. */
+    /** §4.3: the address the tab was last asked for, which a reload of an error card retries. */
     readonly lastAttemptedURL: string;
-    /** The tab was showing Kelpi's error card for `lastAttemptedURL`. */
+    /** The tab was showing Kelpi's error card for `lastAttemptedURL`; it comes back showing it. */
     readonly failedLoad: boolean;
     /** WEB-033: the tab had been asked to load something, so its load brackets are reported. */
     readonly navigated: boolean;
@@ -43,24 +43,21 @@ export interface TabRestore {
 export interface RestorePlan {
     /** The list to hand `navigationHistory.restore()`, `about:blank` first. */
     readonly entries: readonly HistoryEntry[];
-    /** The entry to go to once the scripts are in, or null when there is nothing to load. */
+    /**
+     * The entry to go to once the scripts are in, or null when there is nothing to load. Always
+     * the entry the tab was on, an error card included: loading anything else from the
+     * `about:blank` the restore starts on would prune every entry after it.
+     */
     readonly target: number | null;
-    /** A failed load is retried, not restored as the error card it left behind. */
-    readonly retryURL: string | null;
 }
 
 const BLANK: HistoryEntry = { url: 'about:blank', title: '' };
 
 export function restorePlan(restore: TabRestore): RestorePlan {
-    const kept = restore.entries.filter((entry) => typeof entry.url === 'string');
-    const first = kept[0];
-    const entries = first !== undefined && first.url === 'about:blank' ? kept : [BLANK, ...kept];
-    const shift = entries.length - kept.length;
-    if (restore.failedLoad && restore.lastAttemptedURL !== '') {
-        return { entries, target: null, retryURL: restore.lastAttemptedURL };
-    }
-    const index = Number.isInteger(restore.index) ? restore.index + shift : -1;
+    const blankFirst = restore.entries[0]?.url === 'about:blank';
+    const entries = blankFirst ? restore.entries : [BLANK, ...restore.entries];
+    const index = Number.isInteger(restore.index) ? restore.index + (blankFirst ? 0 : 1) : -1;
     const entry = entries[index];
     const target = index > 0 && entry !== undefined && entry.url !== 'about:blank' && entry.url !== '' ? index : null;
-    return { entries, target, retryURL: null };
+    return { entries, target };
 }

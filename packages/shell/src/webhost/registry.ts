@@ -130,6 +130,8 @@ export interface TabRegistry<V, R = unknown> {
     restore(paneID: string, tabID: string | null): V | null;
     /** #467: the record of a discarded tab (`tabID` null: the active tab), or null. */
     discarded(paneID: string, tabID: string | null): DiscardedTab<R> | null;
+    /** Every tab of the pane in order, discarded ones included (#467). Empty for no pane. */
+    tabIDs(paneID: string): readonly string[];
     /** The tab's live view; null for an unknown tab and for a discarded one (#467). */
     view(paneID: string, tabID: string): V | null;
     /** §17.2: the active tab always falls back to `tabs[0]`. Null while it is discarded. */
@@ -350,6 +352,10 @@ export function createTabRegistry<V, R = unknown>(hooks: RegistryHooks<V, R>): T
 
         discarded(paneID, tabID) {
             return entryOf(paneID, tabID)?.entry.discarded ?? null;
+        },
+
+        tabIDs(paneID) {
+            return panes.get(paneID)?.tabs.map((tab) => tab.id) ?? [];
         },
 
         view(paneID, tabID) {

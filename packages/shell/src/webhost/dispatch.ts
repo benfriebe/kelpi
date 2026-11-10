@@ -454,22 +454,26 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
     };
 
     const capture = async (args: JsonObject): Promise<JsonObject> => {
+        const mode = str(args, 'mode') === '' ? 'meta' : str(args, 'mode');
+        // #467: `meta` is `url` by another name, and answers a discarded tab the same way.
+        const record = mode === 'meta' ? discardedOf(args) : null;
+        if (record !== null) return { ok: true, url: record.url, title: record.title };
         const found = tabOf(args);
         if ('error' in found) return found.error;
         const tab = found.tab;
         const paneID = str(args, 'paneID');
-        const mode = str(args, 'mode') === '' ? 'meta' : str(args, 'mode');
         // url/title ride EVERY capture reply; the daemon falls back to its state copy when the
         // host reports none (§8.4 common fields).
-        const base: JsonObject = { ok: true, url: tab.url(), title: tab.title() };
-
-        if (mode === 'meta') return base;
+        if (mode === 'meta') return { ok: true, url: tab.url(), title: tab.title() };
         if (!(CAPTURE_MODES as readonly string[]).includes(mode)) {
             return failure(`unknown capture mode '${mode}' (allowed: ${CAPTURE_MODES.join(', ')})`);
         }
         // Every read below is specified against the automation viewport (§8.4): a parked view
         // lays out there first. `meta` reads no layout, so it did not wait for one.
         await tab.pinViewport?.();
+        // Read AFTER the layout wait, which a just-rebuilt tab (#467) also uses to finish
+        // loading the page it was on: before it, its title is still the `about:blank` one.
+        const base: JsonObject = { ok: true, url: tab.url(), title: tab.title() };
         if (mode === 'text') {
             const { text, byteCount } = await captureText(tab);
             return { ...base, text, byte_count: byteCount };

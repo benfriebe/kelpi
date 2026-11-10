@@ -128,6 +128,12 @@ const NETWORK_ENABLE_PARAMS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 
  */
 const RESTORE_SETTLE_MS = 4_000;
 
+/**
+ * #467: how long a page gets to answer its `beforeunload` before a discard gives up and leaves it
+ * loaded. A page answers within a millisecond (measured); this is for a renderer stuck in a loop.
+ */
+const DISCARD_ANSWER_MS = 10_000;
+
 /** #467: what the registry keeps for a discarded tab (`./tab-restore.ts`). */
 export type TabDiscardRecord = DiscardedTab<TabRestore>;
 
@@ -351,6 +357,9 @@ class ElectronTab implements HostTab {
      * `destroyed` that follows is a discard rather than the page going away on its own.
      */
     private discarding: TabDiscardRecord | null = null;
+    /** #467: a close that was asked for but went unanswered, should the page agree later. */
+    private closeAsked: TabDiscardRecord | null = null;
+    private discardAnswer: ReturnType<typeof setTimeout> | null = null;
     /**
      * `ready`, and for a tab rebuilt after a discard also the restored page's load (capped at
      * `RESTORE_SETTLE_MS`). What a verb that reads the page waits for: an agent that left a
@@ -490,12 +499,13 @@ class ElectronTab implements HostTab {
         if (plan === null) {
             this.settled = this.ready;
             // `navigate` awaits `ready`, so the real page is only loaded once the scripts are
-            // installed — which is what makes them run at document start.
+            // installed, which is what makes them run at document start.
             if (input.url !== '') this.navigate(input.url);
         } else {
             log(`web pane ${this.paneID} tab ${this.tabID}: restoring after a discard (${String(plan.entries.length)} history entries)`);
+            const { navigated, failedLoad } = restore ?? { navigated: false, failedLoad: false };
             this.settled = this.ready
-                .then(() => this.resumeHistory(plan, restore?.navigated ?? false))
+                .then(() => this.resumeHistory(plan, navigated, failedLoad))
                 .catch((error: unknown) => {
                     this.report(error, 'restore');
                 })
@@ -895,9 +905,11 @@ class ElectronTab implements HostTab {
             if (this.disposed) return; // our own teardown, already mirrored daemon-side
             // #467: the page agreed to be closed for a discard. The tab is still the daemon's,
             // so this is not a `tab-closed`: the registry keeps the record in the view's place.
-            const record = this.discarding;
+            const record = this.discarding ?? this.closeAsked;
             if (record !== null) {
                 this.discarding = null;
+                this.closeAsked = null;
+                if (this.discardAnswer !== null) clearTimeout(this.discardAnswer);
                 log(`web pane ${this.paneID} tab ${this.tabID}: discarded (unused, nothing kept it loaded)`);
                 this.onDiscarded?.(this, record);
                 return;
@@ -1107,6 +1119,14 @@ class ElectronTab implements HostTab {
     navigate(url: string): void {
         if (url === '') return;
         this.touch();
+        // #467: a load started from the restore's `about:blank` would prune every entry the tab
+        // had; go from the page it was on instead, as if it had never been discarded.
+        if (this.restoring) {
+            void this.settled.then(() => {
+                this.navigate(url);
+            });
+            return;
+        }
         this.lastAttemptedURL = url;
         this.failedLoad = false;
         // From here on the tab has been asked to show something, so its load brackets are real
@@ -1449,7 +1469,9 @@ class ElectronTab implements HostTab {
     pinViewport(): Promise<void> {
         if (this.disposed) return Promise.resolve();
         const release = this.use();
-        return this.queueViewport('automation-read').finally(release);
+        // `settled`, not just `ready`: a rebuilt tab (#467) is laid out once it is back on its
+        // page, so a read never measures the `about:blank` the rebuild starts on.
+        return this.settled.then(() => this.queueViewport('automation-read')).finally(release);
     }
 
     /**
@@ -1519,6 +1541,7 @@ class ElectronTab implements HostTab {
      */
     private tryDiscard(): boolean {
         if (this.disposed || this.contents.isDestroyed() || this.discarding !== null) return false;
+        this.closeAsked = null;
         if (this.mayDiscard === undefined || this.onDiscarded === undefined) return false;
         const keep = this.contents.isCurrentlyAudible()
             ? 'playing audio'
@@ -1532,18 +1555,33 @@ class ElectronTab implements HostTab {
         if (!this.mayDiscard(this)) return false;
         const record = this.discardRecord();
         const contents = this.contents;
-        contents.once('will-prevent-unload', () => {
+        const settle = (outcome: string): void => {
             if (this.discarding !== record) return;
             this.discarding = null;
-            log(`web pane ${this.paneID} tab ${this.tabID}: kept loaded (the page asked to stay)`);
+            clearTimeout(unanswered);
+            contents.removeListener('will-prevent-unload', stay);
+            log(`web pane ${this.paneID} tab ${this.tabID}: kept loaded (${outcome})`);
             this.idleDiscard.restart();
-        });
+        };
+        const stay = (): void => {
+            settle('the page asked to stay');
+        };
+        contents.once('will-prevent-unload', stay);
+        // A renderer too busy to answer `beforeunload` keeps its page, and is asked again after
+        // another full delay. Should it answer "go ahead" later, the `destroyed` that follows is
+        // still this discard (`closeAsked`), never a tab the page closed on its own.
+        const unanswered = setTimeout(() => {
+            this.closeAsked = record;
+            settle('the page did not answer');
+        }, DISCARD_ANSWER_MS);
+        this.discardAnswer = unanswered;
         // Before `close`: a page with no `beforeunload` is destroyed inside the call.
         this.discarding = record;
         try {
             contents.close({ waitForBeforeUnload: true });
         } catch (error) {
-            if (this.discarding === record) this.discarding = null;
+            this.closeAsked = null;
+            settle('the close threw');
             this.report(error, 'discard-close');
             return false;
         }
@@ -1571,16 +1609,17 @@ class ElectronTab implements HostTab {
      * #467: put a rebuilt tab back on the entry it was discarded on, with the scripts already in.
      * A history navigation, so Chromium restores that entry's scroll position and form values.
      */
-    private async resumeHistory(plan: RestorePlan, navigated: boolean): Promise<void> {
-        if (this.disposed || this.contents.isDestroyed()) return;
+    private async resumeHistory(plan: RestorePlan, navigated: boolean, failedLoad: boolean): Promise<void> {
         // A tab that never left `about:blank` is back as it was.
-        if (plan.retryURL === null && plan.target === null) return;
+        if (this.disposed || this.contents.isDestroyed() || plan.target === null) return;
         // Only now: the restore's own `about:blank` load is the bootstrap's, and stays as silent
-        // as a fresh tab's (WEB-033).
+        // as a fresh tab's (WEB-033). Its commit also cleared `failedLoad`, and an error card's
+        // does not set it, so a tab that was showing the card is told so again here: `url()` then
+        // reports the failed address and a reload retries it (§4.3).
         this.navigated = navigated;
+        this.failedLoad = failedLoad;
         const loaded = this.loadSettled();
-        if (plan.retryURL !== null) this.navigate(plan.retryURL);
-        else if (plan.target !== null) this.contents.navigationHistory.goToIndex(plan.target);
+        this.contents.navigationHistory.goToIndex(plan.target);
         await loaded;
     }
 
@@ -1623,6 +1662,8 @@ class ElectronTab implements HostTab {
         this.parkSleep.dispose();
         this.idleDiscard.dispose();
         this.discarding = null;
+        this.closeAsked = null;
+        if (this.discardAnswer !== null) clearTimeout(this.discardAnswer);
         // Issue #351: a hand-back waiting for this view to be placed has nothing left to focus.
         this.deferredFocus?.forgetTab(this.paneID, this.tabID);
         // §N29: a held focus event must not fire into a tab that no longer exists.

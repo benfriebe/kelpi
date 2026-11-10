@@ -228,6 +228,14 @@ describe('discard and restore', () => {
         expect(created).toHaveLength(4);
     });
 
+    it('lists every tab, discarded ones included, so a caller can bring a whole pane back', () => {
+        const { registry } = harness();
+        registry.openPane(pane(['t1', 't2', 't3'], 't1'));
+        registry.discard('P1', 't2', record('https://t2/'));
+        expect(registry.tabIDs('P1')).toEqual(['t1', 't2', 't3']);
+        expect(registry.tabIDs('nope')).toEqual([]);
+    });
+
     it('restore answers a live tab with its view and builds nothing', () => {
         const { registry, created } = harness();
         registry.openPane(pane(['t1'], 't1'));

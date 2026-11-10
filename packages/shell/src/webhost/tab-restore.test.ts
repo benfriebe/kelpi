@@ -22,7 +22,6 @@ describe('restorePlan', () => {
         expect(plan.entries.map((e) => e.url)).toEqual(['about:blank', 'https://a/', 'https://b/']);
         expect(plan.entries[2]?.pageState).toBe('B');
         expect(plan.target).toBe(2);
-        expect(plan.retryURL).toBeNull();
     });
 
     it('keeps the forward entries when the tab had gone back', () => {
@@ -43,7 +42,9 @@ describe('restorePlan', () => {
         expect(restorePlan(restore({ entries: [], index: -1 })).entries.map((e) => e.url)).toEqual(['about:blank']);
     });
 
-    it('retries a failed load rather than restoring the error card it left on screen', () => {
+    it('goes back to the error card a failed load left, so the history before it survives', () => {
+        // Loading the failed address instead would start from the restore's about:blank and
+        // prune every entry after it; the card's Retry (and a reload) still retries it.
         const plan = restorePlan(
             restore({
                 entries: [entry('about:blank'), entry('https://a/'), entry('data:text/html,card')],
@@ -52,9 +53,8 @@ describe('restorePlan', () => {
                 lastAttemptedURL: 'https://down.example/'
             })
         );
-        expect(plan.retryURL).toBe('https://down.example/');
-        expect(plan.target).toBeNull();
-        expect(plan.entries).toHaveLength(3);
+        expect(plan.target).toBe(2);
+        expect(plan.entries.map((e) => e.url)).toEqual(['about:blank', 'https://a/', 'data:text/html,card']);
     });
 
     it('treats an index past the list as nothing to go to', () => {

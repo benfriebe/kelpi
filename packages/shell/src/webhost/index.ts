@@ -1040,8 +1040,18 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         // #467: who is following a pane's console. Host bookkeeping only, like geometry.
         if (verb === 'console-follow') {
             if (paneID === '') return;
-            if (args['following'] === true) consoleFollowed.add(paneID);
-            else consoleFollowed.delete(paneID);
+            if (args['following'] !== true) {
+                consoleFollowed.delete(paneID);
+                return;
+            }
+            consoleFollowed.add(paneID);
+            // A follower wants the pane's pages running, and one that starts after they were
+            // discarded would otherwise watch a stream nothing writes to.
+            const discarded = registry.tabIDs(paneID).filter((tabID) => registry.discarded(paneID, tabID) !== null);
+            if (discarded.length > 0) {
+                log(`web pane ${paneID}: its console is being followed; restoring ${String(discarded.length)} discarded tab(s)`);
+                for (const tabID of discarded) registry.restore(paneID, tabID);
+            }
             return;
         }
         if (verb === 'pane-close' && paneID !== '') consoleFollowed.delete(paneID);

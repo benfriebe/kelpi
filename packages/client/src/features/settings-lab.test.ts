@@ -380,7 +380,7 @@ describe('Settings Lab reports readiness and draws the rail', () => {
             'number',
             'select',
             'toggle',
-            'select',
+            'number',
             'toggle'
         ]);
         const cards = [...document.querySelectorAll<HTMLElement>('#panel > .card')];

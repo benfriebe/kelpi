@@ -1603,6 +1603,36 @@ async function webPhase() {
         );
         check('back on a rebuilt tab goes to the page before it', wentBack.includes('/long'), wentBack.trim());
 
+        // A navigation is the verb that could cost a rebuilt tab its history: one started from
+        // the restore's about:blank would prune every entry. It has to go from the page the tab
+        // was on, so Back still reaches what came before.
+        const discards = () => second.lines.filter((line) => line.includes(`web pane ${paneID} tab ${activeID}: discarded`)).length;
+        await waitFor('the tab to be discarded again', () => discards() >= 2, 30_000);
+        await cli.run(['web', 'navigate', ...at(), `${fixture.base}/second`]);
+        const navigatedAway = await waitFor(
+            'the rebuilt tab to reach the second page',
+            async () => {
+                const result = await cli.run(['web', 'exec', ...at(), 'return location.pathname + " " + history.length']);
+                return result.stdout.trim().startsWith('/second') ? result.stdout.trim() : false;
+            },
+            20_000
+        );
+        check(
+            'navigating a discarded tab keeps its history and prunes only what was ahead of it',
+            navigatedAway === '/second 4' && restorings() === 2,
+            `${navigatedAway} (${String(restorings())} restores)`
+        );
+        await cli.run(['web', 'back', ...at()]);
+        const backFromSecond = await waitFor(
+            'back from the second page',
+            async () => {
+                const result = await cli.run(['web', 'url', ...at()]);
+                return result.stdout.includes('Long Page') ? result.stdout : false;
+            },
+            20_000
+        );
+        check('…and Back from there reaches the page it was on before the discard', backFromSecond.includes(`${fixture.base}/long`), backFromSecond.trim());
+
         // The page's own "unsaved changes" warning keeps it loaded, as it would keep a browser tab
         // open: no dialog, no discard, and the next offer is another full delay away.
         await cli.run(['web', 'exec', ...at(), 'addEventListener("beforeunload", (event) => { event.preventDefault(); }); return true']);
@@ -1615,7 +1645,7 @@ async function webPhase() {
         const stillLoaded = await cli.run(['web', 'exec', ...at(), 'return location.pathname']);
         check(
             '…and is still the same live page, not a rebuilt one',
-            stillLoaded.stdout.trim() === '/long' && restorings() === 1,
+            stillLoaded.stdout.trim() === '/long' && restorings() === 2,
             `${stillLoaded.stdout.trim()} (${String(restorings())} restores)`
         );
 

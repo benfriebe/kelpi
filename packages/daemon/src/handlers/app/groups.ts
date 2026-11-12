@@ -93,6 +93,7 @@ function handleGroupList(ctx: AppContext, reply: ReplyHandle | null): void {
 function handleGroupCreate(
     name: string,
     color: WorkspaceColor | undefined,
+    keepEmoji: boolean,
     ctx: AppContext,
     deps: AppDeps
 ): void {
@@ -106,8 +107,10 @@ function handleGroupCreate(
         name: trimmed,
         now: deps.now(),
         // Icons are deliberately NOT settable over the wire (UI-only affordance); a leading
-        // emoji in the name becomes one in the reducer, as for a workspace (§6.8).
-        ...(color !== undefined ? { color } : {})
+        // emoji in the name becomes one in the reducer, as for a workspace (§6.8), unless the
+        // request said `keep_emoji`.
+        ...(color !== undefined ? { color } : {}),
+        ...(keepEmoji ? { keepEmoji: true } : {})
     });
     deps.scrollTarget(groupSidebarID(id));
     deps.persist();
@@ -116,12 +119,13 @@ function handleGroupCreate(
 function handleGroupRename(
     nameOrID: string,
     newName: string,
+    keepEmoji: boolean,
     ctx: AppContext,
     deps: AppDeps
 ): void {
     const group = resolveGroupStrict(resolveStateOf(ctx.store.getState()), nameOrID);
     if (group === null) return;
-    ctx.store.dispatch({ type: 'rename-group', id: group.id, name: newName });
+    ctx.store.dispatch({ type: 'rename-group', id: group.id, name: newName, ...(keepEmoji ? { keepEmoji: true } : {}) });
     deps.persist();
 }
 
@@ -401,10 +405,10 @@ export function groupHandlerEntries(deps: AppDeps): readonly (readonly [string, 
             handleGroupList(ctx, reply);
         }),
         forCommand('group-create', (msg, ctx) => {
-            handleGroupCreate(msg.name, msg.color, ctx, deps);
+            handleGroupCreate(msg.name, msg.color, msg.keep_emoji === true, ctx, deps);
         }),
         forCommand('group-rename', (msg, ctx) => {
-            handleGroupRename(msg.name, msg.new_name, ctx, deps);
+            handleGroupRename(msg.name, msg.new_name, msg.keep_emoji === true, ctx, deps);
         }),
         forCommand('group-delete', (msg, ctx, reply) => {
             handleGroupDelete(msg.name, msg.cascade, ctx, reply, deps);

@@ -109,6 +109,15 @@ describe('group-create / rename / delete', () => {
         expect(h.state().groups[0]).toMatchObject({ name: 'squad', icon: { kind: 'emoji', grapheme: '🚀' } });
     });
 
+    it('renames a group addressed by the emoji name it was created with, and keeps the emoji when asked', () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'group-create', name: '🔥 team' });
+        h.send({ command: 'group-rename', name: '🔥 team', new_name: '🚧 squad', keep_emoji: true });
+        expect(h.state().groups[0]).toMatchObject({ name: '🚧 squad', icon: { kind: 'emoji', grapheme: '🔥' } });
+        h.send({ command: 'group-create', name: '🧪 lab', keep_emoji: true });
+        expect(h.state().groups[1]).toMatchObject({ name: '🧪 lab', icon: null });
+    });
+
     it('renames by name or id and no-ops on an unresolvable token', () => {
         const h = grouped();
         h.send({ command: 'group-rename', name: 'team', new_name: 'squad' });

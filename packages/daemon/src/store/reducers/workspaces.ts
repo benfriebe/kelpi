@@ -135,11 +135,11 @@ function createWorkspace(
 ): DaemonState {
     const createdAt = seconds(action.now);
     // A leading emoji in the name becomes the icon (`liftLeadingIcon`), unless the create asked
-    // for an icon of its own (`kelpi workspace create --icon`), which keeps the name whole.
+    // for an icon of its own (`kelpi workspace create --icon`) or for the name as given
+    // (`--keep-emoji`), either of which keeps the name whole.
+    const icon = action.icon ?? null;
     const named =
-        action.icon === undefined || action.icon === null
-            ? liftLeadingIcon(action.name, null)
-            : { name: action.name, icon: action.icon };
+        icon === null && action.keepEmoji !== true ? liftLeadingIcon(action.name, null) : { name: action.name, icon };
     const pane = newPane({
         id: action.paneID,
         workingDirectory:
@@ -494,7 +494,10 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
             // that starts with an emoji hands it to the icon (`liftLeadingIcon`), so the slug
             // is made from what is left. The same name and icon again is the no-op it looks like.
             return updateWorkspace(state, action.id, (workspace) => {
-                const named = liftLeadingIcon(action.name, workspace.icon);
+                const named =
+                    action.keepEmoji === true
+                        ? { name: action.name, icon: workspace.icon }
+                        : liftLeadingIcon(action.name, workspace.icon);
                 if (named.name === workspace.name && named.icon === workspace.icon) return workspace;
                 return { ...workspace, ...named, slug: makeSlug(named.name, workspace.id) };
             });

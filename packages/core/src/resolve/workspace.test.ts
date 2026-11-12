@@ -115,3 +115,45 @@ describe('resolveGroupMember', () => {
         expect(resolveGroupMember(state, 'dupe', [WS_DUPE_A, WS_DUPE_B])).toBeNull();
     });
 });
+
+describe('a name typed with the leading emoji it was stored without', () => {
+    const lifted: ResolveState = {
+        workspaces: [
+            { id: WS_MAIN, name: 'auth', slug: 'auth-11111111' },
+            { id: WS_BETA, name: '🔥 legacy', slug: 'legacy-22222222' },
+            { id: WS_DUPE_A, name: 'legacy', slug: 'legacy-33333333' },
+            { id: WS_DUPE_B, name: 'twin', slug: 'twin-44444444' },
+            { id: MISSING, name: 'twin', slug: 'twin-99999999' }
+        ],
+        panes: [],
+        groups: [
+            { id: GROUP_PROJECTS, name: 'team' },
+            { id: '66666666-0000-4000-8000-000000000006', name: '🔥 old' },
+            { id: '77777777-0000-4000-8000-000000000007', name: 'old' }
+        ]
+    };
+
+    it('finds the stored name when nothing matches as typed', () => {
+        expect(resolveWorkspaceStrict(lifted, '🔥 auth')?.id).toBe(WS_MAIN);
+        expect(resolveWorkspaceStrict(lifted, '🔥auth')?.id).toBe(WS_MAIN);
+        expect(resolveGroupStrict(lifted, '🚀 team')?.id).toBe(GROUP_PROJECTS);
+        expect(resolveWorkspaceLenient(lifted, '🔥 AUTH')?.id).toBe(WS_MAIN);
+        expect(resolveGroupMember(lifted, '🔥 auth', [WS_MAIN, WS_BETA])).toBe(WS_MAIN);
+    });
+
+    it('prefers a row whose stored name really starts with the emoji', () => {
+        expect(resolveWorkspaceStrict(lifted, '🔥 legacy')?.id).toBe(WS_BETA);
+        expect(resolveWorkspaceStrict(lifted, 'legacy')?.id).toBe(WS_DUPE_A);
+        expect(resolveGroupStrict(lifted, '🔥 old')?.id).toBe('66666666-0000-4000-8000-000000000006');
+        expect(resolveWorkspaceLenient(lifted, '🔥 Legacy')?.id).toBe(WS_BETA);
+    });
+
+    it('keeps the unique-match rule and tries nothing else', () => {
+        // Two rows share the stored name: ambiguous, exactly as the plain name is.
+        expect(resolveWorkspaceStrict(lifted, '🔥 twin')).toBeNull();
+        // Only a leading emoji is dropped: a symbol or a letter is part of the name.
+        expect(resolveWorkspaceStrict(lifted, '→ auth')).toBeNull();
+        expect(resolveWorkspaceStrict(lifted, 'x auth')).toBeNull();
+        expect(resolveGroupStrict(lifted, '🔥 nope')).toBeNull();
+    });
+});

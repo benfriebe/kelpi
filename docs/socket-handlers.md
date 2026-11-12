@@ -115,6 +115,8 @@ Used by: `pane list --workspace`, `pane sync --workspace`, `resolvePaneTarget`'s
 resolveWorkspace(nameOrID):
   if nameOrID parses as UUID and a workspace with that id exists -> that workspace
   matches = workspaces where name == nameOrID   // CASE-SENSITIVE exact match
+  if matches is empty and nameOrID starts with an emoji:
+      matches = workspaces where name == nameOrID without that emoji   // the name as stored, §6.8
   if matches.length == 1 -> matches[0]
   else -> null                                   // both "not found" and "ambiguous"
 ```
@@ -123,6 +125,11 @@ resolveWorkspace(nameOrID):
   some workspace is *named* that UUID string.
 - A UUID string that matches no workspace id falls through to the name match (so a
   workspace literally named a UUID is still reachable).
+- **The name as typed comes first.** Only when it matches nothing is the token tried without
+  its leading emoji (`liftLeadingIconEmoji`), which is the name `"🔥 auth"` is stored under
+  (§6.8). So the name a workspace was created with still finds it, and a workspace whose stored
+  name really is `🔥 auth` (one that predates the lift, or made with `keep_emoji`) is never
+  shadowed by an `auth`.
 - Ambiguous names (2+ workspaces with the same exact name) return `null`. Callers that
   want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`,
   `workspace-rename`, `workspace-icon` and `workspace-color` do, through one shared helper, so
@@ -130,8 +137,8 @@ resolveWorkspace(nameOrID):
 
 ### 2.2 `resolveGroup(nameOrID)` — identical contract for groups
 
-Same algorithm over the group collection: UUID-wins, then case-sensitive exact unique name,
-`null` for missing/ambiguous.
+Same algorithm over the group collection: UUID-wins, then case-sensitive exact unique name
+(as typed, then without a leading emoji), `null` for missing/ambiguous.
 
 ### 2.3 Static `resolveWorkspace(target, state)` — the lenient resolver
 
@@ -143,6 +150,7 @@ staticResolveWorkspace(target):
   if target parses as UUID and workspace exists       -> that id
   first workspace whose name matches target
        case-INSENSITIVELY (locale-aware compare)      -> that id   // FIRST match, no ambiguity guard
+  the same, for target without its leading emoji      -> that id   // the name as stored, §6.8
   first workspace whose slug == target                -> that id
   else -> null
 ```
@@ -1015,6 +1023,12 @@ icon fails the create before any branch runs (no workspace, group or worktree is
 carried on the `create-workspace` action, so the workspace has it from its first frame; and
 echoed as `icon` in every success reply, but only when one was set.
 
+A `name` that starts with an emoji gives it up as the icon (§6.8), unless the create carries
+an `icon` of its own or `keepEmoji` (bool, default false), either of which keeps the name
+whole. Every success reply's `workspace_name` is the name AS STORED and its `icon` the lifted
+emoji: `name: "🔥 auth"` answers `workspace_name: "auth"`, `icon: "emoji:🔥"`. The two
+branches that reply before the reducer runs compute the same split for the echo.
+
 Nesting (app-state-core.md §2.9): `parent?` (workspace name-or-id) and `parentPaneID?` (a pane
 UUID; the workspace holding it) are resolved after the icon and before any branch, so a bad
 one creates nothing: an empty or whitespace `parent` → `error("parent must name a workspace (got
@@ -1435,13 +1449,27 @@ the same reducer action.
    A name that STARTS with an emoji gives it up as the icon, the way a Figma file or a Notion
    page does: the reducer stores `"🔥 auth refactor"` as the name `auth refactor` with the icon
    `emoji:🔥`, replacing whatever icon the workspace had (`liftLeadingIconEmoji`,
-   `packages/core/src/codec/emoji.ts`). "Emoji" is §WS-073's own heuristic, so exactly what
-   Custom Emoji… would accept is lifted and nothing else is; `"🔥"` alone stays a name, since
-   nothing would be left. The same lift applies to `workspace-create`'s name (§6.2), unless that
-   create asked for an `icon` of its own, which keeps the name whole, and to a group's name on
+   `packages/core/src/codec/emoji.ts`). "Emoji" here is narrower than §WS-073's heuristic:
+   only a cluster that DRAWS as an emoji is lifted (an emoji-presentation base such as `🔥`, a
+   flag or a ZWJ family, or a base carrying `U+FE0F` such as `❤️` or `1️⃣`). The symbols Custom
+   Emoji… also takes as an icon are ordinary text in a name, so `⌘K palette`, `°C sensor`,
+   `£5 plan` and `→ staging` stay whole. `"🔥"` alone stays a name too, since nothing would be
+   left. The same lift applies to `workspace-create`'s name (§6.2), unless that create asked
+   for an `icon` of its own, which keeps the name whole, and to a group's name on
    `group-create`, `group-rename` (§7.3), the GUI's `create-group` and a `workspace-create` that
-   makes its `group`. A `group` is looked up by the name it would be stored under, so
-   `--group "🔥 team"` finds the `team` it made last time, and is echoed that way.
+   makes its `group`.
+
+   `keepEmoji` (wire `keep_emoji`, `--keep-emoji`; also on `workspace-create`, `group-create`,
+   `group-rename` and the WS-only `rename-workspace` / `create-group-for-workspaces`) turns
+   the lift off for that request: the name is stored as given and the icon is left alone. It
+   is for a caller that keeps an emoji in front of a name on purpose, such as a script that
+   prefixes a status, which would otherwise replace the user's icon on every rename.
+
+   Names are looked up as typed first and then as stored (§2.1), so the name a row was made
+   with keeps working: `workspace-rename "🔥 auth refactor" …` finds `auth refactor`, and
+   `--group "🔥 team"` finds the `team` it made last time (echoed as `team`) rather than
+   making another. A group whose stored name really is `🔥 team` is found first, and echoed
+   as typed.
 4. Reply, `workspace_name` being the new name AS STORED (so `auth refactor`, not `🔥 auth
    refactor`):
 
@@ -1537,12 +1565,14 @@ Trim the name; whitespace-only ⇒ silent no-op (a blank group would render as e
 chrome and be unreachable by name resolution once duplicated). Append
 `{id: uuid(), name: trimmed, color?}` to groups and the top-level order, set the sidebar
 scroll target to the new group header, persist. Icon is deliberately **not** settable over
-the wire (UI-only affordance).
+the wire (UI-only affordance), except that a leading emoji in the name becomes it (§6.8)
+unless the request carries `keepEmoji`.
 
 ### 7.3 `group-rename` / `group-delete` → fire-and-forget
 
 `resolveGroup(nameOrID)`; null ⇒ silent no-op. Rename dispatches the rename action with
-the new name (the reducer lifts a leading emoji into the group's icon, §6.8); delete dispatches deletion with the `cascade` flag (without cascade,
+the new name (the reducer lifts a leading emoji into the group's icon unless the request
+carries `keepEmoji`, §6.8); delete dispatches deletion with the `cascade` flag (without cascade,
 children promote to top level, keeping the workspaces nested under them; with it, member
 workspaces and the workspaces nested under them are deleted too, and the panes of all of them
 are torn down; app-state-core.md §2.9).

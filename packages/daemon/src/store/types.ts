@@ -273,6 +273,11 @@ export type DomainAction =
           readonly profileName?: string | null | undefined;
           readonly muted?: boolean | undefined;
           readonly icon?: IconRef | null | undefined;
+          /**
+           * Keep the name whole: a leading emoji stays in it instead of being lifted into the
+           * icon (`liftLeadingIcon`). Only a caller that said so (`keep_emoji`) passes true.
+           */
+          readonly keepEmoji?: boolean | undefined;
           readonly labels?: readonly string[] | undefined;
           readonly placement?: NewWorkspacePlacement | undefined;
           readonly repoAssociations?: readonly RepoAssociation[] | undefined;
@@ -287,7 +292,16 @@ export type DomainAction =
       }
     | { readonly type: 'delete-workspace'; readonly id: string }
     | { readonly type: 'delete-workspaces'; readonly ids: readonly string[] }
-    | { readonly type: 'rename-workspace'; readonly id: string; readonly name: string }
+    | {
+          readonly type: 'rename-workspace';
+          readonly id: string;
+          readonly name: string;
+          /**
+           * Keep the name whole: a leading emoji stays in it instead of being lifted into the
+           * icon (`liftLeadingIcon`). Only a caller that said so (`keep_emoji`) passes true.
+           */
+          readonly keepEmoji?: boolean | undefined;
+      }
     | { readonly type: 'set-workspace-color'; readonly id: string; readonly color: WorkspaceColor }
     | { readonly type: 'set-workspace-icon'; readonly id: string; readonly icon: IconRef | null }
     | {
@@ -359,8 +373,22 @@ export type DomainAction =
           /** §5.5: the New Group sheet's optional repository and worktree switch. */
           readonly repoID?: string | null | undefined;
           readonly createWorktree?: boolean | undefined;
+          /**
+           * Keep the name whole: a leading emoji stays in it instead of being lifted into the
+           * icon (`liftLeadingIcon`). Only a caller that said so (`keep_emoji`) passes true.
+           */
+          readonly keepEmoji?: boolean | undefined;
       }
-    | { readonly type: 'rename-group'; readonly id: string; readonly name: string }
+    | {
+          readonly type: 'rename-group';
+          readonly id: string;
+          readonly name: string;
+          /**
+           * Keep the name whole: a leading emoji stays in it instead of being lifted into the
+           * icon (`liftLeadingIcon`). Only a caller that said so (`keep_emoji`) passes true.
+           */
+          readonly keepEmoji?: boolean | undefined;
+      }
     /**
      * §5.5: set or clear the group's default repository. `createWorktree` absent keeps the
      * current switch; `repoID: null` always clears the switch with it. A `repoID` the registry

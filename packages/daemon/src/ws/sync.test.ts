@@ -762,6 +762,13 @@ describe('WS-only commands', () => {
         expect(f.store.state().workspaces[0]).toMatchObject({ name: 'renamed', icon: { kind: 'emoji', grapheme: '🔥' } });
     });
 
+    it('keeps the emoji in the name and the icon as it was when the rename says keep_emoji', () => {
+        const f = fixture();
+        const reply = send(f, { command: 'rename-workspace', workspace_id: W1, name: '🔥 renamed', keep_emoji: true });
+        expect(reply).toEqual({ ok: true, workspace_id: W1, name: '🔥 renamed' });
+        expect(f.store.state().workspaces[0]).toMatchObject({ name: '🔥 renamed', icon: null });
+    });
+
     it('refuses an empty rename and an unknown workspace', () => {
         const f = fixture();
         expect(send(f, { command: 'rename-workspace', workspace_id: W1, name: '   ' })['ok']).toBe(false);

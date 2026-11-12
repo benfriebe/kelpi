@@ -295,6 +295,11 @@ export interface WorkspaceCreateMessage {
      */
     icon?: string | undefined;
     /**
+     * Store the name exactly as given: a leading emoji stays in the name instead of becoming
+     * the icon (socket-handlers.md §6.8). Absent or false lifts it.
+     */
+    keep_emoji?: boolean | undefined;
+    /**
      * §5.5: apply the group's default repository (and its worktree switch) to what the request
      * leaves unsaid. Defaults to true. The New Workspace sheet sends false: it has already shown
      * the group's defaults and the user's final choice is in the request, including "no repo".
@@ -449,6 +454,11 @@ export interface WorkspaceRenameMessage {
     name: string;
     /** Required non-empty on the wire; the handler trims it and refuses whitespace only. */
     new_name: string;
+    /**
+     * Store the name exactly as given: a leading emoji stays in the name instead of becoming
+     * the icon (socket-handlers.md §6.8). Absent or false lifts it.
+     */
+    keep_emoji?: boolean | undefined;
 }
 
 /**
@@ -492,12 +502,22 @@ export interface GroupCreateMessage {
     command: 'group-create';
     name: string;
     color?: WorkspaceColor | undefined;
+    /**
+     * Store the name exactly as given: a leading emoji stays in the name instead of becoming
+     * the icon (socket-handlers.md §6.8). Absent or false lifts it.
+     */
+    keep_emoji?: boolean | undefined;
 }
 
 export interface GroupRenameMessage {
     command: 'group-rename';
     name: string;
     new_name: string;
+    /**
+     * Store the name exactly as given: a leading emoji stays in the name instead of becoming
+     * the icon (socket-handlers.md §6.8). Absent or false lifts it.
+     */
+    keep_emoji?: boolean | undefined;
 }
 
 export interface GroupDeleteMessage {

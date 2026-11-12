@@ -149,6 +149,33 @@ describe('workspace creation', () => {
         expect(workspaceByID(h.state(), W2)).toMatchObject({ name: '🔥 chef', icon: { kind: 'emoji', grapheme: '👩‍🍳' } });
     });
 
+    it('keeps a leading emoji in the name and leaves the icon alone when the action says keepEmoji', () => {
+        const h = harness();
+        h.dispatch(create(W1, '🔥 auth', { keepEmoji: true }));
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '🔥 auth', icon: null });
+        h.dispatch({ type: 'set-workspace-icon', id: W1, icon: { kind: 'system', name: 'star.fill' } });
+        h.dispatch({ type: 'rename-workspace', id: W1, name: '✅ auth', keepEmoji: true });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({
+            name: '✅ auth',
+            slug: `auth-${W1.slice(0, 8)}`,
+            icon: { kind: 'system', name: 'star.fill' }
+        });
+        h.dispatch({ type: 'create-group', id: G1, name: '🔥 team', now: NOW, keepEmoji: true });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: '🔥 team', icon: null });
+        h.dispatch({ type: 'rename-group', id: G1, name: '🚧 team', keepEmoji: true });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: '🚧 team', icon: null });
+    });
+
+    it('lifts only what draws as an emoji: a leading symbol stays in the name', () => {
+        const h = harness();
+        h.dispatch(create(W1, '⌘K palette'), create(W2, '°C sensor'));
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '⌘K palette', icon: null });
+        expect(workspaceByID(h.state(), W2)).toMatchObject({ name: '°C sensor', icon: null });
+        h.dispatch({ type: 'set-workspace-icon', id: W1, icon: { kind: 'emoji', grapheme: '🚀' } });
+        h.dispatch({ type: 'rename-workspace', id: W1, name: '£5 plan' });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '£5 plan', icon: { kind: 'emoji', grapheme: '🚀' } });
+    });
+
     it('normalizes the profile assignment ("default" and blanks mean null)', () => {
         const h = harness();
         h.dispatch(create(W1, 'alpha', { profileName: ' default ' }));

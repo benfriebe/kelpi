@@ -828,6 +828,16 @@ describe('nested workspaces (app-state-core §2.9)', () => {
         expect(help.stdout).toContain('background: every window stays where it is');
     });
 
+    it('sends keep_emoji only with --keep-emoji on workspace create, and prints the stored name', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'auth', muted: false, icon: 'emoji:🔥' }] }));
+        const lifted = await runCLI(['workspace', 'create', '--name', '🔥 auth'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: '🔥 auth' });
+        expect(lifted.stdout).toBe(`created workspace auth (${PANE})\n`);
+
+        await runCLI(['workspace', 'create', '--name', '🔥 auth', '--keep-emoji'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: '🔥 auth', keep_emoji: true });
+    });
+
     it('fails when a daemon that predates nesting created the workspace at the top level', async () => {
         server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false }] }));
         const result = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss'], { port: server.port });
@@ -2459,6 +2469,14 @@ describe('workspace rename', () => {
         const result = await runCLI(['workspace', 'rename', PANE, '  beta  '], { port: server.port });
         expect(result.code).toBe(0);
         expect(await lastRequest()).toEqual({ command: 'workspace-rename', name: PANE, new_name: 'beta' });
+    });
+
+    it('sends keep_emoji only with --keep-emoji, wherever the flag sits', async () => {
+        server.respond(renamed);
+        await runCLI(['workspace', 'rename', 'alpha', '🔥 beta', '--keep-emoji'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-rename', name: 'alpha', new_name: '🔥 beta', keep_emoji: true });
+        await runCLI(['workspace', 'rename', '--keep-emoji', 'alpha', '🔥 beta'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-rename', name: 'alpha', new_name: '🔥 beta', keep_emoji: true });
     });
 
     it('prints the full reply including ok under --json, wherever the flag sits', async () => {

@@ -53,6 +53,12 @@ export interface WorkspaceCreateOptions {
     /** Create the workspace with this sidebar icon, in `setIcon`'s spelling (`"emoji:🔥"`). */
     icon?: string;
     /**
+     * Keep the name exactly as given. Without it (and without `icon`) a name that starts with an
+     * emoji gives it up as the icon: `"🔥 auth"` is stored as `auth` with `emoji:🔥`, and the
+     * reply's `workspaceName` says so.
+     */
+    keepEmoji?: boolean;
+    /**
      * Nest the new workspace under this one (an id or name). Nesting is one level deep, and the
      * child follows its parent's group, so it cannot be combined with `groupID`.
      */
@@ -91,7 +97,12 @@ export interface WorkspacesAPI {
     /** `parentID` lists only the workspaces nested under that one. */
     list(options?: { groupID?: string; parentID?: string }): Promise<WorkspaceInfo[]>;
     create(options?: WorkspaceCreateOptions): Promise<WorkspaceCreated>;
-    rename(workspaceID: string, name: string): Promise<{ workspaceID: string; name: string }>;
+    /**
+     * A name that starts with an emoji makes it the workspace's icon, replacing the one it had,
+     * and resolves with the name as stored (`"🔥 auth"` → `auth`). `keepEmoji` stores the name
+     * as given and leaves the icon alone: use it for a status prefix the plugin keeps changing.
+     */
+    rename(workspaceID: string, name: string, options?: { keepEmoji?: boolean }): Promise<{ workspaceID: string; name: string }>;
     /** Uses the CLI deletion guard, including its refusal to remove the final workspace. */
     /** `cascade` deletes its nested workspaces too; otherwise they move up into its place. */
     remove(workspaceID: string, options?: { force?: boolean; cascade?: boolean }): Promise<WorkspaceIdentity & { path?: string; deletedChildren?: string[]; deletedChildNames?: string[] }>;
@@ -117,8 +128,9 @@ export interface WorkspacesAPI {
 }
 export interface GroupsAPI {
     list(): Promise<GroupInfo[]>;
-    create(name: string, options?: { color?: WorkspaceColor; workspaceIDs?: string[] }): Promise<{ groupID: string; name: string; workspaceIDs: string[] }>;
-    rename(groupID: string, name: string): Promise<void>;
+    /** As for a workspace, a leading emoji in the name becomes the group's icon unless `keepEmoji` is set. */
+    create(name: string, options?: { color?: WorkspaceColor; workspaceIDs?: string[]; keepEmoji?: boolean }): Promise<{ groupID: string; name: string; workspaceIDs: string[] }>;
+    rename(groupID: string, name: string, options?: { keepEmoji?: boolean }): Promise<void>;
     remove(groupID: string, options?: { cascade?: boolean }): Promise<void>;
     reorder(groupID: string, workspaceIDs: string[]): Promise<GroupOrder>;
     sort(groupID: string, by: 'name' | 'last-activity' | 'last-accessed' | 'last-modified', options?: { descending?: boolean }): Promise<GroupOrder>;

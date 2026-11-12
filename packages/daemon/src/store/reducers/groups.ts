@@ -34,8 +34,9 @@ function createGroup(
 ): DaemonState {
     const trimmed = action.name.trim();
     if (trimmed === '') return state;
-    // A leading emoji in the name becomes the icon, as for a workspace (socket-handlers.md §6.8).
-    const named = liftLeadingIcon(trimmed, null);
+    // A leading emoji in the name becomes the icon, as for a workspace (socket-handlers.md §6.8),
+    // unless the create asked for the name as given (`keepEmoji`).
+    const named = action.keepEmoji === true ? { name: trimmed, icon: null } : liftLeadingIcon(trimmed, null);
 
     // Live, deduped, in order; a member whose parent is joining too stays nested under it and
     // comes along with it, rather than becoming a member of its own (§2.9).
@@ -296,7 +297,7 @@ export function reduceGroupAction(state: DaemonState, action: DomainAction): Dae
             // As for a workspace: a leading emoji becomes the icon, and the same name and icon
             // again is a no-op.
             return updateGroup(state, action.id, (group) => {
-                const named = liftLeadingIcon(name, group.icon);
+                const named = action.keepEmoji === true ? { name, icon: group.icon } : liftLeadingIcon(name, group.icon);
                 return named.name === group.name && named.icon === group.icon ? group : { ...group, ...named };
             });
         }

@@ -930,6 +930,14 @@ describe('workspace and group commands', () => {
         expect(ok({ command: 'workspace-rename', name: 'feat-x', new_name: '   ' })).toMatchObject({ new_name: '   ' });
     });
 
+    it('carries keep_emoji on the four verbs that set a name, and leaves it out when absent', () => {
+        expect(ok({ command: 'workspace-rename', name: 'a', new_name: '🔥 b', keep_emoji: true })).toMatchObject({ keep_emoji: true });
+        expect(ok({ command: 'workspace-create', name: '🔥 b', keep_emoji: true })).toMatchObject({ keep_emoji: true });
+        expect(ok({ command: 'group-create', name: '🔥 b', keep_emoji: true })).toMatchObject({ keep_emoji: true });
+        expect(ok({ command: 'group-rename', name: 'a', new_name: '🔥 b', keep_emoji: true })).toMatchObject({ keep_emoji: true });
+        expect((ok({ command: 'group-rename', name: 'a', new_name: 'b' }) as { keep_emoji?: boolean }).keep_emoji).toBeUndefined();
+    });
+
     it('requires a non-empty string new_name on workspace-rename', () => {
         expect(rejected({ command: 'workspace-rename', name: 'feat-x' })).toMatchObject({
             reason: 'guard',

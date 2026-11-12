@@ -56,12 +56,25 @@ export function isGraphemeEmoji(grapheme: string): boolean {
     const scalars = [...grapheme];
     const first = scalars[0];
     if (first === undefined) return false;
-    if (EMOJI_PRESENTATION.test(first)) return true;
-    if (scalars.length > 1 && scalars.includes(VARIATION_SELECTOR_16) && EMOJI.test(first)) return true;
+    if (isPresentedAsEmoji(scalars)) return true;
     const code = first.codePointAt(0) ?? 0;
     if (code < 0x80) return false;
     if (EMOJI.test(first)) return true;
     return SYMBOL.test(first);
+}
+
+/**
+ * Rule 1 of the heuristic on its own: the cluster DRAWS as an emoji, either because its base
+ * has emoji presentation (`🔥`, flags, ZWJ families) or because it carries the `U+FE0F` that
+ * asks for it (`❤️`, `1️⃣`). Rules 2 and 3 are left out: they are what lets the Custom Emoji
+ * sheet take a bare `©`, `→`, `⌘` or `°` as an icon, which is right for a field whose only job
+ * is to pick one and wrong for a name, where those are ordinary text.
+ */
+function isPresentedAsEmoji(scalars: readonly string[]): boolean {
+    const first = scalars[0];
+    if (first === undefined) return false;
+    if (EMOJI_PRESENTATION.test(first)) return true;
+    return scalars.length > 1 && scalars.includes(VARIATION_SELECTOR_16) && EMOJI.test(first);
 }
 
 interface SegmenterCtor {
@@ -105,16 +118,17 @@ export function normalizeIconEmoji(value: string): string | null {
  * emoji out of a title. `null` when the name does not start with one, or when nothing would be
  * left once it is lifted: `"🔥"` on its own stays a name, since a workspace cannot be nameless.
  *
- * "Emoji" is §WS-073's own heuristic (`isGraphemeEmoji`, with the `MAX_ICON_EMOJI_SCALARS` cap),
- * so what the Custom Emoji sheet would accept as an icon is exactly what a name gives up, and
- * nothing a name could not have set by hand reaches the icon column. The input is trimmed first
- * and whitespace between the emoji and the rest is dropped, so `"🔥auth"` and `"🔥   auth"` both
- * become `auth`.
+ * "Emoji" is narrower here than in the Custom Emoji sheet (§WS-073). Only a cluster that draws
+ * as an emoji is lifted (`isPresentedAsEmoji`, with the `MAX_ICON_EMOJI_SCALARS` cap), so
+ * everything a name gives up is an icon the sheet would accept, but the symbols the sheet also
+ * takes stay in the name: `⌘K palette`, `°C sensor`, `£5 plan` and `→ staging` are names, not
+ * an icon and a remainder. The input is trimmed first and whitespace between the emoji and the
+ * rest is dropped, so `"🔥auth"` and `"🔥   auth"` both become `auth`.
  */
 export function liftLeadingIconEmoji(name: string): { readonly icon: string; readonly name: string } | null {
     const trimmed = name.trim();
     const first = firstGrapheme(trimmed);
-    if (first === null || normalizeIconEmoji(first) !== first) return null;
+    if (first === null || normalizeIconEmoji(first) !== first || !isPresentedAsEmoji([...first])) return null;
     const rest = trimmed.slice(first.length).trim();
     if (rest === '') return null;
     return { icon: first, name: rest };

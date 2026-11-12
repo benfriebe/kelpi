@@ -162,6 +162,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const noUpdateMain = popSwitch('--no-update-main', args);
     const muted = popSwitch('--muted', args);
     const iconFlag = parseFlag('--icon', args);
+    const keepEmoji = popSwitch('--keep-emoji', args);
     const parent = parseFlag('--parent', args);
     const nested = popSwitch('--nested', args);
     const agentRaw = parseFlag('--agent', args);
@@ -228,6 +229,8 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (profile !== null) payload['profile'] = profile;
     if (muted) payload['muted'] = true;
     if (icon !== null) payload['icon'] = icon;
+    // Sent only when asked: absent, the daemon lifts a leading emoji out of the name into the icon.
+    if (keepEmoji) payload['keep_emoji'] = true;
     if (parent !== null) payload['parent'] = parent;
     if (callerPane !== undefined) payload['parent_pane_id'] = callerPane;
     // #307: without --focus nothing is sent, and the daemon creates the workspace in the
@@ -784,6 +787,7 @@ async function handleWorkspaceRename(args: string[]): Promise<void> {
         exit(0);
     }
     const asJSON = popSwitch('--json', args);
+    const keepEmoji = popSwitch('--keep-emoji', args);
     const nameOrID = args.shift();
     const newName = args.shift();
     for (const positional of [nameOrID, newName]) {
@@ -811,7 +815,7 @@ async function handleWorkspaceRename(args: string[]): Promise<void> {
     }
 
     const reply = await decodeReply(
-        { command: 'workspace-rename', name: nameOrID, new_name: trimmed },
+        { command: 'workspace-rename', name: nameOrID, new_name: trimmed, ...(keepEmoji ? { keep_emoji: true } : {}) },
         'kelpi workspace rename'
     );
     if (asJSON) {

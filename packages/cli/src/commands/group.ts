@@ -157,13 +157,15 @@ async function handleGroupCreate(args: string[]): Promise<void> {
         exit(0);
     }
     const color = parseFlag('--color', args);
+    const keepEmoji = popSwitch('--keep-emoji', args);
     const [name] = [...args, ...tail];
     if (name === undefined) {
-        errLine('Usage: kelpi group create <name> [--color blue]');
+        errLine('Usage: kelpi group create <name> [--color blue] [--keep-emoji]');
         exit(1);
     }
     const payload: JsonObject = { command: 'group-create', name };
     if (color !== null) payload['color'] = color;
+    if (keepEmoji) payload['keep_emoji'] = true;
     await sendJSON(payload);
 }
 
@@ -173,12 +175,18 @@ async function handleGroupRename(args: string[]): Promise<void> {
         writeOut(groupRenameUsage);
         exit(0);
     }
+    const keepEmoji = popSwitch('--keep-emoji', args);
     const [nameOrID, newName] = [...args, ...tail];
     if (nameOrID === undefined || newName === undefined) {
-        errLine('Usage: kelpi group rename <name-or-id> <new-name>');
+        errLine('Usage: kelpi group rename <name-or-id> <new-name> [--keep-emoji]');
         exit(1);
     }
-    await sendJSON({ command: 'group-rename', name: nameOrID, new_name: newName });
+    await sendJSON({
+        command: 'group-rename',
+        name: nameOrID,
+        new_name: newName,
+        ...(keepEmoji ? { keep_emoji: true } : {})
+    });
 }
 
 async function handleGroupDelete(args: string[]): Promise<void> {

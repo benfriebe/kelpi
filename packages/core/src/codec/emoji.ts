@@ -98,3 +98,24 @@ export function normalizeIconEmoji(value: string): string | null {
     if (first === null || [...first].length > MAX_ICON_EMOJI_SCALARS) return null;
     return isGraphemeEmoji(first) ? first : null;
 }
+
+/**
+ * A workspace name that starts with an emoji, split into the icon and the rest of the name
+ * (`"🔥 auth refactor"` → `🔥` + `"auth refactor"`), the way Figma and Notion lift a leading
+ * emoji out of a title. `null` when the name does not start with one, or when nothing would be
+ * left once it is lifted: `"🔥"` on its own stays a name, since a workspace cannot be nameless.
+ *
+ * "Emoji" is §WS-073's own heuristic (`isGraphemeEmoji`, with the `MAX_ICON_EMOJI_SCALARS` cap),
+ * so what the Custom Emoji sheet would accept as an icon is exactly what a name gives up, and
+ * nothing a name could not have set by hand reaches the icon column. The input is trimmed first
+ * and whitespace between the emoji and the rest is dropped, so `"🔥auth"` and `"🔥   auth"` both
+ * become `auth`.
+ */
+export function liftLeadingIconEmoji(name: string): { readonly icon: string; readonly name: string } | null {
+    const trimmed = name.trim();
+    const first = firstGrapheme(trimmed);
+    if (first === null || normalizeIconEmoji(first) !== first) return null;
+    const rest = trimmed.slice(first.length).trim();
+    if (rest === '') return null;
+    return { icon: first, name: rest };
+}

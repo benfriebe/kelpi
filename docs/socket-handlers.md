@@ -1432,7 +1432,18 @@ the same reducer action.
 3. If `trimmed` differs from the current name, dispatch `rename-workspace(id, trimmed)` (the
    reducer recomputes the slug) and persist. The same name is a successful no-op that writes
    nothing, the counterpart of the editor's "unchanged → cancel".
-4. Reply, `workspace_name` being the new name:
+   A name that STARTS with an emoji gives it up as the icon, the way a Figma file or a Notion
+   page does: the reducer stores `"🔥 auth refactor"` as the name `auth refactor` with the icon
+   `emoji:🔥`, replacing whatever icon the workspace had (`liftLeadingIconEmoji`,
+   `packages/core/src/codec/emoji.ts`). "Emoji" is §WS-073's own heuristic, so exactly what
+   Custom Emoji… would accept is lifted and nothing else is; `"🔥"` alone stays a name, since
+   nothing would be left. The same lift applies to `workspace-create`'s name (§6.2), unless that
+   create asked for an `icon` of its own, which keeps the name whole, and to a group's name on
+   `group-create`, `group-rename` (§7.3), the GUI's `create-group` and a `workspace-create` that
+   makes its `group`. A `group` is looked up by the name it would be stored under, so
+   `--group "🔥 team"` finds the `team` it made last time, and is echoed that way.
+4. Reply, `workspace_name` being the new name AS STORED (so `auth refactor`, not `🔥 auth
+   refactor`):
 
 ```json
 {"ok": true, "workspace_id": "…", "workspace_name": "auth refactor", "old_name": "feat-x"}
@@ -1531,7 +1542,7 @@ the wire (UI-only affordance).
 ### 7.3 `group-rename` / `group-delete` → fire-and-forget
 
 `resolveGroup(nameOrID)`; null ⇒ silent no-op. Rename dispatches the rename action with
-the new name; delete dispatches deletion with the `cascade` flag (without cascade,
+the new name (the reducer lifts a leading emoji into the group's icon, §6.8); delete dispatches deletion with the `cascade` flag (without cascade,
 children promote to top level, keeping the workspaces nested under them; with it, member
 workspaces and the workspaces nested under them are deleted too, and the panes of all of them
 are torn down; app-state-core.md §2.9).

@@ -834,7 +834,8 @@ export function handleWsOnlyCommand(
         return {
             ok: true,
             group_id: id,
-            name,
+            // As stored: the reducer lifts a leading emoji out of the name into the icon.
+            name: created?.name ?? name,
             workspace_ids: created?.childOrder ?? requested,
             repo_id: created?.repoID ?? null,
             create_worktree: created?.createWorktree ?? false
@@ -1004,7 +1005,9 @@ export function handleWsOnlyCommand(
     if (name.length === 0) return failure('rename-workspace requires a non-empty name');
     if (workspaceByID(state, workspaceID) === null) return failure(`no workspace matches '${workspaceID}'`);
     store.dispatch({ type: 'rename-workspace', id: workspaceID, name });
-    return { ok: true, workspace_id: workspaceID, name };
+    // The reducer lifts a leading emoji out of the name into the icon, so the name stored can
+    // be shorter than the one sent: report that one.
+    return { ok: true, workspace_id: workspaceID, name: workspaceByID(store.getState(), workspaceID)?.name ?? name };
 }
 
 // ── content-pane commands (M5) ──────────────────────────────────────────────────────

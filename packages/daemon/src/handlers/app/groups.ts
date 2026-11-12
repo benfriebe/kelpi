@@ -105,7 +105,8 @@ function handleGroupCreate(
         id,
         name: trimmed,
         now: deps.now(),
-        // Icons are deliberately NOT settable over the wire (UI-only affordance).
+        // Icons are deliberately NOT settable over the wire (UI-only affordance); a leading
+        // emoji in the name becomes one in the reducer, as for a workspace (§6.8).
         ...(color !== undefined ? { color } : {})
     });
     deps.scrollTarget(groupSidebarID(id));

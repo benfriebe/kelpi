@@ -1416,8 +1416,11 @@ case-sensitive name), as for `workspace delete`, with the same errors: `workspac
 sidebar's: trimmed, whitespace only refused (`workspace name cannot be empty`), no length or
 character limit, and another workspace's name is allowed (after which that name needs the id).
 Renaming to the current name succeeds and writes nothing. The slug is recomputed, the change
-persists and it syncs to every attached client. Reply `{ok, workspace_id, workspace_name,
-old_name}`, where `workspace_name` is the new name.
+persists and it syncs to every attached client. A new name that starts with an emoji hands it
+to the icon, as in Figma or Notion: `kelpi workspace rename w1 "🔥 auth refactor"` stores the
+name `auth refactor` with the icon `emoji:🔥` (socket-handlers.md §6.8; `workspace create`'s
+name does the same unless `--icon` is given). Reply `{ok, workspace_id, workspace_name,
+old_name}`, where `workspace_name` is the new name as stored, so `auth refactor` there.
 
 ### 10.9 `kelpi workspace icon`
 
@@ -1541,7 +1544,8 @@ exit 1.
 ### 11.3 `kelpi group rename <name-or-id> <new-name>`
 
 Fire-and-forget `{"command":"group-rename","name":...,"new_name":...}`. Missing either
-positional => usage, exit 1. Argument rules as §11.2.
+positional => usage, exit 1. Argument rules as §11.2. As for `workspace rename` (§10.8), a new
+name that starts with an emoji hands it to the group's icon; so does `group create`'s name.
 
 ### 11.4 `kelpi group delete <name-or-id> [--cascade]`
 

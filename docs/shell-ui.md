@@ -824,7 +824,9 @@ Contents: `[icon 22×22] [name 13pt bold] [repo indicator] …spacer… [+ on ho
   non-empty trimmed value commits; Esc cancels; blur commits silently (unless
   empty/unchanged → cancel), matching Finder folders. While renaming, the drag gesture
   is detached (so text selection works) and clicking elsewhere in the sidebar commits
-  via blur.
+  via blur. Typing an emoji at the start of the name makes it the workspace's icon and
+  drops it from the name, as in Figma: `🔥 auth refactor` commits as `auth refactor`
+  with a 🔥 icon (the daemon does the lifting, socket-handlers.md §6.8).
 - **Expanded group visuals**: children indent 24pt and a 1.5pt vertical guide line runs
   down the left (at 18pt inset, aligned under the folder icon) in the group color (or
   divider color when colorless), spanning all child rows and the empty placeholder.
@@ -1068,7 +1070,8 @@ dash drawn inside, rendered directly as colored dots in the portal menu
 ```
 New Workspace              → New Workspace sheet pre-scoped to this group
 ──────────
-Rename…                    → inline rename in the header row
+Rename…                    → inline rename in the header row (a leading emoji becomes
+                             the group's icon, as for a workspace, §5.4)
 Color ▸                    → "None" + the 10 colors
 Change Icon ▸              → the same flat submenu as §5.6 (Symbol and Emoji captions,
                              Custom Emoji…), ending in Reset to Folder

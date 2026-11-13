@@ -6,7 +6,7 @@
  * docs/socket-handlers.md §6.6 (`workspace label` + preset back-fill).
  */
 
-import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
+import { groupSidebarID, liftLeadingIcon, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
 import { samePullRequests } from '@kelpi/core/git';
 import { normalizedAssignment } from '@kelpi/core/env';
 import { leaf } from '@kelpi/core/layout';
@@ -134,6 +134,12 @@ function createWorkspace(
     action: Extract<DomainAction, { type: 'create-workspace' }>
 ): DaemonState {
     const createdAt = seconds(action.now);
+    // A leading emoji in the name becomes the icon (`liftLeadingIcon`), unless the create asked
+    // for an icon of its own (`kelpi workspace create --icon`) or for the name as given
+    // (`--keep-emoji`), either of which keeps the name whole.
+    const icon = action.icon ?? null;
+    const named =
+        icon === null && action.keepEmoji !== true ? liftLeadingIcon(action.name, null) : { name: action.name, icon };
     const pane = newPane({
         id: action.paneID,
         workingDirectory:
@@ -144,13 +150,13 @@ function createWorkspace(
     });
     const workspace = makeWorkspaceState({
         id: action.id,
-        name: action.name,
-        slug: makeSlug(action.name, action.id),
+        name: named.name,
+        slug: makeSlug(named.name, action.id),
         color: action.color ?? 'blue',
         createdAt,
         profileName: normalizedAssignment(action.profileName ?? null),
         muted: action.muted ?? false,
-        icon: action.icon ?? null,
+        icon: named.icon,
         labels: action.labels ?? [],
         panes: [pane],
         layout: leaf(pane.id),
@@ -484,12 +490,17 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
             return deleteWorkspaces(state, action.ids);
         case 'rename-workspace':
             // §7.1: the slug is recomputed on rename (the app-state doc's "generated once" note
-            // describes creation; the reducer spec's rename recomputes — see notes).
-            return updateWorkspace(state, action.id, (workspace) => ({
-                ...workspace,
-                name: action.name,
-                slug: makeSlug(action.name, workspace.id)
-            }));
+            // describes creation; the reducer spec's rename recomputes — see notes). A name
+            // that starts with an emoji hands it to the icon (`liftLeadingIcon`), so the slug
+            // is made from what is left. The same name and icon again is the no-op it looks like.
+            return updateWorkspace(state, action.id, (workspace) => {
+                const named =
+                    action.keepEmoji === true
+                        ? { name: action.name, icon: workspace.icon }
+                        : liftLeadingIcon(action.name, workspace.icon);
+                if (named.name === workspace.name && named.icon === workspace.icon) return workspace;
+                return { ...workspace, ...named, slug: makeSlug(named.name, workspace.id) };
+            });
         case 'set-workspace-color':
             return updateWorkspace(state, action.id, (workspace) => ({
                 ...workspace,

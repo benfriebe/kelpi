@@ -252,6 +252,18 @@ describe('workspace-create (top level)', () => {
         expect(upserted.length).toBeGreaterThan(0);
         expect(upserted.every((icon) => (icon as { grapheme?: string } | null)?.grapheme === '👩‍🍳')).toBe(true);
 
+        // A name that starts with an emoji hands it to the icon; the reply, sent before the
+        // reducer runs on this branch, still says what is stored.
+        const h3 = harness({ ids: [W2, P2] });
+        expect(h3.reply({ command: 'workspace-create', name: '🔥 auth refactor' })).toEqual({
+            ok: true,
+            workspace_id: W2,
+            workspace_name: 'auth refactor',
+            muted: false,
+            icon: 'emoji:🔥'
+        });
+        expect(h3.state().workspaces[0]).toMatchObject({ name: 'auth refactor', icon: { kind: 'emoji', grapheme: '🔥' } });
+
         // No icon asked for: none stored, and the reply is what it always was.
         const h2 = harness({ ids: [W2, P2] });
         expect(h2.reply({ command: 'workspace-create', name: 'plain' })).not.toHaveProperty('icon');
@@ -382,6 +394,45 @@ describe('workspace-create (group)', () => {
         expect(group?.name).toBe('team');
         expect(group?.childOrder).toEqual([W1]);
         expect(h.scrolled).toEqual([{ kind: 'workspace', id: W1 }]);
+    });
+
+    it('gives a new group a leading emoji as its icon, and finds it again under the stored name', () => {
+        const h = harness({ ids: [W1, G1, P1, W2, P2] });
+        expect(h.reply({ command: 'workspace-create', name: 'dev', group: '🔥 team' })['group']).toBe('team');
+        expect(h.state().groups[0]).toMatchObject({ id: G1, name: 'team', icon: { kind: 'emoji', grapheme: '🔥' } });
+        // The same `--group` again is the same group, not a second `team`.
+        expect(h.reply({ command: 'workspace-create', name: 'dev 2', group: '🔥 team' })['group']).toBe('team');
+        expect(h.state().groups).toHaveLength(1);
+        expect(h.state().groups[0]?.childOrder).toEqual([W1, W2]);
+    });
+
+    it('finds a group whose stored name really starts with the emoji before the one without it', () => {
+        // What any daemon before the lift stored for `--group "🔥 team"`; `keep_emoji` makes one today.
+        const h = harness({ ids: [G1, W1, P1, W2, G2, P2] });
+        h.send({ command: 'group-create', name: '🔥 team', keep_emoji: true });
+        expect(h.state().groups[0]).toMatchObject({ id: G1, name: '🔥 team', icon: null });
+        expect(h.reply({ command: 'workspace-create', name: 'dev', group: '🔥 team' })['group']).toBe('🔥 team');
+        expect(h.state().groups).toHaveLength(1);
+        expect(h.state().groups[0]?.childOrder).toEqual([W1]);
+        // A different emoji in front of a name nothing has makes its own group, as before.
+        expect(h.reply({ command: 'workspace-create', name: 'dev 2', group: '🚀 crew' })['group']).toBe('crew');
+        expect(h.state().groups.map((group) => group.name)).toEqual(['🔥 team', 'crew']);
+    });
+
+    it('keeps a leading emoji in the workspace name when asked, and says so before the reducer runs', () => {
+        const h = harness({ ids: [W1, P1, W2, G1, P2] });
+        expect(h.reply({ command: 'workspace-create', name: '🔥 auth', keep_emoji: true })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: '🔥 auth',
+            muted: false
+        });
+        expect(h.state().workspaces[0]).toMatchObject({ name: '🔥 auth', icon: null });
+        expect(h.reply({ command: 'workspace-create', name: '🔥 dev', group: 'team', keep_emoji: true })).toMatchObject({
+            workspace_name: '🔥 dev',
+            group: 'team'
+        });
+        expect(h.state().workspaces[1]).toMatchObject({ name: '🔥 dev', icon: null });
     });
 
     it('carries the muted flag into the group branch', () => {
@@ -674,6 +725,19 @@ describe('workspace-create (worktree)', () => {
         });
         await flush();
         expect(h.state().groups).toHaveLength(0);
+    });
+
+    it('finds an existing group by the emoji name it was created with, and names an unknown one as typed', async () => {
+        const h = harness({ ids: [G1, id('bbbbbbbb', 9), W1, P1, id('eeeeeeee', 1)], git: stubGit() });
+        h.send({ command: 'group-create', name: '🔥 team' });
+        h.send({ ...worktreeRequest, group: '🔥 team' });
+        await flush();
+        expect(h.replies.at(-1)?.payloads[0]).toMatchObject({ ok: true, group: 'team' });
+        expect(h.state().groups[0]?.childOrder).toEqual([W1]);
+        expect(h.reply({ ...worktreeRequest, group: '🔥 nope' })).toEqual({
+            ok: false,
+            error: 'unknown group: 🔥 nope — --worktree only supports existing groups; create it first (`kelpi group create`) or omit --group'
+        });
     });
 
     it('rejects an ambiguous group with the shared ambiguity message', () => {
@@ -1915,6 +1979,33 @@ describe('workspace-rename', () => {
         // The reducer recomputes the slug, exactly as for the sidebar's rename.
         expect(h.state().workspaces[0]?.slug).not.toBe(seeded(2).workspaces[0]?.slug);
         expect(h.persists.length).toBeGreaterThan(0);
+    });
+
+    it('lifts a leading emoji into the icon and replies with the name actually stored', () => {
+        const h = harness({ initial: seeded(2) });
+        expect(h.reply({ command: 'workspace-rename', name: 'w1', new_name: '🔥 auth refactor' })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: 'auth refactor',
+            old_name: 'w1'
+        });
+        expect(h.state().workspaces[0]).toMatchObject({ name: 'auth refactor', icon: { kind: 'emoji', grapheme: '🔥' } });
+    });
+
+    it('still answers to the name it was renamed with, and keeps the emoji in the name when asked', () => {
+        const h = harness({ initial: seeded(2) });
+        h.reply({ command: 'workspace-rename', name: 'w1', new_name: '🔥 auth' });
+        // The name as typed finds `auth`; the icon the rename set is left alone by keep_emoji.
+        expect(h.reply({ command: 'workspace-rename', name: '🔥 auth', new_name: '✅ auth', keep_emoji: true })).toEqual({
+            ok: true,
+            workspace_id: W1,
+            workspace_name: '✅ auth',
+            old_name: 'auth'
+        });
+        expect(h.state().workspaces[0]).toMatchObject({ name: '✅ auth', icon: { kind: 'emoji', grapheme: '🔥' } });
+        // A leading symbol is part of the name, not an icon.
+        expect(h.reply({ command: 'workspace-rename', name: 'w2', new_name: '⌘K palette' })['workspace_name']).toBe('⌘K palette');
+        expect(h.state().workspaces[1]).toMatchObject({ name: '⌘K palette', icon: null });
     });
 
     it('renames by id, in either case, even when the old name is ambiguous', () => {

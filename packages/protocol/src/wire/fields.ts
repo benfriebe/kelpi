@@ -80,6 +80,7 @@ export const WIRE_FIELD_TYPES = {
     worktree: 'string',
     branch: 'string',
     update_main: 'bool',
+    keep_emoji: 'bool',
     ratio: 'double',
     delta: 'double',
     size: 'int',

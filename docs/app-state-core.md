@@ -138,9 +138,12 @@ slug  = base === "" ? suffix : `${base}-${suffix}`
 ```
 
 Generated at workspace creation and RECOMPUTED on rename (`slug = makeSlug(newName, id)` in
-`packages/daemon/src/store/reducers/workspaces.ts:328`; the old slug is not kept). Restored
-workspaces keep their persisted slug until renamed. The slug is an alternate lookup key for the
-lenient CLI resolver (15.1). `makeSlug` lives in `packages/core/src/resolve/ids.ts:36`.
+`packages/daemon/src/store/reducers/workspaces.ts`; the old slug is not kept). Restored
+workspaces keep their persisted slug until renamed. Both create and rename first lift a leading
+emoji out of the name into `icon` (`"🔥 auth refactor"` → name `auth refactor`, icon
+`emoji:🔥`; socket-handlers.md §6.8), so the name and the slug are made from what is left,
+unless the action carries `keepEmoji` (or, on create, an `icon`), which keeps the name whole.
+The slug is an alternate lookup key for the lenient CLI resolver (15.1). `makeSlug` lives in `packages/core/src/resolve/ids.ts:36`.
 
 ### 1.3 WorkspaceColor
 
@@ -900,7 +903,10 @@ The single-pass semantics matter: sequential single moves drift when sources and
    `validInitial`; `removedBeforeAnchor` = count of `validInitial` workspaces whose top-level
    entries sit strictly BEFORE the anchor index.
 5. Create the group: fresh id, trimmed name, given color (may be null), `isCollapsed = false`,
-   `childOrder = validInitial`, `createdAt = now`, no icon. Append to `groups`.
+   `childOrder = validInitial`, `createdAt = now`, no icon, unless the name starts with an
+   emoji, which is lifted out of the name into `icon` as for a workspace (`"🔥 Client"` → name
+   `Client`, icon `emoji:🔥`; socket-handlers.md §6.8) when the action does not carry
+   `keepEmoji`. Append to `groups`.
 6. Detach every `validInitial` workspace from its previous parent: remove from every OTHER group's
    `childOrder` and remove its `topLevelOrder` entries.
 7. Insert the new `group(id)` entry into `topLevelOrder`:
@@ -914,7 +920,9 @@ The single-pass semantics matter: sequential single moves drift when sources and
 
 ### 5.2 renameGroup / setGroupColor / setGroupIcon
 
-- `renameGroup(id, name)`: trim; empty or missing group -> no-op; set the name; clear
+- `renameGroup(id, name)`: trim; empty or missing group -> no-op; set the name, lifting a
+  leading emoji into `icon` as 5.1 does, `keepEmoji` aside (the same name and icon again is a
+  no-op); clear
   `renamingGroupID` if it pointed here; persist.
 - `setGroupColor(id, color | null)`: guard exists; set; persist.
 - `setGroupIcon(id, icon | null)`: guard exists; set; persist. Group icon and color management
@@ -1747,6 +1755,9 @@ Two variants exist with DIFFERENT semantics (`packages/core/src/resolve/workspac
     case-SENSITIVE name match that must be UNIQUE (0 or >= 2 matches -> null, callers fail fast
     instead of mutating the wrong group).
   - `resolveWorkspace(nameOrID)` on state: same contract against workspaces.
+  - Both try the name as typed first and, when that matches nothing, the name without its
+    leading emoji, which is what a name such as `🔥 auth` is stored as (socket-handlers.md
+    §6.8). The lenient resolver does the same before its slug match.
 - Lenient (static `resolveWorkspace(target, state)`, used by some socket paths, e.g. graft scope):
   UUID first; else case-INSENSITIVE name compare taking the FIRST match; else slug exact match;
   else null.

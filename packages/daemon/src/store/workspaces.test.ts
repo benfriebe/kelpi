@@ -117,6 +117,65 @@ describe('workspace creation', () => {
         expect(h.state().lastActiveWorkspaceID).toBe(W1);
     });
 
+    it('lifts a leading emoji out of the name into the icon, on create and on rename', () => {
+        const h = harness();
+        h.dispatch(create(W1, '🔥 auth refactor'));
+        expect(workspaceByID(h.state(), W1)).toMatchObject({
+            name: 'auth refactor',
+            slug: `auth-refactor-${W1.slice(0, 8)}`,
+            icon: { kind: 'emoji', grapheme: '🔥' }
+        });
+        // A rename does the same, replacing whatever icon the workspace had…
+        h.dispatch({ type: 'set-workspace-icon', id: W1, icon: { kind: 'system', name: 'star.fill' } });
+        h.dispatch({ type: 'rename-workspace', id: W1, name: '🚀 launch' });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({
+            name: 'launch',
+            slug: `launch-${W1.slice(0, 8)}`,
+            icon: { kind: 'emoji', grapheme: '🚀' }
+        });
+        // …and a rename without one keeps the icon it has: the emoji was lifted, not tied to the name.
+        h.dispatch({ type: 'rename-workspace', id: W1, name: 'launch v2' });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: 'launch v2', icon: { kind: 'emoji', grapheme: '🚀' } });
+        // Typing the emoji it already has in front of the name it already has changes nothing.
+        const before = h.state();
+        h.dispatch({ type: 'rename-workspace', id: W1, name: '🚀 launch v2' });
+        expect(h.state()).toBe(before);
+    });
+
+    it('keeps the name whole when nothing would be left, or when the create asked for an icon', () => {
+        const h = harness();
+        h.dispatch(create(W1, '🔥'), create(W2, '🔥 chef', { icon: { kind: 'emoji', grapheme: '👩‍🍳' } }));
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '🔥', icon: null });
+        expect(workspaceByID(h.state(), W2)).toMatchObject({ name: '🔥 chef', icon: { kind: 'emoji', grapheme: '👩‍🍳' } });
+    });
+
+    it('keeps a leading emoji in the name and leaves the icon alone when the action says keepEmoji', () => {
+        const h = harness();
+        h.dispatch(create(W1, '🔥 auth', { keepEmoji: true }));
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '🔥 auth', icon: null });
+        h.dispatch({ type: 'set-workspace-icon', id: W1, icon: { kind: 'system', name: 'star.fill' } });
+        h.dispatch({ type: 'rename-workspace', id: W1, name: '✅ auth', keepEmoji: true });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({
+            name: '✅ auth',
+            slug: `auth-${W1.slice(0, 8)}`,
+            icon: { kind: 'system', name: 'star.fill' }
+        });
+        h.dispatch({ type: 'create-group', id: G1, name: '🔥 team', now: NOW, keepEmoji: true });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: '🔥 team', icon: null });
+        h.dispatch({ type: 'rename-group', id: G1, name: '🚧 team', keepEmoji: true });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: '🚧 team', icon: null });
+    });
+
+    it('lifts only what draws as an emoji: a leading symbol stays in the name', () => {
+        const h = harness();
+        h.dispatch(create(W1, '⌘K palette'), create(W2, '°C sensor'));
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '⌘K palette', icon: null });
+        expect(workspaceByID(h.state(), W2)).toMatchObject({ name: '°C sensor', icon: null });
+        h.dispatch({ type: 'set-workspace-icon', id: W1, icon: { kind: 'emoji', grapheme: '🚀' } });
+        h.dispatch({ type: 'rename-workspace', id: W1, name: '£5 plan' });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ name: '£5 plan', icon: { kind: 'emoji', grapheme: '🚀' } });
+    });
+
     it('normalizes the profile assignment ("default" and blanks mean null)', () => {
         const h = harness();
         h.dispatch(create(W1, 'alpha', { profileName: ' default ' }));
@@ -475,6 +534,20 @@ describe('groups', () => {
             { kind: 'workspace', id: W3 }
         ]);
         expect(groupByID(h.state(), G1)?.childOrder).toEqual([W2]);
+    });
+
+    it('lifts a leading emoji out of the name into the icon, on create and on rename', () => {
+        const h = harness(seeded());
+        h.dispatch({ type: 'create-group', id: G1, name: '🏗️ Client', now: NOW });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: 'Client', icon: { kind: 'emoji', grapheme: '🏗️' } });
+        h.dispatch({ type: 'rename-group', id: G1, name: '🏢 Agency' });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: 'Agency', icon: { kind: 'emoji', grapheme: '🏢' } });
+        // No leading emoji: the icon stays; the same again: nothing changes.
+        h.dispatch({ type: 'rename-group', id: G1, name: 'Agency 2' });
+        expect(groupByID(h.state(), G1)).toMatchObject({ name: 'Agency 2', icon: { kind: 'emoji', grapheme: '🏢' } });
+        const before = h.state();
+        h.dispatch({ type: 'rename-group', id: G1, name: '🏢 Agency 2' });
+        expect(h.state()).toBe(before);
     });
 
     it('appends when no anchor resolves and ignores a blank name', () => {

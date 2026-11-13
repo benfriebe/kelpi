@@ -43,6 +43,23 @@ function host(options: Partial<SyncHubOptions> | ((app: ReturnType<typeof appHar
 }
 
 describe('public SDK over Kelpi command handlers', () => {
+    it('lifts a leading emoji out of a name into the icon unless keepEmoji is passed', async () => {
+        const { api, app } = host();
+        const lifted = await api.workspaces.create({ name: '🔥 auth', focus: false });
+        expect(lifted).toMatchObject({ workspaceName: 'auth', icon: 'emoji:🔥' });
+        const kept = await api.workspaces.create({ name: '🔥 raw', keepEmoji: true, focus: false });
+        expect(kept.workspaceName).toBe('🔥 raw');
+        expect(kept).not.toHaveProperty('icon');
+        // A status prefix the plugin keeps changing must not replace the icon.
+        expect(await api.workspaces.rename(lifted.workspaceID, '✅ auth', { keepEmoji: true })).toMatchObject({ name: '✅ auth' });
+        expect((await api.workspaces.list()).find(workspace => workspace.id === lifted.workspaceID)).toMatchObject({ name: '✅ auth', icon: 'emoji:🔥' });
+        expect((await api.workspaces.rename(lifted.workspaceID, '🚀 auth')).name).toBe('auth');
+        const group = await api.groups.create('🧪 lab', { keepEmoji: true });
+        expect(group.name).toBe('🧪 lab');
+        await api.groups.rename(group.groupID, '🧭 nav');
+        expect(app.state().groups[0]).toMatchObject({ name: 'nav', icon: { kind: 'emoji', grapheme: '🧭' } });
+    });
+
     it('creates, moves, labels and removes workspaces with standalone camelCase DTOs', async () => {
         const { api, app } = host();
         const created = await api.workspaces.create({ name: 'SDK', path: '/tmp', color: 'purple' });

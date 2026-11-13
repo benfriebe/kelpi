@@ -4,7 +4,7 @@
  * decodes to null, which renders the fallback avatar/glyph.
  */
 
-import { MAX_ICON_EMOJI_SCALARS, normalizeIconEmoji } from './emoji.js';
+import { liftLeadingIconEmoji, MAX_ICON_EMOJI_SCALARS, normalizeIconEmoji } from './emoji.js';
 
 /** The longest `system:` name stored, well past any real SF Symbol name. */
 export const MAX_ICON_SYMBOL_LENGTH = 128;
@@ -49,4 +49,23 @@ export function iconRefusal(icon: IconRef): string | null {
     return [...icon.grapheme].length > MAX_ICON_EMOJI_SCALARS
         ? 'the icon is too long: give one emoji or symbol'
         : `'${icon.grapheme}' is not a usable icon: give one emoji or symbol`;
+}
+
+/**
+ * The name and icon a workspace or group ends up with from the name it was given. A name that
+ * starts with an emoji (`"🔥 auth refactor"`) gives it up as the icon and keeps the rest
+ * (`liftLeadingIconEmoji`), the way a Figma file or a Notion page does; any other name is kept
+ * whole and leaves `current`, the icon it already has, alone. The leading emoji is the user's
+ * latest word on the icon, so it replaces a `system:` or `emoji:` icon that was there. When it
+ * IS the icon that was there, `current` itself is returned, so a rename that only repeats the
+ * emoji changes nothing a reducer or a diff could see.
+ */
+export function liftLeadingIcon(
+    name: string,
+    current: IconRef | null
+): { readonly name: string; readonly icon: IconRef | null } {
+    const lifted = liftLeadingIconEmoji(name);
+    if (lifted === null) return { name, icon: current };
+    const same = current !== null && current.kind === 'emoji' && current.grapheme === lifted.icon;
+    return { name: lifted.name, icon: same ? current : { kind: 'emoji', grapheme: lifted.icon } };
 }

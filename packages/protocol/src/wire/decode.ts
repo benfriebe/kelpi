@@ -406,6 +406,7 @@ function decodeCommand(
                 repo: fields.text('repo'),
                 muted: fields.flag('muted', false),
                 icon: fields.rawText('icon'),
+                keep_emoji: fields.bool('keep_emoji'),
                 group_defaults: fields.flag('group_defaults', true),
                 parent: fields.text('parent'),
                 // Verbatim: a malformed id must fail the create (no such pane), not silently un-nest it.
@@ -473,7 +474,7 @@ function decodeCommand(
             if (name === undefined) return guard(command, 'workspace-rename requires name', 'name');
             const newName = fields.nonEmpty('new_name');
             if (newName === undefined) return guard(command, 'workspace-rename requires new_name', 'new_name');
-            return { command, name, new_name: newName };
+            return { command, name, new_name: newName, keep_emoji: fields.bool('keep_emoji') };
         }
         case 'workspace-icon': {
             const name = fields.nonEmpty('name');
@@ -496,14 +497,19 @@ function decodeCommand(
         case 'group-create': {
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'group-create requires name', 'name');
-            return { command, name, color: parseWorkspaceColor(fields.rawText('color')) };
+            return {
+                command,
+                name,
+                color: parseWorkspaceColor(fields.rawText('color')),
+                keep_emoji: fields.bool('keep_emoji')
+            };
         }
         case 'group-rename': {
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'group-rename requires name', 'name');
             const newName = fields.nonEmpty('new_name');
             if (newName === undefined) return guard(command, 'group-rename requires new_name', 'new_name');
-            return { command, name, new_name: newName };
+            return { command, name, new_name: newName, keep_emoji: fields.bool('keep_emoji') };
         }
         case 'group-delete': {
             const name = fields.nonEmpty('name');

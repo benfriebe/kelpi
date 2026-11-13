@@ -1084,11 +1084,11 @@ kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--
 kelpi workspace create [--name "..."] [--path /dir] [--color blue]
                      [--group <name> | --parent <name-or-id> | --nested]
                      [--profile <name>] [--repo <path> | --no-repo] [--muted] [--icon <emoji>]
-                     [--focus] [--json]
+                     [--keep-emoji] [--focus] [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
                      [--update-main | --no-update-main]
                      [--group <existing> | --parent <name-or-id> | --nested] [--muted]
-                     [--icon <emoji>] [--focus] [--json]
+                     [--icon <emoji>] [--keep-emoji] [--focus] [--json]
 kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file <path|->] [--send]
 ```
 
@@ -1200,7 +1200,14 @@ orphaned group on worktree-add failure). Ambiguous `--group` name => `ok:false`
 "...ambiguous...". `--profile` assigns a workspace profile at creation. `--muted` creates the
 workspace muted from its first frame, so a conductor can spawn children that never notify
 (it composes with `--worktree`, `--group` and `--profile`). `--icon` likewise gives the
-workspace its sidebar icon from its first frame, and a refused icon creates nothing. Worktree path is
+workspace its sidebar icon from its first frame, and a refused icon creates nothing. A `--name`
+that starts with an emoji makes it the icon (socket-handlers.md §6.8): `--name "🔥 auth"`
+creates `auth` with the icon `emoji:🔥`, and the reply's `workspace_name` and the printed line
+say `auth`. `--icon` keeps the name whole, and so does `--keep-emoji` (sent as
+`"keep_emoji":true`), which stores the name as given with no icon. The workspace answers to
+either spelling afterwards (§10.8). A `--group` that starts with an emoji is looked up as
+typed and then under its stored name, so repeating `--group "🔥 team"` reuses the `team` it
+made. Worktree path is
 `resolvedWorktreeBasePath/<sanitized-name>`; `--branch` defaults to the worktree name.
 Without `--update-main` the branch is decided from the refs that exist (graft-git.md §8.3): an
 existing local branch is checked out; a name that already names a commit (a tag, a SHA,
@@ -1416,8 +1423,19 @@ case-sensitive name), as for `workspace delete`, with the same errors: `workspac
 sidebar's: trimmed, whitespace only refused (`workspace name cannot be empty`), no length or
 character limit, and another workspace's name is allowed (after which that name needs the id).
 Renaming to the current name succeeds and writes nothing. The slug is recomputed, the change
-persists and it syncs to every attached client. Reply `{ok, workspace_id, workspace_name,
-old_name}`, where `workspace_name` is the new name.
+persists and it syncs to every attached client. A new name that starts with an emoji hands it
+to the icon, as in Figma or Notion: `kelpi workspace rename w1 "🔥 auth refactor"` stores the
+name `auth refactor` with the icon `emoji:🔥` (socket-handlers.md §6.8; `workspace create`'s
+name does the same unless `--icon` is given). Only a character that draws as an emoji is
+lifted: `⌘K palette`, `°C sensor` and `→ staging` are stored whole. `--keep-emoji` (sent as
+`"keep_emoji":true`) stores the new name as given and leaves the icon alone, for a script
+that keeps a status emoji in front of a name. Reply `{ok, workspace_id, workspace_name,
+old_name}`, where `workspace_name` is the new name as stored, so `auth refactor` there.
+
+Every name-or-id argument is tried as typed and then without its leading emoji, so the name a
+workspace was created or renamed with still addresses it: after the rename above, both
+`auth refactor` and `🔥 auth refactor` find it. A workspace whose stored name really is
+`🔥 auth refactor` wins over one named `auth refactor`.
 
 ### 10.9 `kelpi workspace icon`
 
@@ -1526,22 +1544,26 @@ kelpi group list [--json] [--no-header]
   group has none; WORKSPACES is `name (shortid)` pairs comma-joined (name-less members print
   just the short id; a nested one adds ` under <parent>`), `-` when empty; last column unpadded.
 
-### 11.2 `kelpi group create <name> [--color blue]`
+### 11.2 `kelpi group create <name> [--color blue] [--keep-emoji]`
 
-Fire-and-forget `{"command":"group-create","name":..., color?}`. Missing name => usage,
-exit 1.
+Fire-and-forget `{"command":"group-create","name":..., color?, keep_emoji?}`. Missing name =>
+usage, exit 1. A name that starts with an emoji makes it the group's icon (`"🔥 team"` is the
+group `team` with a 🔥 icon) unless `--keep-emoji` is given.
 
 `create`, `rename` and `delete` share their argument rules:
 - `-h` / `--help` anywhere before a `--` => help to stdout, exit 0, nothing sent.
-- Flags (`--color`, `--cascade`) are read first, from the words before any `--`, so they may
+- Flags (`--color`, `--cascade`, `--keep-emoji`) are read first, from the words before any `--`, so they may
   come before or after the names.
 - The names are the words left over, then every word after the `--`, which is a name even
   when it looks like a flag: `kelpi group delete -- --help` deletes a group called `--help`.
 
-### 11.3 `kelpi group rename <name-or-id> <new-name>`
+### 11.3 `kelpi group rename <name-or-id> <new-name> [--keep-emoji]`
 
-Fire-and-forget `{"command":"group-rename","name":...,"new_name":...}`. Missing either
-positional => usage, exit 1. Argument rules as §11.2.
+Fire-and-forget `{"command":"group-rename","name":...,"new_name":..., keep_emoji?}`. Missing
+either positional => usage, exit 1. Argument rules as §11.2. As for `workspace rename`
+(§10.8), a new name that starts with an emoji hands it to the group's icon unless
+`--keep-emoji` is given, and `<name-or-id>` is tried as typed and then without its leading
+emoji.
 
 ### 11.4 `kelpi group delete <name-or-id> [--cascade]`
 

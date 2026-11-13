@@ -407,11 +407,11 @@ export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
                        [--group <name> | --parent <name-or-id> | --nested] \\
                        [--profile <name>] [--repo <path> | --no-repo] \\
-                       [--muted] [--icon <emoji>] [--focus] [--json]
+                       [--muted] [--icon <emoji>] [--keep-emoji] [--focus] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
                        [--update-main | --no-update-main] \\
                        [--group <existing> | --parent <name-or-id> | --nested] [--muted] \\
-                       [--icon <emoji>] [--focus] [--json]
+                       [--icon <emoji>] [--keep-emoji] [--focus] [--json]
   kelpi workspace create ... --agent claude|codex \\
                        [--prompt "..." | --prompt-file <path|->] [--send]
 
@@ -420,7 +420,9 @@ background: every window stays where it is (the sidebar points at the new row)
 unless --focus is given.
 
 Options:
-  --name <name>      Workspace name.
+  --name <name>      Workspace name. A name that starts with an emoji makes it
+                     the icon: "🔥 auth" is stored as "auth" with a 🔥 icon,
+                     unless --icon or --keep-emoji is given.
   --path /dir        Working directory for the workspace's first pane; with
                      --worktree, the source repo when neither --repo nor the
                      group's repository gives one.
@@ -447,6 +449,8 @@ Options:
   --muted            Create the workspace with its notifications muted.
   --icon <emoji>     Give the workspace this sidebar icon (one emoji or symbol)
                      instead of its first letter.
+  --keep-emoji       Keep a leading emoji in the name instead of making it the
+                     icon.
   --focus            Switch every window to the new workspace (default: background).
   --agent <agent>    Start claude or codex in the first pane, with the command
                      the Kelpi host's settings name for it.
@@ -580,7 +584,7 @@ workspace, --off together with --toggle).
 `;
 
 export const workspaceRenameUsage = `Usage:
-  kelpi workspace rename <name-or-id> <new-name> [--json]
+  kelpi workspace rename <name-or-id> <new-name> [--json] [--keep-emoji]
 
 Renames a workspace, like the sidebar's inline rename (Shift-Cmd-R). The
 new name is trimmed; it may not be empty, and another workspace may
@@ -588,7 +592,13 @@ already have it (a name that matches two workspaces then needs the id).
 Renaming to the current name succeeds and changes nothing. The new name
 syncs to every attached client.
 
+A new name that starts with an emoji makes it the workspace's icon,
+replacing the icon it had: "🔥 auth" is stored as "auth" with a 🔥 icon,
+and that stored name is what the reply reports. Afterwards the workspace
+answers to "auth", and to "🔥 auth" as well.
+
 Options:
+  --keep-emoji   Keep a leading emoji in the name and leave the icon alone.
   --json         Print the structured reply (workspace_id, workspace_name,
                  old_name).
   -h, --help     Show this help.
@@ -654,13 +664,16 @@ Run \`kelpi group <subcommand> --help\` for subcommand-specific usage.
 `;
 
 export const groupCreateUsage = `Usage:
-  kelpi group create <name> [--color <color>]
+  kelpi group create <name> [--color <color>] [--keep-emoji]
 
 Creates a new, empty workspace group. Use -- before a name that starts
-with a dash.
+with a dash. A name that starts with an emoji makes it the group's icon:
+"🔥 team" is stored as "team" with a 🔥 icon.
 
 Options:
   --color <color>  Group color, e.g. blue.
+  --keep-emoji     Keep a leading emoji in the name instead of making it the
+                   icon.
   -h, --help       Show this help.
 
 Exit codes: 1 on a usage error, otherwise 0, even when Kelpi is not
@@ -669,11 +682,14 @@ running (a warning). Check with kelpi group list.
 `;
 
 export const groupRenameUsage = `Usage:
-  kelpi group rename <name-or-id> <new-name>
+  kelpi group rename <name-or-id> <new-name> [--keep-emoji]
 
-Renames a group. Use -- before a name that starts with a dash.
+Renames a group. Use -- before a name that starts with a dash. A new name
+that starts with an emoji makes it the group's icon, replacing the icon
+it had.
 
 Options:
+  --keep-emoji     Keep a leading emoji in the name and leave the icon alone.
   -h, --help       Show this help.
 
 Exit codes: 1 on a usage error, otherwise 0, even when no group matches

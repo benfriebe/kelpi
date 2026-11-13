@@ -483,6 +483,12 @@ that id exists, it wins. Otherwise it must be a **unique case-sensitive name** m
 zero or ≥2 matches fail (fire-and-forget commands then no-op; request/response commands
 reply with an error, ambiguous names getting a distinct "ambiguous" message).
 
+A name that matches nothing as typed is tried once more without its leading emoji, because
+that is how such a name is stored (socket-handlers.md §6.8): `🔥 auth` finds the workspace
+`auth` that `workspace-create` made from it, under the same unique-match rule. The name as
+typed always comes first, so a row whose stored name really is `🔥 auth` wins. The lenient
+resolver below does the same before its slug match.
+
 Two paths use a **lenient** resolver instead (`resolveWorkspaceLenient`,
 `packages/core/src/resolve/workspace.ts:59-71`): `pane-move-to-workspace`'s destination
 `name` (`packages/daemon/src/handlers/pane/geometry.ts:187-190`) and the graft commands'
@@ -527,19 +533,19 @@ carry `"command"`.
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-list` | R/R | — | `group`, `parent` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `start_agent`, `agent_prompt`, `send_prompt` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `keep_emoji`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `start_agent`, `agent_prompt`, `send_prompt` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-nest` | R/R | `name`, `parent` | `index` |
 | `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
-| `workspace-rename` | R/R | `name`, `new_name` | - |
+| `workspace-rename` | R/R | `name`, `new_name` | `keep_emoji` |
 | `workspace-icon` | R/R | `name` | `icon` |
 | `workspace-color` | R/R | `name` | `color` |
 | `group-list` | R/R | — | — |
-| `group-create` | F&F | `name` | `color` |
-| `group-rename` | F&F | `name`, `new_name` | — |
+| `group-create` | F&F | `name` | `color`, `keep_emoji` |
+| `group-rename` | F&F | `name`, `new_name` | `keep_emoji` |
 | `group-delete` | F&F | `name` | `cascade` |
 | `group-move` | F&F | `name`, `index` | — |
 | `group-set-repo` | R/R | `name`; one of `repo`/`repo_id`/`clear`/`create_worktree` | `repo`, `repo_id`, `clear`, `create_worktree` |
@@ -1565,6 +1571,13 @@ client through the ordinary store delta. The reply names the workspace by id and
 name it has now (`workspace_name`) and the one it had (`old_name`); renaming to the current
 name succeeds without writing anything, and the two are then equal.
 
+A `new_name` that starts with an emoji gives it up as the workspace's icon
+(socket-handlers.md §6.8): `"🔥 auth refactor"` is stored as `auth refactor` with the icon
+`emoji:🔥`, and `workspace_name` is that stored name. `keep_emoji` (bool, default false)
+stores `new_name` as given and leaves the icon alone. `workspace-create`'s `name`,
+`group-create`'s `name` and `group-rename`'s `new_name` follow the same rule and take the
+same field.
+
 ```json
 {"command":"workspace-rename","name":"feat-x","new_name":"auth refactor"}
 → {"ok":true,"workspace_id":"<uuid>","workspace_name":"auth refactor","old_name":"feat-x"}
@@ -2093,6 +2106,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `icon` | string | `workspace-create`, `workspace-icon` |
 | `worktree`, `branch` | string | `workspace-create` |
 | `update_main` | bool | `workspace-create` |
+| `keep_emoji` | bool | `workspace-create`, `workspace-rename`, `group-create`, `group-rename` |
 | `ratio`, `delta` | double | `pane-resize` |
 | `size` | int | `pane-font-size` |
 | `reset` | bool | `pane-font-size` |

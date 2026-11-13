@@ -827,6 +827,8 @@ export function handleWsOnlyCommand(
             name,
             now: (options.now ?? Date.now)(),
             initialWorkspaceIDs: requested,
+            // `keep_emoji`: the name as given, a leading emoji left in it (socket-handlers.md §6.8).
+            ...(payload['keep_emoji'] === true ? { keepEmoji: true } : {}),
             ...(color === undefined ? {} : { color }),
             ...(repoID === undefined ? {} : { repoID, createWorktree })
         });
@@ -834,7 +836,8 @@ export function handleWsOnlyCommand(
         return {
             ok: true,
             group_id: id,
-            name,
+            // As stored: the reducer lifts a leading emoji out of the name into the icon.
+            name: created?.name ?? name,
             workspace_ids: created?.childOrder ?? requested,
             repo_id: created?.repoID ?? null,
             create_worktree: created?.createWorktree ?? false
@@ -1003,8 +1006,15 @@ export function handleWsOnlyCommand(
     const name = typeof payload['name'] === 'string' ? payload['name'].trim() : '';
     if (name.length === 0) return failure('rename-workspace requires a non-empty name');
     if (workspaceByID(state, workspaceID) === null) return failure(`no workspace matches '${workspaceID}'`);
-    store.dispatch({ type: 'rename-workspace', id: workspaceID, name });
-    return { ok: true, workspace_id: workspaceID, name };
+    store.dispatch({
+        type: 'rename-workspace',
+        id: workspaceID,
+        name,
+        ...(payload['keep_emoji'] === true ? { keepEmoji: true } : {})
+    });
+    // The reducer lifts a leading emoji out of the name into the icon (unless `keep_emoji` said
+    // not to), so the name stored can be shorter than the one sent: report that one.
+    return { ok: true, workspace_id: workspaceID, name: workspaceByID(store.getState(), workspaceID)?.name ?? name };
 }
 
 // ── content-pane commands (M5) ──────────────────────────────────────────────────────

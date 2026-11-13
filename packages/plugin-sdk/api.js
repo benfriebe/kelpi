@@ -88,6 +88,7 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
             name: options.name, path: options.path, color: options.color, group: options.groupID,
             profile: options.profile, worktree: options.worktree, branch: options.branch,
             update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
+            keep_emoji: options.keepEmoji,
             // #307: the wire's absent `focus` is a background create (the CLI/agent default); the
             // helper assumes a gesture and switches to the workspace unless told `focus: false`.
             parent, focus: options.focus ?? true,
@@ -311,7 +312,7 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
             // `update_main` is sent only when asked: absent lets a group whose worktree switch is on
             // make update main the default, as it does for the CLI (app-state-core.md §5.5).
             create: (options = {}) => createWorkspace(options),
-            rename: (workspaceID, name) => run('rename-workspace', { workspace_id: workspaceID, name }),
+            rename: (workspaceID, name, options = {}) => run('rename-workspace', clean({ workspace_id: workspaceID, name, keep_emoji: options.keepEmoji })),
             remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false, cascade: options.cascade ?? false }),
             move: (workspaceID, options = {}) => done('workspace-move', { name: workspaceID, group: options.groupID, index: options.index }),
             moveMany: (workspaceIDs, options = {}) => run('move-workspaces', { workspace_ids: workspaceIDs, group_id: options.groupID ?? null, index: options.index }),
@@ -329,8 +330,8 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         }),
         groups: Object.freeze({
             list: () => list('group-list', 'groups'),
-            create: (name, options = {}) => run('create-group-for-workspaces', { name, color: options.color, workspace_ids: options.workspaceIDs ?? [] }),
-            rename: (groupID, name) => done('group-rename', { name: groupID, new_name: name }),
+            create: (name, options = {}) => run('create-group-for-workspaces', { name, color: options.color, workspace_ids: options.workspaceIDs ?? [], keep_emoji: options.keepEmoji }),
+            rename: (groupID, name, options = {}) => done('group-rename', { name: groupID, new_name: name, keep_emoji: options.keepEmoji }),
             remove: (groupID, options = {}) => done('group-delete', { name: groupID, cascade: options.cascade ?? false }),
             reorder: (groupID, workspaceIDs) => run('group-reorder', { name: groupID, order: workspaceIDs }),
             sort: (groupID, by, options = {}) => run('group-sort', { name: groupID, by, descending: options.descending ?? false }),

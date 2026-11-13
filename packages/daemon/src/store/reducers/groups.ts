@@ -6,7 +6,7 @@
  * (`group-reorder` / `group-sort` semantics, including the dangling-id preservation rule).
  */
 
-import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
+import { groupSidebarID, liftLeadingIcon, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
 import type { DaemonState, DomainAction, GroupSortKey, WorkspaceState } from '../types.js';
 import { withNestedChildren } from '../derived.js';
 import { clampIndex, seconds } from './helpers.js';
@@ -32,8 +32,11 @@ function createGroup(
     state: DaemonState,
     action: Extract<DomainAction, { type: 'create-group' }>
 ): DaemonState {
-    const name = action.name.trim();
-    if (name === '') return state;
+    const trimmed = action.name.trim();
+    if (trimmed === '') return state;
+    // A leading emoji in the name becomes the icon, as for a workspace (socket-handlers.md §6.8),
+    // unless the create asked for the name as given (`keepEmoji`).
+    const named = action.keepEmoji === true ? { name: trimmed, icon: null } : liftLeadingIcon(trimmed, null);
 
     // Live, deduped, in order; a member whose parent is joining too stays nested under it and
     // comes along with it, rather than becoming a member of its own (§2.9).
@@ -71,12 +74,12 @@ function createGroup(
             : null;
     const group = {
         id: action.id,
-        name,
+        name: named.name,
         color: action.color ?? null,
         isCollapsed: false,
         childOrder: validInitial,
         createdAt: seconds(action.now),
-        icon: null,
+        icon: named.icon,
         repoID,
         createWorktree: repoID !== null && action.createWorktree === true
     };
@@ -291,7 +294,12 @@ export function reduceGroupAction(state: DaemonState, action: DomainAction): Dae
         case 'rename-group': {
             const name = action.name.trim();
             if (name === '') return state;
-            return updateGroup(state, action.id, (group) => ({ ...group, name }));
+            // As for a workspace: a leading emoji becomes the icon, and the same name and icon
+            // again is a no-op.
+            return updateGroup(state, action.id, (group) => {
+                const named = action.keepEmoji === true ? { name, icon: group.icon } : liftLeadingIcon(name, group.icon);
+                return named.name === group.name && named.icon === group.icon ? group : { ...group, ...named };
+            });
         }
         case 'set-group-color':
             return updateGroup(state, action.id, (group) => ({ ...group, color: action.color }));

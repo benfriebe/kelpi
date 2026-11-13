@@ -33,6 +33,7 @@ import { describeAgentSummary, normalizeAgentPrompt } from '@kelpi/core/agent';
 import {
     formatIconString,
     iconRefusal,
+    liftLeadingIcon,
     parseIconString,
     workspaceSidebarID,
     type IconRef
@@ -286,6 +287,8 @@ interface CreateInput {
     readonly muted: boolean;
     /** Set on the create itself, so the workspace has its icon from its first frame. */
     readonly icon: IconRef | null;
+    /** `keep_emoji`: a leading emoji stays in the name instead of becoming the icon. */
+    readonly keepEmoji: boolean;
     readonly groupID: string | undefined;
     /** app-state-core.md §2.9: nest under this workspace (wins over `groupID`). */
     readonly parentID: string | undefined;
@@ -317,6 +320,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.profile !== undefined ? { profileName: input.profile } : {}),
         ...(input.muted ? { muted: true } : {}),
         ...(input.icon !== null ? { icon: input.icon } : {}),
+        ...(input.keepEmoji ? { keepEmoji: true } : {}),
         ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {}),
         focus: input.focus
     });
@@ -715,6 +719,7 @@ function handleWorktreeCreate(
                 profile: msg.profile,
                 muted: msg.muted === true,
                 icon,
+                keepEmoji: msg.keep_emoji === true,
                 groupID,
                 parentID: parentLost === null ? parentID : undefined,
                 workspaceID,
@@ -806,6 +811,7 @@ function handleCreateWithRepo(
             // Re-resolved after the git work: the group the request named can have been
             // created, renamed or deleted while it ran.
             let groupID: string | undefined;
+            let groupName = '';
             if (trimmedGroup !== '') {
                 const scope = resolveStateOf(ctx.store.getState());
                 const existing = resolveGroupStrict(scope, trimmedGroup);
@@ -814,6 +820,7 @@ function handleCreateWithRepo(
                     fail(reply, ambiguousGroupError(trimmedGroup));
                     return;
                 }
+                groupName = groupEcho(existing, trimmedGroup);
                 groupID = existing?.id;
                 if (groupID === undefined) {
                     groupID = deps.uuid();
@@ -827,6 +834,7 @@ function handleCreateWithRepo(
                 profile: msg.profile,
                 muted: msg.muted === true,
                 icon,
+                keepEmoji: msg.keep_emoji === true,
                 groupID,
                 parentID,
                 workspaceID,
@@ -842,7 +850,7 @@ function handleCreateWithRepo(
                 // What the store holds, never the request, so `--icon` is confirmed only when applied.
                 ...iconEcho(created?.icon ?? null),
                 repo_path: resolution.repo.path,
-                ...(trimmedGroup !== '' ? { group: trimmedGroup } : {}),
+                ...(trimmedGroup !== '' ? { group: groupName } : {}),
                 ...parentEcho(ctx.store.getState(), workspaceID)
             });
         })
@@ -920,9 +928,8 @@ function handleWorkspaceCreate(
         const parent = parentID === undefined ? null : workspaceByID(state, parentID);
         ok(reply, {
             workspace_id: uuidOut(workspaceID),
-            workspace_name: workspaceName,
+            ...createEcho(workspaceName, icon, msg.keep_emoji === true),
             muted: msg.muted === true,
-            ...iconEcho(icon),
             ...(parent !== null ? { parent_id: uuidOut(parent.id), parent_name: parent.name } : {})
         });
         dispatchCreate(ctx, deps, {
@@ -932,6 +939,7 @@ function handleWorkspaceCreate(
             profile: msg.profile,
             muted: msg.muted === true,
             icon,
+            keepEmoji: msg.keep_emoji === true,
             groupID: undefined,
             parentID,
             workspaceID,
@@ -961,10 +969,9 @@ function handleWorkspaceCreate(
 
     ok(reply, {
         workspace_id: uuidOut(workspaceID),
-        workspace_name: workspaceName,
+        ...createEcho(workspaceName, icon, msg.keep_emoji === true),
         muted: msg.muted === true,
-        ...iconEcho(icon),
-        group: trimmedGroup
+        group: groupEcho(existing, trimmedGroup)
     });
     dispatchCreate(ctx, deps, {
         name: workspaceName,
@@ -973,6 +980,7 @@ function handleWorkspaceCreate(
         profile: msg.profile,
         muted: msg.muted === true,
         icon,
+        keepEmoji: msg.keep_emoji === true,
         groupID,
         parentID: undefined,
         workspaceID,
@@ -999,6 +1007,35 @@ function requestedIcon(raw: string | undefined): { readonly icon: IconRef | null
 /** A create reply's `icon`: echoed only when one was set, so `--icon` can be confirmed. */
 function iconEcho(icon: IconRef | null): { readonly icon?: string } {
     return icon === null ? {} : { icon: formatIconString(icon) };
+}
+
+/**
+ * The `workspace_name` and `icon` a create reply echoes on the branches that reply BEFORE the
+ * reducer runs (§1 reply-before-effect). The reducer lifts a leading emoji out of the name into
+ * the icon unless the create asked for an icon of its own or for the name as given
+ * (`liftLeadingIcon`, the same call under the same two conditions), so the echo says what will
+ * be stored (`"🔥 auth"` → `auth` with `emoji:🔥`), not what was typed; the branches that reply
+ * after the effect read it back instead.
+ */
+function createEcho(
+    workspaceName: string,
+    icon: IconRef | null,
+    keepEmoji: boolean
+): { readonly workspace_name: string; readonly icon?: string } {
+    const named = icon === null && !keepEmoji ? liftLeadingIcon(workspaceName, null) : { name: workspaceName, icon };
+    return { workspace_name: named.name, ...iconEcho(named.icon) };
+}
+
+/**
+ * The `group` a create reply echoes. A group that already exists is echoed as it was asked
+ * for when the token is its id or its exact name (what the reply always said), and by its
+ * stored name when the token only found it without its leading emoji: `--group "🔥 team"`
+ * finds the `team` it made last time (the resolvers' fallback) and says `team`. A group this
+ * create makes is echoed under the name the reducer will store, the emoji lifted into its icon.
+ */
+function groupEcho(existing: { readonly name: string } | null, trimmedGroup: string): string {
+    if (existing === null) return liftLeadingIcon(trimmedGroup, null).name;
+    return existing.name === liftLeadingIcon(trimmedGroup, null).name ? existing.name : trimmedGroup;
 }
 
 /**
@@ -1537,11 +1574,15 @@ function handleWorkspaceMute(
  * either place ends up the same: trimmed, refused when nothing is left, no length or character
  * limit, and duplicates allowed (a later name lookup reports the ambiguity, which is what the
  * error below is for). Renaming to the current name is a successful no-op, the CLI's answer to
- * the inline editor's "unchanged → cancel". The reducer recomputes the slug.
+ * the inline editor's "unchanged → cancel". The reducer recomputes the slug, and lifts a leading
+ * emoji out of the name into the icon (`"🔥 auth"` → `auth` with `emoji:🔥`) unless the request
+ * says `keep_emoji`, which is why the reply's `workspace_name` is read back from the store
+ * rather than echoed.
  */
 function handleWorkspaceRename(
     nameOrID: string,
     newName: string,
+    keepEmoji: boolean,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -1563,10 +1604,16 @@ function handleWorkspaceRename(
     }
     const oldName = workspace.name;
     if (trimmed !== oldName) {
-        ctx.store.dispatch({ type: 'rename-workspace', id: workspace.id, name: trimmed });
+        ctx.store.dispatch({
+            type: 'rename-workspace',
+            id: workspace.id,
+            name: trimmed,
+            ...(keepEmoji ? { keepEmoji: true } : {})
+        });
         deps.persist();
     }
-    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: trimmed, old_name: oldName });
+    const stored = workspaceByID(ctx.store.getState(), workspace.id)?.name ?? trimmed;
+    ok(reply, { workspace_id: uuidOut(workspace.id), workspace_name: stored, old_name: oldName });
 }
 
 // ---------------------------------------------------------------------------
@@ -1690,7 +1737,7 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
             handleWorkspaceMute(msg.name, msg.muted, ctx, reply, deps);
         }),
         forCommand('workspace-rename', (msg, ctx, reply) => {
-            handleWorkspaceRename(msg.name, msg.new_name, ctx, reply, deps);
+            handleWorkspaceRename(msg.name, msg.new_name, msg.keep_emoji === true, ctx, reply, deps);
         }),
         forCommand('workspace-icon', (msg, ctx, reply) => {
             handleWorkspaceIcon(msg.name, msg.icon, ctx, reply, deps);

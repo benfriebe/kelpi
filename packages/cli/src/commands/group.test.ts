@@ -59,6 +59,17 @@ describe('kelpi group create|rename|delete names', () => {
         expect(sent).toEqual([{ command: 'group-delete', name: 'work', cascade: true }]);
     });
 
+    it('should send keep_emoji only with --keep-emoji, on create and on rename', async () => {
+        await handleGroup(['create', '🔥 team']);
+        await handleGroup(['create', '--keep-emoji', '🔥 team']);
+        await handleGroup(['rename', 'team', '🚧 team', '--keep-emoji']);
+        expect(sent).toEqual([
+            { command: 'group-create', name: '🔥 team' },
+            { command: 'group-create', name: '🔥 team', keep_emoji: true },
+            { command: 'group-rename', name: 'team', new_name: '🚧 team', keep_emoji: true }
+        ]);
+    });
+
     it('should take both rename names from either side of a --', async () => {
         await handleGroup(['rename', 'work', '--', '-h']);
         await handleGroup(['rename', '--', '--help', 'work']);

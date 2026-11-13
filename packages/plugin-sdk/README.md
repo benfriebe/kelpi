@@ -151,6 +151,14 @@ A workspace's sidebar icon uses the flat spelling `"emoji:🔥"`:
 `api.workspaces.create({ icon: 'emoji:🧪' })` creates a workspace with one, and `icon` is on every
 `api.workspaces.list()` entry that has one.
 
+A workspace or group name that starts with an emoji gives it up as the icon, on create and on
+rename: `api.workspaces.rename(id, '🔥 auth')` stores the name `auth` with the icon `emoji:🔥`,
+replacing the icon it had, and resolves with the stored name. Pass `{ keepEmoji: true }` (to
+`workspaces.create`, `workspaces.rename`, `groups.create` or `groups.rename`) to store the name
+as given and leave the icon alone, for example when a plugin keeps a status emoji in front of a
+name. Only a character that draws as an emoji is lifted; symbols such as `→` or `⌘` stay in the
+name.
+
 `api.settings` belongs to the current plugin. `api.appSettings` reads/writes the daemon's
 application settings, including appearance, profiles and native keybindings. The general
 settings writer accepts only documented writable keys. Filesystem reveal acknowledges a

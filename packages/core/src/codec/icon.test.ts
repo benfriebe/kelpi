@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatIconString, iconRefusal, MAX_ICON_SYMBOL_LENGTH, parseIconString } from './icon.js';
+import { formatIconString, iconRefusal, liftLeadingIcon, MAX_ICON_SYMBOL_LENGTH, parseIconString } from './icon.js';
 
 describe('icon strings', () => {
     it('parses both prefixes', () => {
@@ -63,5 +63,25 @@ describe('iconRefusal', () => {
         expect(iconRefusal({ kind: 'system', name: 'a'.repeat(MAX_ICON_SYMBOL_LENGTH + 1) })).toBe(
             'the symbol name is too long: at most 128 characters'
         );
+    });
+});
+
+describe('liftLeadingIcon', () => {
+    const star = { kind: 'system', name: 'star.fill' } as const;
+    const fire = { kind: 'emoji', grapheme: '🔥' } as const;
+
+    it('lifts a leading emoji into the icon, replacing whatever icon was there', () => {
+        expect(liftLeadingIcon('🔥 auth refactor', null)).toEqual({ name: 'auth refactor', icon: fire });
+        expect(liftLeadingIcon('🔥 auth refactor', star)).toEqual({ name: 'auth refactor', icon: fire });
+    });
+
+    it('keeps the name and the current icon when there is nothing to lift', () => {
+        expect(liftLeadingIcon('auth refactor', star)).toEqual({ name: 'auth refactor', icon: star });
+        expect(liftLeadingIcon('🔥', star)).toEqual({ name: '🔥', icon: star });
+    });
+
+    it('returns the current icon itself when the emoji only repeats it', () => {
+        expect(liftLeadingIcon('🔥 auth', fire).icon).toBe(fire);
+        expect(liftLeadingIcon('🔥 auth', { kind: 'emoji', grapheme: '🚀' }).icon).toEqual(fire);
     });
 });

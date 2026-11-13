@@ -60,7 +60,7 @@ export {
 } from './json-columns.js';
 export type { WebTab } from './json-columns.js';
 
-export { formatIconString, iconRefusal, parseIconString } from './icon.js';
+export { formatIconString, iconRefusal, liftLeadingIcon, parseIconString } from './icon.js';
 export type { IconRef } from './icon.js';
 
-export { firstGrapheme, isGraphemeEmoji, normalizeIconEmoji } from './emoji.js';
+export { firstGrapheme, isGraphemeEmoji, liftLeadingIconEmoji, normalizeIconEmoji } from './emoji.js';

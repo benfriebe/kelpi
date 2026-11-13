@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { firstGrapheme, isGraphemeEmoji, MAX_ICON_EMOJI_SCALARS, normalizeIconEmoji } from './emoji.js';
+import { firstGrapheme, isGraphemeEmoji, liftLeadingIconEmoji, MAX_ICON_EMOJI_SCALARS, normalizeIconEmoji } from './emoji.js';
 
 /**
  * The accept / reject table is `Character.isGraphemeEmoji`'s own doc comment
@@ -88,5 +88,38 @@ describe('normalizeIconEmoji', () => {
         const marks = (count: number): string => `🔥${'\u0301'.repeat(count - 1)}`;
         expect(normalizeIconEmoji(marks(MAX_ICON_EMOJI_SCALARS))).toBe(marks(MAX_ICON_EMOJI_SCALARS));
         expect(normalizeIconEmoji(marks(MAX_ICON_EMOJI_SCALARS + 1))).toBeNull();
+    });
+});
+
+describe('liftLeadingIconEmoji', () => {
+    it('splits a name that starts with an emoji into the icon and the rest', () => {
+        expect(liftLeadingIconEmoji('🔥 auth refactor')).toEqual({ icon: '🔥', name: 'auth refactor' });
+        // Trimmed on both sides of the emoji: no space, many spaces and outer whitespace all agree.
+        expect(liftLeadingIconEmoji('🔥auth')).toEqual({ icon: '🔥', name: 'auth' });
+        expect(liftLeadingIconEmoji('  🔥   auth  ')).toEqual({ icon: '🔥', name: 'auth' });
+        // A compound cluster is lifted whole, never split into its code points.
+        expect(liftLeadingIconEmoji('👨‍👩‍👧‍👦 family')).toEqual({ icon: '👨‍👩‍👧‍👦', name: 'family' });
+        expect(liftLeadingIconEmoji('🇦🇺 sydney')).toEqual({ icon: '🇦🇺', name: 'sydney' });
+        // Only the FIRST cluster is lifted; a second emoji stays in the name.
+        expect(liftLeadingIconEmoji('🔥🔥 hot')).toEqual({ icon: '🔥', name: '🔥 hot' });
+        // A text-presentation base is an emoji once it carries U+FE0F, as the picker types it.
+        expect(liftLeadingIconEmoji('❤️ love')).toEqual({ icon: '❤️', name: 'love' });
+        expect(liftLeadingIconEmoji('1️⃣ first')).toEqual({ icon: '1️⃣', name: 'first' });
+    });
+
+    it('leaves a name alone when it does not start with an emoji, or would be left empty', () => {
+        for (const name of ['auth refactor', 'a🔥b', '7 wonders', '# tags', '$ budget', '- dash', '', '   ']) {
+            expect(liftLeadingIconEmoji(name), JSON.stringify(name)).toBeNull();
+        }
+        // Symbols the Custom Emoji sheet takes as an icon (§WS-073) are ordinary text in a name:
+        // only a cluster that draws as an emoji is lifted.
+        for (const name of ['⌘K palette', '°C sensor', '£5 plan', '→ staging', '© Acme', '✓ done', '⛙ paddock', '㈱Acme']) {
+            expect(liftLeadingIconEmoji(name), name).toBeNull();
+        }
+        // An emoji on its own is a name, since a workspace cannot have none.
+        expect(liftLeadingIconEmoji('🔥')).toBeNull();
+        expect(liftLeadingIconEmoji('  🔥  ')).toBeNull();
+        // Past the icon cap it is not an icon either, so the name keeps it.
+        expect(liftLeadingIconEmoji(`🔥${'\u0301'.repeat(MAX_ICON_EMOJI_SCALARS)} marks`)).toBeNull();
     });
 });

@@ -4,10 +4,12 @@
  * Every workspace has tabs, and every tab its own layout tree. This drives the real window the
  * way a person does: ⌥⌘T opens a tab after the one on screen, a split stays inside its tab, a
  * click and ⌥⌘N switch tabs and the grid follows, ⇧⌥⌘T takes the focused pane out into a tab
- * of its own, a double-click renames a tab in place and its × closes it with its panes. It
- * reads the answers back off the bar, the grid and `kelpi pane list` (which lists every tab's
- * panes with their tab), checks the drag region still carves every tab out whole, and restarts
- * the daemon to see the tabs come back from the database.
+ * of its own, a double-click renames a tab in place and its × closes it with its panes, the tab
+ * menu duplicates a tab, and a pane dragged onto a tab and held there opens that tab so it can
+ * be dropped beside a pane in it. It reads the answers back off the bar, the grid and `kelpi
+ * pane list` (which lists every tab's panes with their tab), checks the drag region still
+ * carves every tab out whole, and restarts the daemon to see the tabs come back from the
+ * database.
  */
 
 /** The source this presses (the scenario rule; ui-audit/README.md ▸ The rule). */
@@ -149,7 +151,74 @@ export default async function ({ page, cli, rec, d, daemon }) {
         rec.check('the × closes the tab and the pane in it', closed && leftPanes.length === 2, JSON.stringify({ tabs: await tabState(), panes: leftPanes.length }));
         await rec.shot(page, 'renamed-and-closed');
 
-        // ── 9 · a daemon restart brings the tabs back ────────────────────────────────────
+        // ── 9 · the tab menu's Duplicate Tab copies a tab after it, and shows the copy ─────
+        const beforeCopy = await tabState();
+        await page.rightClick(`[data-workspace-tab-id="${beforeCopy[0]?.id}"]`);
+        const menuRow = async (label) =>
+            await page.eval(`(() => {
+                const row = [...document.querySelectorAll('[data-testid="context-menu"] [role^="menuitem"]')]
+                    .find(item => item.textContent.trim().startsWith(${JSON.stringify(label)}));
+                if (row === undefined) return null;
+                const box = row.getBoundingClientRect();
+                return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+            })()`);
+        let duplicateRow = null;
+        await d.settle(async () => (duplicateRow = await menuRow('Duplicate Tab')) !== null, { ceilingMs: 5_000 });
+        if (duplicateRow !== null) await page.clickAt(duplicateRow.x, duplicateRow.y);
+        const copied = await waitTabs(`tabs => tabs.length === 3 && tabs[1].active && tabs[1].title === 'main'`, 'duplicated');
+        const afterCopy = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']));
+        const copyPanes = Array.isArray(afterCopy) ? afterCopy : (afterCopy.panes ?? []);
+        rec.check(
+            'Duplicate Tab opens a copy right after the tab, named as it is, with a pane of its own, and shows it',
+            duplicateRow !== null && copied && copyPanes.length === 3 && copyPanes.filter((pane) => pane.tab_number === 2).length === 1,
+            JSON.stringify({ tabs: await tabState(), panes: copyPanes.map((pane) => pane.tab_number) })
+        );
+
+        // ── 10 · a pane held over another tab opens it, and drops beside a pane there ──────
+        const springTabs = await tabState();
+        const copyTabID = springTabs[1]?.id;
+        const intoTabID = springTabs[2]?.id;
+        const movingPane = copyPanes.find((pane) => pane.tab_number === 2)?.id;
+        const besidePane = copyPanes.find((pane) => pane.tab_number === 3)?.id;
+        const header = movingPane === undefined ? null : await page.box(`[data-testid="pane-header-${movingPane}"]`);
+        const intoTab = intoTabID === undefined ? null : await page.box(`[data-workspace-tab-id="${intoTabID}"]`);
+        let sprung = false;
+        let landed = false;
+        if (header !== null && intoTab !== null && besidePane !== undefined) {
+            await page.mouse('mouseMoved', header.cx, header.cy, { button: 'none', buttons: 0 });
+            await page.mouse('mousePressed', header.cx, header.cy);
+            await page.mouse('mouseMoved', header.cx + 30, header.cy + 30, { buttons: 1 });
+            await page.mouse('mouseMoved', intoTab.cx - 4, intoTab.cy, { buttons: 1 });
+            await page.mouse('mouseMoved', intoTab.cx, intoTab.cy, { buttons: 1 });
+            // Held still over the tab: it fills, then comes on screen with the drag still going.
+            sprung = await waitTabs(`tabs => tabs[2] !== undefined && tabs[2].active`, 'sprung');
+            const beside = await d.settle(async () => (await page.box(`[data-testid="pane-${besidePane}"]`)) !== null, { ceilingMs: 5_000 });
+            const target = beside ? await page.box(`[data-testid="pane-${besidePane}"]`) : null;
+            if (target !== null) {
+                const dropX = target.x + target.width * 0.85;
+                await page.mouse('mouseMoved', target.cx, target.cy, { buttons: 1 });
+                await page.mouse('mouseMoved', dropX, target.cy, { buttons: 1 });
+                await page.mouse('mouseReleased', dropX, target.cy);
+                landed = await d.settle(async () => {
+                    const listedNow = JSON.parse(await cli.ok(['pane', 'list', '--workspace', workspaceID, '--json']));
+                    const now = Array.isArray(listedNow) ? listedNow : (listedNow.panes ?? []);
+                    const moved = now.find((pane) => pane.id === movingPane);
+                    const there = now.find((pane) => pane.id === besidePane);
+                    return moved !== undefined && there !== undefined && moved.tab_id === there.tab_id && moved.tab_id === intoTabID;
+                }, { ceilingMs: 8_000 });
+            } else {
+                await page.mouse('mouseReleased', intoTab.cx, intoTab.cy);
+            }
+        }
+        const afterSpring = await tabState();
+        rec.check(
+            'holding a dragged pane over another tab opens it, and a release beside a pane splits it in there; its emptied tab goes',
+            sprung && landed && afterSpring.length === 2 && !afterSpring.some((tab) => tab.id === copyTabID) && (await gridPanes()) === 2,
+            JSON.stringify({ sprung, landed, tabs: afterSpring, panes: await gridPanes() })
+        );
+        await rec.shot(page, 'sprung-and-dropped');
+
+        // ── 11 · a daemon restart brings the tabs back ───────────────────────────────────
         if (daemon === null) {
             rec.note('LIMIT: no sandbox daemon handle (--attach), so the restart check was skipped');
         } else {

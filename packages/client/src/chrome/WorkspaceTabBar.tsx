@@ -80,6 +80,11 @@ export interface WorkspaceTabBarProps {
     /** The tab menu below Rename Tab… (which the bar owns, since renaming happens in the bar). */
     readonly tabMenuItems: (tab: WorkspaceTabView) => readonly MenuItemSpec[];
     readonly onMoveToWorkspace?: ((tabID: string, workspaceID: string) => void) | undefined;
+    /**
+     * Whose sidebar rows `onMoveToWorkspace` takes: absent for this window's own daemon, else the
+     * paired daemon (its name) whose workspace these tabs are.
+     */
+    readonly rowDaemon?: string | undefined;
     /** A tab is being dragged: the title bar stops being the window's drag handle meanwhile. */
     readonly onDraggingChange?: ((dragging: boolean) => void) | undefined;
     /**
@@ -144,15 +149,20 @@ function slotAt(strip: HTMLElement | null, x: number): number | null {
 
 /**
  * A sidebar workspace row under the pointer (`chrome/Sidebar.tsx`), for a tab dropped there.
- * This daemon's rows only: a remote daemon's rows (`app/RemoteDaemonSections.tsx`) draw the same
- * component, and a tab cannot move to another machine.
+ * Only the rows of the daemon the tabs belong to: this window's own (`daemon` null), or the
+ * paired daemon whose workspace the bar is drawing. A paired daemon's rows draw the same
+ * component inside its `data-remote-daemon` section (`app/RemoteDaemonSections.tsx`), and a tab
+ * cannot move to another machine.
  */
-function workspaceRowAt(x: number, y: number): string | null {
+function workspaceRowAt(x: number, y: number, daemon: string | null): string | null {
     if (typeof document === 'undefined' || typeof document.elementsFromPoint !== 'function') return null;
     for (const element of document.elementsFromPoint(x, y)) {
         const row = element.closest('[data-testid="workspace-row"][data-workspace-id]');
         if (row === null) continue;
-        if (row.closest('[data-testid="remote-daemon-sections"]') !== null) return null;
+        const owner = row.closest('[data-remote-daemon]')?.getAttribute('data-remote-daemon') ?? null;
+        if (owner !== daemon) return null;
+        // A row under the remote sections that names no daemon is nobody's to drop on.
+        if (owner === null && row.closest('[data-testid="remote-daemon-sections"]') !== null) return null;
         return row.getAttribute('data-workspace-id');
     }
     return null;
@@ -300,7 +310,7 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
         // The tab can go while it is in flight (its agent pane exited): then nothing moves.
         const from = current.tabs.findIndex((tab) => tab.id === drag.tabID);
         if (from < 0) return;
-        const workspaceID = current.onMoveToWorkspace === undefined ? null : workspaceRowAt(x, y);
+        const workspaceID = current.onMoveToWorkspace === undefined ? null : workspaceRowAt(x, y, current.rowDaemon ?? null);
         if (workspaceID !== null) {
             current.onMoveToWorkspace?.(drag.tabID, workspaceID);
             return;
@@ -348,8 +358,9 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                 drag.releaseEscape = holdEscape(() => endDrag(false));
                 latest.current.onDraggingChange?.(true);
             }
-            const workspaceID = latest.current.onMoveToWorkspace === undefined ? null : workspaceRowAt(moved.clientX, moved.clientY);
-            setTabDragWorkspace(workspaceID);
+            const daemon = latest.current.rowDaemon ?? null;
+            const workspaceID = latest.current.onMoveToWorkspace === undefined ? null : workspaceRowAt(moved.clientX, moved.clientY, daemon);
+            setTabDragWorkspace(workspaceID === null ? null : { daemon, workspaceID });
             setDragSlot({
                 tabID: drag.tabID,
                 slot: workspaceID === null && inDropBand(regionRef.current, moved.clientY) ? slotAt(stripRef.current, moved.clientX) : null,

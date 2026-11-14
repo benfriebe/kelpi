@@ -303,6 +303,7 @@ function RemoteDaemonSection(props: {
         <WorkspaceRow
             key={workspace.id}
             workspace={workspace}
+            remoteDaemon={held.name}
             depth={options.depth}
             {...(options.groupID === undefined ? {} : { groupID: options.groupID })}
             {...(options.parentGuideColor === undefined
@@ -363,7 +364,7 @@ function RemoteDaemonSection(props: {
         nestedTreeRows(workspace, nested, options, props.bucket).map((planned) => row(planned.workspace, planned.options));
 
     return (
-        <div className="mt-2 flex shrink-0 flex-col" data-testid={`remote-daemon-${held.name}`}>
+        <div className="mt-2 flex shrink-0 flex-col" data-testid={`remote-daemon-${held.name}`} data-remote-daemon={held.name}>
             <button
                 type="button"
                 data-testid={`remote-daemon-toggle-${held.name}`}

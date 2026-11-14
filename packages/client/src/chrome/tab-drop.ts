@@ -113,14 +113,21 @@ export function tabDropTargetAt(x: number, y: number): TabDropTarget | null {
 /*
  * The other direction: a TAB dragged out of the bar onto a workspace row in the sidebar. The bar
  * owns that gesture; the row only draws itself as the target, so the one fact shared is which
- * workspace the pointer is over (null while it is over none, or no tab is in flight).
+ * workspace the pointer is over (null while it is over none, or no tab is in flight), and whose:
+ * `daemon` is null for this window's own daemon, else the paired daemon whose rows the bar's
+ * tabs belong to (`app/RemoteDaemonSections.tsx`), so a row lights up only for its own daemon.
  */
-let tabDragWorkspace: string | null = null;
+export interface TabDragWorkspace {
+    readonly daemon: string | null;
+    readonly workspaceID: string;
+}
+
+let tabDragWorkspace: TabDragWorkspace | null = null;
 const workspaceListeners = new Set<() => void>();
 
-export function setTabDragWorkspace(workspaceID: string | null): void {
-    if (workspaceID === tabDragWorkspace) return;
-    tabDragWorkspace = workspaceID;
+export function setTabDragWorkspace(target: TabDragWorkspace | null): void {
+    if (target?.workspaceID === tabDragWorkspace?.workspaceID && target?.daemon === tabDragWorkspace?.daemon) return;
+    tabDragWorkspace = target;
     for (const listener of [...workspaceListeners]) listener();
 }
 
@@ -131,12 +138,12 @@ function subscribeWorkspace(listener: () => void): () => void {
     };
 }
 
-function currentTabDragWorkspace(): string | null {
+function currentTabDragWorkspace(): TabDragWorkspace | null {
     return tabDragWorkspace;
 }
 
-/** The workspace a dragged tab would move to if released now, or null. */
-export function useTabDragWorkspace(): string | null {
+/** The workspace a dragged tab would move to if released now, and its daemon, or null. */
+export function useTabDragWorkspace(): TabDragWorkspace | null {
     return useSyncExternalStore(subscribeWorkspace, currentTabDragWorkspace, currentTabDragWorkspace);
 }
 

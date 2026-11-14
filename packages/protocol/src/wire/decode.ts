@@ -378,7 +378,8 @@ function decodeCommand(
                 name: fields.nonEmpty('name'),
                 index: fields.int('index'),
                 at_end: fields.flag('at_end', false),
-                focus: fields.flag('focus', false)
+                focus: fields.flag('focus', false),
+                url: fields.nonEmpty('url')
             };
         case 'workspace-tab-select':
         case 'workspace-tab-close':

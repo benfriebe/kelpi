@@ -2927,7 +2927,18 @@ describe('kelpi tab (workspace-feature.md §12)', () => {
         expect(kind.stderr).toContain("unknown kind 'spreadsheet'");
         const both = await runCLI(['tab', 'new', '--at', '1', '--end'], { port: server.port });
         expect(both.code).toBe(1);
+        const urlOnShell = await runCLI(['tab', 'new', '--kind', 'terminal', '--url', 'example.com'], { port: server.port });
+        expect(urlOnShell.code).toBe(1);
+        expect(urlOnShell.stderr).toContain('--url is for a web tab');
         expect(server.requests).toEqual([]);
+    });
+
+    it('opens a web tab at an address with --url, which implies --kind web', async () => {
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER, kind: 'web', url: 'https://example.com' }] }));
+        await runCLI(['tab', 'new', '--url', 'example.com'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', pane_id: PANE, url: 'example.com' });
+        await runCLI(['tab', 'new', '--kind', 'web', '--url', 'example.com', '--focus'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', pane_id: PANE, kind: 'web', url: 'example.com', focus: true });
     });
 
     it('names a tab by number, id or title, and the caller\'s own tab by default', async () => {

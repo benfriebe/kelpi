@@ -110,6 +110,27 @@ describe('workspace-tab-new', () => {
         expect(f.run('workspace-tab-new', { workspace_id: W1, kind: 'diff' })).toMatchObject({ ok: false });
         expect(f.run('workspace-tab-new', { workspace_id: 'nope' })).toMatchObject({ ok: false });
     });
+
+    it('opens a web tab at a url, which means a web tab when no kind is named', () => {
+        const f = fixture({ newTabOpens: () => 'terminal' });
+        const named = f.run('workspace-tab-new', { workspace_id: W1, kind: 'web', url: 'example.com/docs' });
+        expect(named).toMatchObject({ ok: true, kind: 'web', url: 'https://example.com/docs' });
+        const implied = f.run('workspace-tab-new', { workspace_id: W1, url: 'localhost:3000' });
+        expect(implied).toMatchObject({ ok: true, kind: 'web', url: 'http://localhost:3000' });
+        const web = f.h.workspace(W1).webPanes[named['pane_id'] as string];
+        expect(web?.tabs.map((tab) => tab.url)).toEqual(['https://example.com/docs']);
+    });
+
+    it('opens about:blank as the blank page, and refuses a url on any other kind or an empty one', () => {
+        const f = fixture();
+        const blank = f.run('workspace-tab-new', { workspace_id: W1, kind: 'web', url: 'about:blank' });
+        expect(f.h.workspace(W1).webPanes[blank['pane_id'] as string]?.tabs[0]?.url).toBe('');
+        expect(f.run('workspace-tab-new', { workspace_id: W1, kind: 'terminal', url: 'example.com' })).toMatchObject({
+            ok: false,
+            error: 'workspace-tab-new: a url is for a web tab, not a terminal tab'
+        });
+        expect(f.run('workspace-tab-new', { workspace_id: W1, kind: 'web', url: '   ' })).toMatchObject({ ok: false });
+    });
 });
 
 describe('workspace-tab-new of the same kind as a shell', () => {

@@ -329,9 +329,9 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(tab).toEqual({ id: T1, number: 1, workspaceID: W1, paneIDs: [P1], isActive: true });
         await api.tabs.list({ all: true });
         expect(payload()).toEqual({ command: 'workspace-tab-list', all: true });
-        const created = await api.tabs.create({ kind: 'web', name: 'docs' });
+        const created = await api.tabs.create({ kind: 'web', url: 'example.com', name: 'docs' });
         expect(created).toMatchObject({ workspaceID: W1, tabID: T1 });
-        expect(calls.at(-2)?.args['payload']).toEqual({ command: 'workspace-tab-new', workspace_id: W1, kind: 'web', focus: true });
+        expect(calls.at(-2)?.args['payload']).toEqual({ command: 'workspace-tab-new', workspace_id: W1, kind: 'web', url: 'example.com', focus: true });
         expect(payload()).toEqual({ command: 'workspace-tab-rename', workspace_id: W1, tab_id: T1, name: 'docs' });
         await api.tabs.duplicate(tab!, { focus: false });
         expect(payload()).toEqual({ command: 'workspace-tab-duplicate', workspace_id: W1, tab_id: T1, focus: false });

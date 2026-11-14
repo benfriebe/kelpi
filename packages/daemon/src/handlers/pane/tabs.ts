@@ -232,6 +232,7 @@ export const handleWorkspaceTabNew: CommandHandler<PaneHandlerContext> = (msg, c
             workspace_id: workspace.value.id,
             ...(msg.kind !== undefined ? { kind: msg.kind } : {}),
             ...(index !== undefined ? { index } : {}),
+            ...(msg.url !== undefined ? { url: msg.url } : {}),
             focus: msg.focus === true
         });
         const error = failed(result);
@@ -245,6 +246,7 @@ export const handleWorkspaceTabNew: CommandHandler<PaneHandlerContext> = (msg, c
             ...placed(ctx, workspace.value.id, tabID),
             pane_id: result['pane_id'] ?? null,
             kind: result['kind'] ?? null,
+            ...(typeof result['url'] === 'string' ? { url: result['url'] } : {}),
             ...(msg.name !== undefined ? { name: msg.name } : {})
         });
     });

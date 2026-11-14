@@ -1747,6 +1747,27 @@ function Shell(props: AppProps): ReactElement {
      * while it is out does nothing, rather than asking again and deleting twice.
      */
     const closePlanRef = useRef<string | null>(null);
+    /**
+     * The close-tab gate (workspace-feature.md §12.5) for any tab of any daemon's workspace: the
+     * desktop's tab actions and the phone's (each host's own) ask here before closing tabs with
+     * agents in them. The gate is one of the overlays both shells share.
+     */
+    const confirmTabClose = useCallback(
+        (workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean): boolean => {
+            const agents = tabsAgentSummary(workspace, tabIDs);
+            if (agents.total === 0 || !store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) return close();
+            const only = tabIDs.length === 1 ? workspaceTabViews(workspace).find((tab) => tab.id === tabIDs[0]) : undefined;
+            setTabCloseGate({
+                subject: only === undefined ? `${String(tabIDs.length)} tabs` : `“${only.title}”`,
+                tabCount: tabIDs.length,
+                agents,
+                close
+            });
+            return true;
+        },
+        [store]
+    );
+
     const act = useMemo(() => {
         const activeWorkspace = (): WorkspaceState | null => selectActiveWorkspace(store.getState());
         const activeWorkspaceID = (): string | null => activeWorkspace()?.id ?? null;
@@ -1916,18 +1937,7 @@ function Shell(props: AppProps): ReactElement {
                 activeWorkspace: () => tabTarget().workspace,
                 focusedPaneID: () => tabTarget().focusedPaneID,
                 run,
-                confirmClose: (workspace, tabIDs, close) => {
-                    const agents = tabsAgentSummary(workspace, tabIDs);
-                    if (agents.total === 0 || !store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) return close();
-                    const only = tabIDs.length === 1 ? workspaceTabViews(workspace).find((tab) => tab.id === tabIDs[0]) : undefined;
-                    setTabCloseGate({
-                        subject: only === undefined ? `${String(tabIDs.length)} tabs` : `“${only.title}”`,
-                        tabCount: tabIDs.length,
-                        agents,
-                        close
-                    });
-                    return true;
-                }
+                confirmClose: confirmTabClose
             }),
             ...workspacesActions,
             focusPane(paneID: string | null): boolean {
@@ -2774,7 +2784,7 @@ function Shell(props: AppProps): ReactElement {
             },
 
         };
-    }, [activateWorkspaceAndReveal, commands, content, csv, droppedFiles, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
+    }, [activateWorkspaceAndReveal, commands, confirmTabClose, content, csv, droppedFiles, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
 
     /**
      * `act` reachable from effects that must not re-subscribe when it is rebuilt (the shell's
@@ -4977,15 +4987,15 @@ function Shell(props: AppProps): ReactElement {
                   onNewTab: () => {
                       act.newTab();
                   },
-                  // A sidebar row is this daemon's workspace; a remote workspace's tab moves to
-                  // another of ITS daemon's workspaces from the tab menu instead.
-                  onMoveToWorkspace:
-                      remoteSelection !== null
-                          ? undefined
-                          : (tabID, workspaceID) => {
-                                const local = store.getState().daemon.state.workspaces.some((candidate) => candidate.id === workspaceID);
-                                if (local && workspaceID !== tabWorkspace.id) act.moveTabToWorkspace(tabID, workspaceID);
-                            },
+                  // A tab drops on the rows of its own daemon only: this window's, or, for a
+                  // paired daemon's workspace, that daemon's section of the sidebar (`rowDaemon`),
+                  // and the move goes over that daemon's connection like every tab action.
+                  rowDaemon: remoteSelection?.daemon,
+                  onMoveToWorkspace: (tabID, workspaceID) => {
+                      const owner = remoteSelection !== null && activeRemote !== null ? activeRemote.runtime.store : store;
+                      const known = owner.getState().daemon.state.workspaces.some((candidate) => candidate.id === workspaceID);
+                      if (known && workspaceID !== tabWorkspace.id) act.moveTabToWorkspace(tabID, workspaceID);
+                  },
                   onReleaseCaret: () => {
                       handBackPaneCaret(
                           remoteSelection !== null ? remoteWorkspaceOf(activeRemote, remoteSelection.workspaceID)?.focusedPaneID ?? null : selectFocusedPaneID(store.getState())
@@ -5180,9 +5190,8 @@ function Shell(props: AppProps): ReactElement {
                         toggleSyncInput: act.toggleSyncInput,
                         openPalette: () => { surface.palette.open({ id: 'native:phone-menu', kind: 'native', displayName: 'Command Palette' }); },
                         openSettings: () => openSettings(),
-                        selectTab: (tabID) => {
-                            act.selectTab(tabID);
-                        }
+                        runTabCommand: run,
+                        confirmTabClose
                     }}
                     palette={palette}
                     createRenderer={createRenderer}

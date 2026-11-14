@@ -985,6 +985,8 @@ interface WorkspaceRowProps {
     readonly onToggleChildren?: ((workspaceID: string) => void) | undefined;
     /** §2.9: the row is the preview-only `ontoWorkspace` target of a drag (the header tint's twin). */
     readonly nestDropPreview?: boolean | undefined;
+    /** A paired daemon's row (its name), for a title-bar tab dragged over it; absent = this daemon's. */
+    readonly remoteDaemon?: string | undefined;
     /*
      * §WS-088's 2px accent insertion line USED TO BE A PROP HERE, and is deliberately gone —
      * see the note above `WorkspaceRow`. The GAP is the slot indicator; the group header's own
@@ -1042,8 +1044,10 @@ interface WorkspaceRowProps {
  */
 export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
     const { workspace } = props;
-    // A title-bar tab dragged over this row moves here on release (workspace-feature.md §12).
-    const tabDropHere = useTabDragWorkspace() === workspace.id;
+    // A title-bar tab dragged over this row moves here on release (workspace-feature.md §12),
+    // when the tab is this row's own daemon's.
+    const tabDrag = useTabDragWorkspace();
+    const tabDropHere = tabDrag !== null && tabDrag.workspaceID === workspace.id && tabDrag.daemon === (props.remoteDaemon ?? null);
     // Feeds the avatar's status dot ONLY (§AGNT-103) — the row's git branch and pane count went
     // with §H5's invented metadata line, because `WorkspaceRowView.swift` renders neither.
     const own = agentCounts([workspace]);

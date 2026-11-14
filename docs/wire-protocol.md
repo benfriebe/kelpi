@@ -554,7 +554,7 @@ carry `"command"`.
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
 | `workspace-tab-list` | R/R | none | `pane_id`, `workspace`, `all` |
-| `workspace-tab-new` | R/R | none | `pane_id`, `workspace`, `kind`, `name`, `index`, `at_end`, `focus` |
+| `workspace-tab-new` | R/R | none | `pane_id`, `workspace`, `kind`, `name`, `url`, `index`, `at_end`, `focus` |
 | `workspace-tab-select` | R/R | `tab`, or `pane_id` for the caller's tab | `workspace` |
 | `workspace-tab-rename` | R/R | `name` or `clear`; `tab`, or `pane_id` | `workspace` |
 | `workspace-tab-move` | R/R | `index` or `at_end`; `tab`, or `pane_id` | `workspace` |
@@ -2163,7 +2163,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `lines` | int | `pane-capture` |
 | `scrollback` | bool | `pane-capture` |
 | `repo` | string | `graft-start`, `graft-stop`, `workspace-create` (worktree source, or the repo to associate), `group-set-repo` |
-| `url` | string | `web-open`, `web-navigate`, `web-tab-new` |
+| `url` | string | `web-open`, `web-navigate`, `web-tab-new`, `workspace-tab-new` (a web tab's address; implies `kind` web) |
 | `mode` | string | `web-capture` |
 | `hard` | bool | `web-reload` |
 | `tab` | string | `web-tab-close`, `web-tab-select` (a web pane's tab); `workspace-tab-*`, `pane-move-to-tab` (a workspace tab: 1-based number, id or title, §6.10) |

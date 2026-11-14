@@ -274,6 +274,8 @@ export interface WorkspaceTabNewMessage extends TabScope {
     at_end: boolean;
     /** #295: show the new tab. Absent (or false) opens it in the BACKGROUND. */
     focus?: boolean | undefined;
+    /** A web tab's address (`kind` web only); absent opens a blank page. */
+    url?: string | undefined;
 }
 
 export interface WorkspaceTabSelectMessage extends TabScope {

@@ -175,7 +175,7 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         // `focus: false`, because a plugin usually acts on a click.
         create: async (options = {}) => {
             const workspaceID = tabWorkspace(options.workspaceID, 'workspace-tab-new');
-            const result = await run('workspace-tab-new', { workspace_id: workspaceID, kind: options.kind, index: options.index, focus: options.focus ?? true });
+            const result = await run('workspace-tab-new', { workspace_id: workspaceID, kind: options.kind, url: options.url, index: options.index, focus: options.focus ?? true });
             if (options.name !== undefined) await done('workspace-tab-rename', { workspace_id: workspaceID, tab_id: result.tabID, name: options.name });
             return result;
         },

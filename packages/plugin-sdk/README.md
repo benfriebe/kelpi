@@ -89,7 +89,7 @@ application settings.
 
 ```ts
 const [first, second] = await api.tabs.list();
-const docs = await api.tabs.create({ kind: 'web', name: 'docs', focus: false });
+const docs = await api.tabs.create({ url: 'https://kelpi.sh/docs', name: 'docs', focus: false });
 await api.tabs.rename(first, 'main');
 await api.panes.moveToTab(paneID, second, { anchorID: second.paneIDs[0], zone: 'below', focus: false });
 await api.tabs.select({ workspaceID: docs.workspaceID, tabID: docs.tabID });

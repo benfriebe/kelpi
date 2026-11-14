@@ -197,9 +197,10 @@ export interface TabsAPI {
     list(options?: { workspaceID?: string; all?: boolean }): Promise<TabInfo[]>;
     /**
      * `focus` defaults to true for `create`, `duplicate` and `moveToWorkspace`, as for the pane
-     * helpers: code without a user gesture behind it passes `focus: false`.
+     * helpers: code without a user gesture behind it passes `focus: false`. `url` opens a web
+     * tab at that address (it implies `kind: 'web'`; any other kind with a url is refused).
      */
-    create(options?: { workspaceID?: string; kind?: NewTabKind; index?: number; name?: string; focus?: boolean }): Promise<TabPlacement & { paneID: string; kind: NewTabKind }>;
+    create(options?: { workspaceID?: string; kind?: NewTabKind; url?: string; index?: number; name?: string; focus?: boolean }): Promise<TabPlacement & { paneID: string; kind: NewTabKind; url?: string }>;
     select(tab: TabRef): Promise<TabPlacement>;
     /** `null` names it after its focused pane again. */
     rename(tab: TabRef, name: string | null): Promise<TabPlacement>;

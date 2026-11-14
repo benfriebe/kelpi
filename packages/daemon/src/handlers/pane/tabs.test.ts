@@ -95,6 +95,13 @@ describe('workspace-tab-new', () => {
         expect(reply['ok']).toBe(false);
         expect(String(reply['error'])).toContain("unknown tab kind 'spreadsheet'");
     });
+
+    it('opens a web tab at a url, and reports the address it was given', async () => {
+        const h = seeded();
+        const reply = await settled(h, { command: 'workspace-tab-new', pane_id: P1, url: 'example.com', at_end: true });
+        expect(reply).toMatchObject({ ok: true, kind: 'web', url: 'https://example.com', tab_number: 3 });
+        expect(h.workspace(W1).webPanes[reply['pane_id'] as string]?.tabs[0]?.url).toBe('https://example.com');
+    });
 });
 
 describe('naming a tab', () => {

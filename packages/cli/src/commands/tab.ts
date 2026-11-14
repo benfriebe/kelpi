@@ -171,6 +171,7 @@ async function handleTabNew(args: string[]): Promise<void> {
     }
     const kind = parseFlag('--kind', args);
     const name = parseFlag('--name', args);
+    const url = parseFlag('--url', args);
     const at = position('--at', parseFlag('--at', args), 'new');
     const end = popSwitch('--end', args);
     const workspace = parseFlag('--workspace', args);
@@ -185,8 +186,14 @@ async function handleTabNew(args: string[]): Promise<void> {
         errLine('kelpi tab new: --at and --end are mutually exclusive');
         exit(1);
     }
+    // A url opens a web tab; with no --kind it means one.
+    if (url !== null && kind !== null && kind !== 'web') {
+        errLine(`kelpi tab new: --url is for a web tab, not --kind ${kind}`);
+        exit(1);
+    }
     const payload = scoped('workspace-tab-new', workspace, undefined);
     if (kind !== null) payload['kind'] = kind;
+    if (url !== null) payload['url'] = url;
     if (name !== null) payload['name'] = name;
     if (at !== undefined) payload['index'] = at;
     if (end) payload['at_end'] = true;

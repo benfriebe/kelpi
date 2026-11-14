@@ -372,15 +372,16 @@ The tabs of the workspace that fills the pane area (workspace-feature.md §12), 
 bar draws its tabs, read from that daemon's own mirror, and every tab gesture goes over that
 daemon's connection (`packages/client/src/app/remote-tabs.ts`): the bar, the tab menu, the native
 menu rows, the palette and the tab chords, which pass the window dispatcher even though its pane
-chords stand down there. None of them reaches the hidden local workspace. Two differences: a
-tab dragged onto a sidebar row stays put (a row is this daemon's workspace, and a tab cannot
-change machine; Move Tab to Workspace ▸ lists the paired daemon's own workspaces instead), and
-a refused verb toasts only from the window's own controls: the bar, the tab menu, the native
-menu rows, the palette and the chords report it as a local one does, while a pane dropped from
-the paired daemon's grid (onto a tab, or its header's Move to New Tab) fails quietly, like that
-grid's other commands. A paired daemon always has tabs: its connection is the same handshake as
-this daemon's, and one that predates tabs speaks WS generation 3 and is refused
-(wire-protocol.md, generation 4), so no control here needs to ask.
+chords stand down there. None of them reaches the hidden local workspace. A tab dragged onto a
+sidebar row moves only onto that daemon's own rows (its section of the sidebar, marked
+`data-remote-daemon`), over its connection; this window's rows and another daemon's take no
+drop and do not light up, since a tab cannot change machine. A refused verb toasts only from
+the window's own controls: the bar, the tab menu, the native menu rows, the palette and the
+chords report it as a local one does, while a pane dropped from the paired daemon's grid (onto
+a tab, or its header's Move to New Tab) fails quietly, like that grid's other commands. A
+paired daemon always has tabs: its connection is the same handshake as this daemon's, and one
+that predates tabs speaks WS generation 3 and is refused (wire-protocol.md, generation 4), so
+no control here needs to ask.
 
 **Layout:**
 
@@ -439,7 +440,8 @@ New Tab (disabled while the tab on screen holds one pane).
   a divider, Close Tab and Close Other Tabs (both disabled while there is one tab).
 - Drag (4pt) reorders: the tab dims to 55% and a 2pt accent bar marks where it will land.
   Released over a workspace row in the sidebar, the tab moves there with its panes and becomes
-  that workspace's tab on screen.
+  that workspace's tab on screen. The row lights up while the tab is over it, and only the rows
+  of the tab's own daemon take it (`rowDaemon`, `chrome/tab-drop.ts` `TabDragWorkspace`).
 - The strip is a `tablist` in which only the tab on screen takes keyboard focus: ← / → show the
   previous / next tab (wrapping), Home / End the first / last, F2 renames the tab on screen.
 

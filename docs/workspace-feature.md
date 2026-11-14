@@ -2164,11 +2164,5 @@ again" turns that setting off, for workspaces and tabs alike. The WS verbs thems
 
 ### 12.8 Not covered
 
-Everything the design drew is built. What is left is smaller:
-
-- The phone shows a workspace's tabs as chips and switches between them, but opens, closes and
-  renames none (the design drew the chips only).
-- A tab dragged onto a sidebar row moves to that workspace only for this window's own daemon;
-  a paired daemon's rows take no drop, and its tab menu's Move Tab to Workspace is the way
-  there.
-- `kelpi tab new --kind web` and a New Web Tab open a blank web pane; neither takes a URL.
+Nothing: every gesture the design drew, and every tab verb, is built on the desktop, the phone
+and the CLI, for this window's daemon and for a paired one.

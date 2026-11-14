@@ -258,6 +258,99 @@ describe('a tab dragged', () => {
     });
 });
 
+describe('a tab dropped on a sidebar row', () => {
+    /*
+     * A sidebar with this daemon's row (W-LOCAL) and a paired daemon "werk"'s row (W-REMOTE), and
+     * jsdom's missing `elementsFromPoint` answering with whichever row the pointer is over.
+     */
+    const sidebar = (): { local: HTMLElement; remote: HTMLElement; restore: () => void } => {
+        const row = (id: string): HTMLElement => {
+            const element = document.createElement('div');
+            element.setAttribute('data-testid', 'workspace-row');
+            element.setAttribute('data-workspace-id', id);
+            return element;
+        };
+        const local = row('W-LOCAL');
+        const sections = document.createElement('div');
+        sections.setAttribute('data-testid', 'remote-daemon-sections');
+        const section = document.createElement('div');
+        section.setAttribute('data-remote-daemon', 'werk');
+        const remote = row('W-REMOTE');
+        section.append(remote);
+        sections.append(section);
+        document.body.append(local, sections);
+        const original = (document as { elementsFromPoint?: unknown }).elementsFromPoint;
+        (document as unknown as { elementsFromPoint: (x: number, y: number) => Element[] }).elementsFromPoint = (x) =>
+            x >= 1000 ? [remote] : x >= 500 ? [local] : [];
+        return {
+            local,
+            remote,
+            restore: () => {
+                local.remove();
+                sections.remove();
+                (document as { elementsFromPoint?: unknown }).elementsFromPoint = original;
+            }
+        };
+    };
+    const drag = (tabID: string, x: number): void => {
+        act(() => {
+            screen.getByTestId(`workspace-tab-${tabID}`).dispatchEvent(
+                new MouseEvent('pointerdown', { clientX: 10, clientY: 10, button: 0, buttons: 1, bubbles: true })
+            );
+        });
+        act(() => {
+            window.dispatchEvent(new MouseEvent('pointermove', { clientX: 40, clientY: 10, buttons: 1 }));
+        });
+        act(() => {
+            window.dispatchEvent(new MouseEvent('pointermove', { clientX: x, clientY: 300, buttons: 1 }));
+        });
+        act(() => {
+            window.dispatchEvent(new MouseEvent('pointerup', { clientX: x, clientY: 300 }));
+        });
+    };
+
+    it("moves this daemon's tab onto this daemon's row, and never onto a paired daemon's", () => {
+        const rows = sidebar();
+        try {
+            const onMoveToWorkspace = vi.fn();
+            render(<WorkspaceTabBar {...props(TWO, { onMoveToWorkspace })} />);
+            drag('workers', 600);
+            expect(onMoveToWorkspace).toHaveBeenLastCalledWith('workers', 'W-LOCAL');
+            drag('workers', 1200);
+            expect(onMoveToWorkspace).toHaveBeenCalledTimes(1);
+        } finally {
+            rows.restore();
+        }
+    });
+
+    it("moves a paired daemon's tab onto that daemon's row only", () => {
+        const rows = sidebar();
+        try {
+            const onMoveToWorkspace = vi.fn();
+            render(<WorkspaceTabBar {...props(TWO, { onMoveToWorkspace, rowDaemon: 'werk' })} />);
+            drag('workers', 1200);
+            expect(onMoveToWorkspace).toHaveBeenLastCalledWith('workers', 'W-REMOTE');
+            drag('workers', 600);
+            expect(onMoveToWorkspace).toHaveBeenCalledTimes(1);
+        } finally {
+            rows.restore();
+        }
+    });
+
+    it("refuses another paired daemon's rows", () => {
+        const rows = sidebar();
+        try {
+            const onMoveToWorkspace = vi.fn();
+            render(<WorkspaceTabBar {...props(TWO, { onMoveToWorkspace, rowDaemon: 'elsewhere' })} />);
+            drag('workers', 1200);
+            drag('workers', 600);
+            expect(onMoveToWorkspace).not.toHaveBeenCalled();
+        } finally {
+            rows.restore();
+        }
+    });
+});
+
 describe('the tabs and the caret', () => {
     it('never take the caret from the pane on a press', () => {
         render(<WorkspaceTabBar {...props(TWO)} />);

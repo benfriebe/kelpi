@@ -759,7 +759,8 @@ Exit codes: 0 on success, non-zero on failure.
 
 export const tabNewUsage = `Usage:
   kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>]
-                [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
+                [--url <url>] [--at <n> | --end] [--workspace <name-or-id>]
+                [--focus] [--json]
 
 Opens a new tab with one pane in it. Without --kind it opens what Settings ▸
 Workspaces "A new tab opens" says; "same" opens the kind of the focused pane.
@@ -767,6 +768,8 @@ The tab opens in the background unless --focus is given, which shows it.
 
 Options:
   --kind <kind>             terminal, same, agent, web or scratchpad.
+  --url <url>               A web tab at this address (implies --kind web; a
+                            bare host gets https://, as kelpi web open does).
   --name <name>             Name the tab (default: named after its pane).
   --at <n>                  Put it at position n (1 is first).
   --end                     Put it after the last tab.

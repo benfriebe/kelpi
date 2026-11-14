@@ -966,7 +966,7 @@ Shared rules: `workspace_id` is an id, never a name; an absent or unknown one is
 else counts as absent). `focus`, where a verb takes it, defaults to true: only `focus: false`
 leaves the change in the background.
 
-- **`workspace-tab-new`** `{workspace_id, kind?, index?, focus?}`: a new tab holding one new
+- **`workspace-tab-new`** `{workspace_id, kind?, url?, index?, focus?}`: a new tab holding one new
   pane (`create-tab`), at `index`, else where `new-tab-position` puts it. `kind` is
   `terminal`, `same`, `agent`, `web` or `scratchpad`; absent, `new-tab-opens` decides
   (config-keybindings.md §1.2). `terminal` and `agent` are a shell in the workspace's folder
@@ -975,9 +975,13 @@ leaves the change in the background.
   is a blank web pane or an empty scratchpad when the focused pane is one, else a terminal
   where the focused shell really is (the OS is asked first, as a split asks it, and the reply
   waits for the answer; with none, the shell's stored directory, which OSC 7 keeps current);
-  `web` is a blank web pane, `scratchpad` an empty scratchpad.
+  `web` is a blank web pane, or one at `url` when it is given (normalized as `web-open` does: a
+  bare host gets `https://`, a local one `http://`, and `about:blank` is the blank page); a
+  `url` with no `kind` means `web`. `scratchpad` is an empty scratchpad.
   A shell gets its PTY. Reply `workspace_id`, `tab_id`, `pane_id`, `kind` (as resolved, so never
-  `same`). Refusals: `unknown tab kind '<kind>': use terminal, same, agent, web, scratchpad`;
+  `same`), and `url` (normalized) for a web tab. Refusals: `unknown tab kind '<kind>': use
+  terminal, same, agent, web, scratchpad`; `workspace-tab-new: a url is for a web tab, not a
+  <kind> tab`; `workspace-tab-new: url must be a non-empty string`;
   `this daemon cannot start agents` (an `agent` tab on a daemon composed without the agent
   launcher); `the new tab could not be opened` (the create made nothing).
 - **`workspace-tab-select`** `{workspace_id, tab_id}`: shows the tab (`select-tab`). Reply
@@ -1052,7 +1056,8 @@ command so it reads the settings of the moment:
 - **Positions.** `index` is the tab's 0-based position once placed (an `index` past the end is
   the end; negative is refused), `at_end` the end. `workspace-tab-move` refuses a position past
   the last tab: `no position <n> in workspace '<name>' (it has <count> tabs)`.
-- **`workspace-tab-new`** takes `name` too, which renames the new tab once it exists.
+- **`workspace-tab-new`** takes `name` too, which renames the new tab once it exists, and
+  passes `url` through (a web tab at that address; `kelpi tab new --url`).
 - **Replies** add `workspace_name` and `tab_number`, as both stand after the change, to the
   channel's reply (wire-protocol.md §6.10 lists the extras per verb).
 - **Refusals** of its own: `the pane is alone in its tab already` (`pane-move-to-new-tab`; move

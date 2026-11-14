@@ -22,6 +22,7 @@ import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../
 import {
     activeTabIDOf,
     duplicableTree,
+    normalizeURLInput,
     tabByID,
     tabIndex,
     tabOfPane,
@@ -199,11 +200,18 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
     const newTab = (payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
         const workspace = workspaceFor(payload);
         if (workspace === null) return failure('workspace-tab-new requires a known workspace_id');
-        const requested = text(payload['kind']) ?? options.newTabOpens?.() ?? 'terminal';
+        // A url and no kind is a web tab at that address, whatever "A new tab opens" says.
+        const requested = text(payload['kind']) ?? (text(payload['url']) !== undefined ? 'web' : undefined) ?? options.newTabOpens?.() ?? 'terminal';
         if (!(NEW_TAB_KINDS as readonly string[]).includes(requested)) {
             return failure(`unknown tab kind '${requested}': use ${NEW_TAB_KINDS.join(', ')}`);
         }
         if (requested === 'agent' && options.startAgent === undefined) return failure('this daemon cannot start agents');
+        // A web tab may open at an address (`kelpi tab new --url`); every other kind has none to open.
+        const url = payload['url'];
+        if (url !== undefined && url !== null) {
+            if (typeof url !== 'string' || url.trim() === '') return failure('workspace-tab-new: url must be a non-empty string');
+            if (requested !== 'web') return failure(`workspace-tab-new: a url is for a web tab, not a ${requested} tab`);
+        }
         const focusedPane = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
         // "The same kind as the focused pane", for a shell: a terminal where that shell is now,
         // which only the OS knows (OSC 7 may never have said), so ask before opening it.
@@ -245,8 +253,11 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         const paneID = mintPane();
         const at = now();
         let create: DomainAction;
+        // As `web-open` reads it: `about:blank` is the blank page, whose URL bar takes the caret.
+        const asked = typeof payload['url'] === 'string' ? payload['url'].trim() : '';
+        const url = asked === 'about:blank' ? '' : asked;
         if (kind === 'web') {
-            create = { type: 'open-web-pane', workspaceID: workspace.id, paneID, tabID: mintTab(), url: '', now: at, focus: true };
+            create = { type: 'open-web-pane', workspaceID: workspace.id, paneID, tabID: mintTab(), url, now: at, focus: true };
         } else if (kind === 'scratchpad') {
             create = { type: 'create-scratchpad', workspaceID: workspace.id, paneID, now: at };
         } else {
@@ -270,7 +281,7 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         spawnPaneIfShell(ctx, workspace.id, paneID);
         if (kind === 'agent') options.startAgent?.(paneID, workspace.id);
         refreshSyncGroup(ctx, workspace.id);
-        return { ok: true, workspace_id: workspace.id, tab_id: tabID, pane_id: paneID, kind };
+        return { ok: true, workspace_id: workspace.id, tab_id: tabID, pane_id: paneID, kind, ...(kind === 'web' ? { url: normalizeURLInput(url) } : {}) };
     };
 
     const tabArgs = (

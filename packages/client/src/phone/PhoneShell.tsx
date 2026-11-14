@@ -61,7 +61,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { createPortal } from 'react-dom';
 import { useStore } from 'zustand';
 
-import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
+import { layoutPaneOrder, sidebarWorkspaceOrder, type WorkspaceState } from '@kelpi/daemon/store';
 
 import type { DaemonTarget, StorageLike } from '../app/config';
 import { ConnectionSplash } from '../app/ConnectionScreen';
@@ -100,8 +100,9 @@ import { PhoneNewWorkspaceSheet } from './PhoneNewWorkspaceSheet';
 import { PhoneNotificationsSheet } from './PhoneNotificationsSheet';
 import { PhonePaneHeader, PhonePaneStrip } from './PhonePaneChrome';
 import { PhoneTabChips } from './PhoneTabChips';
-import { onScreenPanes, workspaceTabViews } from '../chrome/workspace-tabs';
-import { wirePayload } from '../connection/commands';
+import { onScreenPanes, workspaceTabViews, type WorkspaceTabView } from '../chrome/workspace-tabs';
+import type { CommandReply } from '../connection/commands';
+import { createWorkspaceTabActions } from '../features/workspace-tabs-actions';
 import { PhonePicker } from './PhonePicker';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
@@ -125,8 +126,13 @@ export interface PhoneShellActions {
     toggleSyncInput(): void;
     openPalette(): void;
     openSettings(): void;
-    /** workspace-feature.md §12: show a tab of the workspace on screen (the origin's). */
-    selectTab(tabID: string): void;
+    /**
+     * workspace-feature.md §12: the tab verbs go out over the connection of whichever host is on
+     * screen (`createWorkspaceTabActions`); assembly supplies only what is the window's own: how a
+     * failed command is reported, and the close-tab gate that asks before closing agents.
+     */
+    runTabCommand(label: string, command: Promise<CommandReply>): boolean;
+    confirmTabClose(workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean): boolean;
 }
 
 /** The desktop grid's props that are NOT the workspace itself: assembly's bindings pass through. */
@@ -175,7 +181,7 @@ export interface PhoneShellProps {
 }
 
 /** `host-scan` is the Add host sheet opened straight onto its camera; `picker` is at `pickerLevel`. */
-type Sheet = 'none' | 'picker' | 'needs' | 'jump' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace' | 'notifications';
+type Sheet = 'none' | 'picker' | 'needs' | 'jump' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace' | 'notifications' | 'tab' | 'rename-tab' | 'move-tab';
 
 
 const ZERO_RECT = { x: 0, y: 0, width: 0, height: 0 } as const;
@@ -374,8 +380,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 focusPane: actions.focusPane,
                 createPane: actions.createPane,
                 closePane: actions.closePane,
-                renamePane: actions.renamePane,
-                selectTab: actions.selectTab
+                renamePane: actions.renamePane
             };
         }
         const runtime = remoteHost.runtime;
@@ -392,14 +397,50 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             },
             renamePane: (paneID: string, name: string): void => {
                 void runtime.commands.renamePane({ paneID, name });
-            },
-            // §12: a remote daemon's tabs, through that daemon's own verb.
-            selectTab: (tabID: string): void => {
-                if (workspaceID === null) return;
-                void runtime.commands.raw(wirePayload('workspace-tab-select', { workspace_id: workspaceID, tab_id: tabID }));
             }
         };
     }, [remoteHost, remoteWorkspaceID, actions]);
+
+    /*
+     * workspace-feature.md §12: the tabs of the workspace on screen, driven over its own host's
+     * connection (the origin's or a paired daemon's), so the chips, the tab sheet and the ⋯ menu's
+     * New tab act on exactly the tabs drawn. Read through refs: the actions outlive a render.
+     */
+    const tabWorkspaceRef = useRef(workspace);
+    tabWorkspaceRef.current = workspace;
+    const tabFocusRef = useRef(shownPaneID);
+    tabFocusRef.current = shownPaneID;
+    const tabActions = useMemo(
+        () =>
+            createWorkspaceTabActions({
+                commands: (remoteHost?.runtime ?? props.runtime).commands,
+                activeWorkspace: () => tabWorkspaceRef.current,
+                focusedPaneID: () => tabFocusRef.current,
+                run: actions.runTabCommand,
+                confirmClose: actions.confirmTabClose
+            }),
+        [remoteHost, props.runtime, actions]
+    );
+    const tabViews = useMemo(() => (workspace === null ? [] : workspaceTabViews(workspace)), [workspace]);
+    /** The tab the tab sheet (and its rename and move sheets) is about, while one is open. */
+    const [sheetTabID, setSheetTabID] = useState<string | null>(null);
+    const sheetTab = sheetTabID === null ? null : (tabViews.find((tab) => tab.id === sheetTabID) ?? null);
+    const onTabMenu = useCallback((tab: WorkspaceTabView): void => {
+        setSheetTabID(tab.id);
+        setSheet('tab');
+    }, []);
+    /** Move to workspace: the on-screen host's other workspaces, in its sidebar's order. */
+    const hostState = useStore(activeStore, (state) => state.daemon.state);
+    const tabMoveTargets = useMemo(
+        () =>
+            workspace === null
+                ? []
+                : sidebarWorkspaceOrder(hostState)
+                      .filter((id) => id !== workspace.id)
+                      .map((id) => hostState.workspaces.find((candidate) => candidate.id === id))
+                      .filter((candidate): candidate is WorkspaceState => candidate !== undefined),
+        [hostState, workspace]
+    );
 
     const onSelectWorkspace = useCallback(
         (next: PhoneWorkspaceSelection): void => {
@@ -469,6 +510,8 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         // has: the palette and Settings.
         if (workspace !== null && !atLanding) {
             items.push({ id: 'new-pane', label: 'New terminal', glyph: 'plus', detail: 'A terminal beside this pane', onSelect: verbs.createPane });
+            // §12: a tab of the workspace's own; the chips (and their +) appear once there are two.
+            items.push({ id: 'new-tab', label: 'New tab', glyph: 'layout', detail: `Another tab in ${workspace.name}`, onSelect: () => tabActions.newTab() });
             if (shownPane !== null) {
                 items.push({ id: 'rename-pane', label: 'Rename', glyph: 'pencil', opensSheet: true, onSelect: () => setSheet('rename') });
             }
@@ -517,7 +560,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
         return items;
-    }, [workspace, shownPane, remoteHost, verbs, actions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel]);
+    }, [workspace, shownPane, remoteHost, verbs, actions, tabActions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
 
@@ -1048,7 +1091,16 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             )}
 
             {atLanding || workspace === null ? null : (
-                <PhoneTabChips tabs={workspaceTabViews(workspace)} onSelect={verbs.selectTab} />
+                <PhoneTabChips
+                    tabs={tabViews}
+                    onSelect={(tabID) => {
+                        tabActions.selectTab(tabID);
+                    }}
+                    onNewTab={() => {
+                        tabActions.newTab();
+                    }}
+                    onTabMenu={onTabMenu}
+                />
             )}
 
             <div ref={contentRef} data-testid="phone-content" className="relative min-h-0 flex-1">
@@ -1216,6 +1268,72 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     onClose={closeSheet}
                 />
             ) : null}
+            {/*
+              * workspace-feature.md §12: a chip's long press. The rows are the desktop tab menu's,
+              * minus the ones that arrange panes (a phone shows one pane at a time); Close asks first
+              * when the tab holds agents (the shared close-tab gate).
+              */}
+            <PhoneMenuSheet
+                open={sheet === 'tab' && sheetTab !== null}
+                title={sheetTab?.title ?? 'Tab'}
+                subtitle={[workspace?.name, onScreenHost?.name].filter((part) => part !== undefined).join(' · ')}
+                glyph="layout"
+                items={
+                    sheetTab === null
+                        ? []
+                        : [
+                              { id: 'rename-tab', label: 'Rename tab', glyph: 'pencil', opensSheet: true, onSelect: () => setSheet('rename-tab') },
+                              {
+                                  id: 'duplicate-tab',
+                                  label: 'Duplicate tab',
+                                  glyph: 'clipboard',
+                                  detail: 'A copy of its panes, right after it',
+                                  onSelect: () => tabActions.duplicateTab(sheetTab.id)
+                              },
+                              {
+                                  id: 'move-tab',
+                                  label: 'Move to workspace',
+                                  glyph: 'folder',
+                                  opensSheet: true,
+                                  disabled: tabMoveTargets.length === 0,
+                                  onSelect: () => setSheet('move-tab')
+                              },
+                              {
+                                  id: 'close-tab',
+                                  label: 'Close tab',
+                                  danger: true,
+                                  disabled: tabViews.length <= 1,
+                                  onSelect: () => tabActions.closeTab(sheetTab.id)
+                              }
+                          ]
+                }
+                onClose={closeSheet}
+            />
+            <PhoneMenuSheet
+                open={sheet === 'move-tab' && sheetTab !== null}
+                title={`Move ${sheetTab?.title ?? 'tab'} to`}
+                subtitle={onScreenHost?.name}
+                glyph="folder"
+                items={tabMoveTargets.map((target) => ({
+                    id: `move-tab-to-${target.id}`,
+                    label: target.name,
+                    glyph: 'folder' as const,
+                    onSelect: () => {
+                        if (sheetTab !== null) tabActions.moveTabToWorkspace(sheetTab.id, target.id);
+                    }
+                }))}
+                onClose={closeSheet}
+            />
+            <PhonePromptSheet
+                open={sheet === 'rename-tab' && sheetTab !== null}
+                title="Rename tab"
+                initial={sheetTab?.named === true ? sheetTab.title : ''}
+                placeholder={sheetTab?.title ?? 'tab name'}
+                onSubmit={(name) => {
+                    if (sheetTab !== null) tabActions.renameTab(sheetTab.id, name);
+                }}
+                onClose={closeSheet}
+            />
             <PhonePromptSheet
                 open={sheet === 'rename'}
                 title="Rename pane"

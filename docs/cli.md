@@ -1712,7 +1712,7 @@ kelpi layout select <name>
 
 ```
 kelpi tab list [--workspace <name-or-id> | --all] [--json] [--no-header]
-kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
+kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>] [--url <url>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
 kelpi tab select|show [<tab>] [--workspace <name-or-id>] [--json]
 kelpi tab rename <tab> <new-name> | <new-name> | [<tab>] --clear   [--workspace <name-or-id>] [--json]
 kelpi tab move [<tab>] (--to <n> | --end) [--workspace <name-or-id>] [--json]
@@ -1741,8 +1741,11 @@ verbs (wire-protocol.md §6.10, socket-handlers.md §4.17.1).
   `index`; `--end` is `at_end`. A position that is not a whole number from 1, `--at` with
   `--end`, or `move` without exactly one of `--to`/`--end`, is refused before sending.
 - **`new`**: `--kind` is checked locally (`unknown kind '<x>'; use terminal, same, agent, web,
-  scratchpad`); absent, Settings "A new tab opens" decides. `--name` names the tab. Ack:
-  `created tab <n> (<id>) in workspace <name>`.
+  scratchpad`); absent, Settings "A new tab opens" decides. `--name` names the tab. `--url`
+  opens a web tab at that address (the daemon adds `https://` to a bare host, as `kelpi web
+  open` does) and implies `--kind web`; with any other `--kind` it is refused before sending
+  (`--url is for a web tab, not --kind <kind>`). Ack: `created tab <n> (<id>) in workspace
+  <name>`.
 - **`rename`**: two positionals are `<tab> <new-name>`; one is the new name of the caller's
   tab; `--clear` takes the tab alone (or none) and sends `clear`. Ack:
   `renamed tab <n> (<id>) in workspace <name> to <new-name>`, or

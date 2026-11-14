@@ -1,4 +1,4 @@
-import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, PanesAPI, Snapshot, TerminalAPI, WorkspacesAPI } from './domain.js';
+import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, PanesAPI, Snapshot, TabsAPI, TerminalAPI, WorkspacesAPI } from './domain.js';
 import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, BuiltinServiceMethod, BuiltinServiceResult, ProcessExecResult } from './services.js';
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
@@ -60,6 +60,8 @@ export interface KelpiAPI {
     workspaces: WorkspacesAPI;
     groups: GroupsAPI;
     panes: PanesAPI;
+    /** Workspace tabs (workspace-feature.md §12). */
+    tabs: TabsAPI;
     layout: LayoutAPI;
     agents: AgentsAPI;
     git: GitAPI;

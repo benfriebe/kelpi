@@ -19,6 +19,8 @@ export interface PaneInfo {
     createdAt: string; lastActivityAt: string; label?: string; title?: string; gitBranch?: string;
     agentSessionID?: string; agent?: AgentKind; backgroundTasks?: number; filePath?: string;
     groupID?: string; groupName?: string;
+    /** The pane's tab, its 1-based number and whether it is on screen; only once its workspace has a second tab. */
+    tabID?: string; tabNumber?: number; isActiveTab?: boolean;
 }
 export interface WorkspaceInfo {
     id: string; name: string; color: WorkspaceColor; paneCount: number; isActive: boolean;
@@ -30,6 +32,8 @@ export interface WorkspaceInfo {
     lastActivityAt?: string; agentSessionID?: string; groupID?: string; groupName?: string;
     /** The workspace this one is nested under; absent when it is not nested. */
     parentID?: string; parentName?: string;
+    /** How many tabs it has and which is on screen; absent while it has one tab. */
+    tabCount?: number; activeTabID?: string;
 }
 export interface GroupInfo {
     id: string; name: string; color?: WorkspaceColor;
@@ -154,8 +158,63 @@ export interface PanesAPI {
     moveAdjacent(pane: PaneTarget, anchor: string, zone: DropZone, options?: { focus?: boolean }): Promise<PaneMutation & { anchorID: string; zone: DropZone }>;
     move(paneID: string, direction: MoveDirection, options?: { focus?: boolean }): Promise<void>;
     moveToWorkspace(paneID: string, workspaceID: string, options?: { create?: boolean; focus?: boolean }): Promise<void>;
+    /**
+     * Into another tab of the pane's workspace (workspace-feature.md §12): beside `anchorID` on
+     * `zone`, else beside the tab's focused pane. `focus` defaults to true, as for the moves above.
+     */
+    moveToTab(paneID: string, tab: string | TabRef, options?: { anchorID?: string; zone?: DropZone; focus?: boolean }): Promise<PanePlacement & { tabID: string }>;
+    /** Out of its tab into a new tab of its own, just after it unless `index` (0-based) says where. */
+    moveToNewTab(paneID: string, options?: { index?: number; focus?: boolean }): Promise<PanePlacement & { tabID: string }>;
     reopen(workspaceID: string): Promise<PanePlacement & { type: PaneType }>;
     scratchpad(workspaceID: string): Promise<PanePlacement>;
+}
+/** What a new tab opens: Settings "A new tab opens" when absent; `same` is the focused pane's kind. */
+export type NewTabKind = 'terminal' | 'same' | 'agent' | 'web' | 'scratchpad';
+/** One of a workspace's tabs (workspace-feature.md §12), as `tabs.list` reports it. */
+export interface TabInfo {
+    id: string;
+    /** 1-based position in the tab bar, what ⌥⌘1-9 count. */
+    number: number;
+    /** The name a person gave it; null while it is named after its focused pane. */
+    name: string | null;
+    /** What the tab bar shows. */
+    title: string;
+    workspaceID: string;
+    workspaceName: string;
+    paneIDs: string[];
+    paneCount: number;
+    /** The tab on screen. */
+    isActive: boolean;
+    /** Its busiest pane's status. */
+    status: PaneStatus;
+    zoomed: boolean;
+}
+/** A tab to act on: a `tabs.list` entry, or its workspace and id. */
+export type TabRef = { workspaceID: string; tabID: string } | Pick<TabInfo, 'workspaceID' | 'id'>;
+export interface TabPlacement { workspaceID: string; tabID: string }
+export interface TabsAPI {
+    /** One workspace's tabs (default: the calling view's or command's, else the one on screen), or every workspace's. */
+    list(options?: { workspaceID?: string; all?: boolean }): Promise<TabInfo[]>;
+    /**
+     * `focus` defaults to true for `create`, `duplicate` and `moveToWorkspace`, as for the pane
+     * helpers: code without a user gesture behind it passes `focus: false`.
+     */
+    create(options?: { workspaceID?: string; kind?: NewTabKind; index?: number; name?: string; focus?: boolean }): Promise<TabPlacement & { paneID: string; kind: NewTabKind }>;
+    select(tab: TabRef): Promise<TabPlacement>;
+    /** `null` names it after its focused pane again. */
+    rename(tab: TabRef, name: string | null): Promise<TabPlacement>;
+    /** `index` is the tab's 0-based position once moved. */
+    move(tab: TabRef, index: number): Promise<TabPlacement>;
+    /** Closes the tab and its panes; a workspace's only tab is refused. */
+    close(tab: TabRef): Promise<TabPlacement & { closed: number }>;
+    closeOthers(tab: TabRef): Promise<TabPlacement & { closed: number }>;
+    /** Resolves with the copy's id. */
+    duplicate(tab: TabRef, options?: { focus?: boolean }): Promise<TabPlacement>;
+    /** Merges the tab into the one before it. */
+    merge(tab: TabRef): Promise<TabPlacement>;
+    /** Gives each pane of the tab its own tab. */
+    split(tab: TabRef): Promise<TabPlacement & { tabIDs: string[] }>;
+    moveToWorkspace(tab: TabRef, workspaceID: string, options?: { focus?: boolean }): Promise<TabPlacement>;
 }
 export interface LayoutAPI {
     /** Layout cycle/select acknowledge dispatch; a nonexistent pane is a daemon no-op. */

@@ -1,6 +1,6 @@
 /**
- * The five table renderers (cli.md port note 17): pane list, workspace list, group list,
- * web tabs, web cookies. Humans read these, and scripts occasionally parse them with
+ * The six table renderers (cli.md port note 17): pane list, workspace list, group list,
+ * workspace tabs, web tabs, web cookies. Humans read these, and scripts occasionally parse them with
  * `--no-header`, so column order, the `first8…last4` short id, the `-` placeholders, the `●`
  * active marker and the unpadded last column are all contract.
  *
@@ -58,31 +58,42 @@ function renderRows(headers: readonly string[], rows: readonly (readonly string[
     for (const row of rows) printLine(line(row));
 }
 
-/** `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD` — ID is the FULL uuid (issue #240). */
+/**
+ * `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`: ID is the FULL uuid (issue #240). A TAB
+ * column follows WORKSPACE only when some pane's workspace has more than one tab
+ * (workspace-feature.md §12): the tab's number, `*` on the tab on screen, `-` in a workspace
+ * with one tab. The table is unchanged for everyone with one tab per workspace.
+ */
 export function printPaneTable(panes: readonly JsonObject[], noHeader: boolean, home: string): void {
+    const tabbed = panes.some((entry) => asInt(entry['tab_number']) !== undefined);
     const rows = panes.map((entry) => {
         const session = asString(entry['agent_session_id']) ?? '';
         const type = asString(entry['type']) ?? '';
+        const tab = asInt(entry['tab_number']);
         return [
             asString(entry['id']) ?? '',
             asString(entry['label']) ?? '-',
             type.length === 0 ? '-' : type,
             asString(entry['workspace_name']) ?? '',
+            ...(tabbed ? [tab === undefined ? '-' : `${String(tab)}${asBool(entry['is_active_tab']) === true ? '*' : ''}`] : []),
             asString(entry['status']) ?? '',
             session.length === 0 ? '-' : shortUUID(session),
             collapseHome(asString(entry['working_directory']) ?? '', home)
         ];
     });
-    renderRows(['ID', 'LABEL', 'TYPE', 'WORKSPACE', 'STATUS', 'SESSION', 'CWD'], rows, noHeader, 7);
+    const headers = ['ID', 'LABEL', 'TYPE', 'WORKSPACE', ...(tabbed ? ['TAB'] : []), 'STATUS', 'SESSION', 'CWD'];
+    renderRows(headers, rows, noHeader, headers.length);
 }
 
 /**
  * `ID  NAME  GROUP  PANES  ACTIVE  LABELS`: LABELS is last, so it never sets a width. A PARENT
- * column follows GROUP only when some workspace is nested (app-state-core.md §2.9), so the table
- * is unchanged for everyone who never nests one.
+ * column follows GROUP only when some workspace is nested (app-state-core.md §2.9), and a TABS
+ * column follows PANES only when some workspace has more than one tab (workspace-feature.md
+ * §12), so the table is unchanged for everyone who never nests one or opens a second tab.
  */
 export function printWorkspaceTable(workspaces: readonly JsonObject[], noHeader: boolean): void {
     const nesting = workspaces.some((entry) => asString(entry['parent_name']) !== undefined);
+    const tabbed = workspaces.some((entry) => (asInt(entry['tab_count']) ?? 1) > 1);
     const rows = workspaces.map((entry) => {
         const labels = asStringArray(entry['labels']) ?? [];
         return [
@@ -91,12 +102,33 @@ export function printWorkspaceTable(workspaces: readonly JsonObject[], noHeader:
             asString(entry['group_name']) ?? '-',
             ...(nesting ? [asString(entry['parent_name']) ?? '-'] : []),
             String(asInt(entry['pane_count']) ?? 0),
+            // A workspace with one tab carries no count (`tab_count` is elided).
+            ...(tabbed ? [String(asInt(entry['tab_count']) ?? 1)] : []),
             asBool(entry['is_active']) === true ? '●' : '-',
             labels.length === 0 ? '-' : labels.join(',')
         ];
     });
     // Only the columns before LABELS participate in width computation (Swift parity).
-    const headers = ['ID', 'NAME', 'GROUP', ...(nesting ? ['PARENT'] : []), 'PANES', 'ACTIVE', 'LABELS'];
+    const headers = ['ID', 'NAME', 'GROUP', ...(nesting ? ['PARENT'] : []), 'PANES', ...(tabbed ? ['TABS'] : []), 'ACTIVE', 'LABELS'];
+    renderRows(headers, rows, noHeader, headers.length - 1);
+}
+
+/**
+ * `kelpi tab list` (workspace-feature.md §12): `TAB  ACTIVE  TITLE  PANES  STATUS  ID`, the
+ * number first because it is what `kelpi tab select 2` and ⌥⌘2 take. ID is the FULL uuid and
+ * last, so it never sets a width. With `--all` a WORKSPACE column leads.
+ */
+export function printWorkspaceTabTable(tabs: readonly JsonObject[], noHeader: boolean, withWorkspace: boolean): void {
+    const rows = tabs.map((entry) => [
+        ...(withWorkspace ? [asString(entry['workspace_name']) ?? ''] : []),
+        String(asInt(entry['number']) ?? 0),
+        asBool(entry['is_active']) === true ? '●' : '-',
+        asString(entry['title']) ?? '',
+        String(asInt(entry['pane_count']) ?? 0),
+        asString(entry['status']) ?? '',
+        asString(entry['id']) ?? ''
+    ]);
+    const headers = [...(withWorkspace ? ['WORKSPACE'] : []), 'TAB', 'ACTIVE', 'TITLE', 'PANES', 'STATUS', 'ID'];
     renderRows(headers, rows, noHeader, headers.length - 1);
 }
 

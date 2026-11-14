@@ -27,6 +27,7 @@ import { handleLayout } from './commands/layout.js';
 import { handleDiff, handleMarkdown, handleOpen } from './commands/openmd.js';
 import { handlePane } from './commands/pane.js';
 import { handlePluginVerb, pluginVerbsHelp } from './commands/plugin-cli.js';
+import { handleTab } from './commands/tab.js';
 import { handleWeb } from './commands/web.js';
 import { handleWorkspace } from './commands/workspace.js';
 import { resolveTransport, setTransport } from './transport.js';
@@ -72,6 +73,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
             return handleWorkspace(args);
         case 'group':
             return handleGroup(args);
+        case 'tab':
+            return handleTab(args);
         case 'layout':
             return handleLayout(args);
         case 'open':

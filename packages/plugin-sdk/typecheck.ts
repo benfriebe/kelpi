@@ -44,6 +44,16 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.panes.split('pane', { direction: 'vertical', focus: false });
     await api.files.open('/tmp/notes.md', { focus: false });
     await api.panes.resize('pane', { ratio: 0.3 });
+    // Workspace tabs: a `tabs.list` entry is itself a tab reference.
+    const [firstTab] = await api.tabs.list({ workspaceID: first.id });
+    if (firstTab !== undefined) {
+        const opened = await api.tabs.create({ workspaceID: firstTab.workspaceID, kind: 'web', focus: false });
+        await api.tabs.rename(firstTab, firstTab.name === null ? 'main' : null);
+        await api.tabs.move({ workspaceID: opened.workspaceID, tabID: opened.tabID }, firstTab.number);
+        await api.panes.moveToTab('pane', firstTab, { anchorID: firstTab.paneIDs[0], zone: 'below', focus: false });
+        // @ts-expect-error A tab reference needs its workspace.
+        await api.tabs.select({ tabID: opened.tabID });
+    }
     // @ts-expect-error Exactly one resize operation is allowed.
     await api.panes.resize('pane', { ratio: 0.3, delta: 0.2 });
     // @ts-expect-error Status is an explicit public vocabulary.

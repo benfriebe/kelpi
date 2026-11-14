@@ -25,6 +25,21 @@ import { handlePaneCapture, handlePaneSend, handlePaneSendKey } from './input.js
 import { handlePaneClose, handlePaneName } from './lifecycle.js';
 import { handlePaneList } from './list.js';
 import { handlePaneSync, handlePaneSyncExclude } from './sync.js';
+import {
+    handlePaneMoveToNewTab,
+    handlePaneMoveToTab,
+    handleWorkspaceTabClose,
+    handleWorkspaceTabCloseOthers,
+    handleWorkspaceTabDuplicate,
+    handleWorkspaceTabList,
+    handleWorkspaceTabMergePrevious,
+    handleWorkspaceTabMove,
+    handleWorkspaceTabMoveToWorkspace,
+    handleWorkspaceTabNew,
+    handleWorkspaceTabRename,
+    handleWorkspaceTabSelect,
+    handleWorkspaceTabSplitPanes
+} from './tabs.js';
 
 export const paneHandlers: HandlerTable<PaneHandlerContext> = new Map([
     ['pane-split', handlePaneSplit],
@@ -42,7 +57,21 @@ export const paneHandlers: HandlerTable<PaneHandlerContext> = new Map([
     ['pane-move-to-workspace', handlePaneMoveToWorkspace],
     ['pane-list', handlePaneList],
     ['pane-sync', handlePaneSync],
-    ['pane-sync-exclude', handlePaneSyncExclude]
+    ['pane-sync-exclude', handlePaneSyncExclude],
+    // workspace-feature.md §12: the window's tab verbs, with names (`./tabs.ts`).
+    ['workspace-tab-list', handleWorkspaceTabList],
+    ['workspace-tab-new', handleWorkspaceTabNew],
+    ['workspace-tab-select', handleWorkspaceTabSelect],
+    ['workspace-tab-rename', handleWorkspaceTabRename],
+    ['workspace-tab-move', handleWorkspaceTabMove],
+    ['workspace-tab-close', handleWorkspaceTabClose],
+    ['workspace-tab-close-others', handleWorkspaceTabCloseOthers],
+    ['workspace-tab-split-panes', handleWorkspaceTabSplitPanes],
+    ['workspace-tab-merge-previous', handleWorkspaceTabMergePrevious],
+    ['workspace-tab-duplicate', handleWorkspaceTabDuplicate],
+    ['workspace-tab-move-to-workspace', handleWorkspaceTabMoveToWorkspace],
+    ['pane-move-to-new-tab', handlePaneMoveToNewTab],
+    ['pane-move-to-tab', handlePaneMoveToTab]
 ]);
 
 export { handlePaneClear } from './clear.js';
@@ -59,6 +88,7 @@ export { handlePaneCapture, handlePaneSend, handlePaneSendKey } from './input.js
 export { handlePaneClose, handlePaneName } from './lifecycle.js';
 export { handlePaneList } from './list.js';
 export { handlePaneSync, handlePaneSyncExclude } from './sync.js';
+export { resolveWorkspaceTab } from './tabs.js';
 export {
     labelField,
     refreshSyncGroup,

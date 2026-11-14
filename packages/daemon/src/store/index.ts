@@ -12,6 +12,7 @@
 export * from './types.js';
 export * from './derived.js';
 export * from './tabs.js';
+export * from './tab-title.js';
 export { applyDomainEvent, applyDomainEvents, deriveEvents } from './events.js';
 export { createStore, type KelpiStore } from './store.js';
 export {

@@ -145,6 +145,11 @@ function decodeCommand(
         target: fields.text('target'),
         workspace: fields.text('workspace')
     });
+    const tabScope = (): { pane_id?: string | undefined; workspace?: string | undefined; tab?: string | undefined } => ({
+        pane_id: paneId,
+        workspace: fields.text('workspace'),
+        tab: fields.nonEmpty('tab')
+    });
     /** §5.7 shared parse-time guard: at least one of pane_id / target. */
     const requireTargetable = (): WireRejection | undefined =>
         paneId === undefined && fields.text('target') === undefined
@@ -362,6 +367,70 @@ function decodeCommand(
                 workspace: fields.text('workspace'),
                 scope: fields.text('scope')
             };
+        // ── workspace tabs (workspace-feature.md §12, socket-handlers.md §4.17) ──────────────
+        case 'workspace-tab-list':
+            return { command, ...tabScope(), all: fields.flag('all', false) };
+        case 'workspace-tab-new':
+            return {
+                command,
+                ...tabScope(),
+                kind: fields.text('kind'),
+                name: fields.nonEmpty('name'),
+                index: fields.int('index'),
+                at_end: fields.flag('at_end', false),
+                focus: fields.flag('focus', false)
+            };
+        case 'workspace-tab-select':
+        case 'workspace-tab-close':
+        case 'workspace-tab-close-others':
+        case 'workspace-tab-split-panes':
+        case 'workspace-tab-merge-previous':
+            return { command, ...tabScope() } as WireMessage;
+        case 'workspace-tab-rename': {
+            const name = fields.nonEmpty('name');
+            const clear = fields.flag('clear', false);
+            if (name === undefined && !clear) return guard(command, 'workspace-tab-rename requires name or clear', 'name');
+            return { command, ...tabScope(), name, clear };
+        }
+        case 'workspace-tab-move': {
+            const index = fields.int('index');
+            const atEnd = fields.flag('at_end', false);
+            if (index === undefined && !atEnd) return guard(command, 'workspace-tab-move requires index or at_end', 'index');
+            return { command, ...tabScope(), index, at_end: atEnd };
+        }
+        case 'workspace-tab-duplicate':
+            return { command, ...tabScope(), focus: fields.flag('focus', false) };
+        case 'workspace-tab-move-to-workspace': {
+            const destination = fields.text('to_workspace');
+            if (destination === undefined) {
+                return guard(command, 'workspace-tab-move-to-workspace requires to_workspace', 'to_workspace');
+            }
+            return { command, ...tabScope(), to_workspace: destination, focus: fields.flag('focus', false) };
+        }
+        case 'pane-move-to-new-tab': {
+            const failure = requireTargetable();
+            if (failure) return failure;
+            return {
+                command,
+                ...scope(),
+                index: fields.int('index'),
+                at_end: fields.flag('at_end', false),
+                focus: fields.flag('focus', false)
+            };
+        }
+        case 'pane-move-to-tab': {
+            const failure = requireTargetable();
+            if (failure) return failure;
+            const tab = fields.nonEmpty('tab');
+            if (tab === undefined) return guard(command, 'pane-move-to-tab requires tab', 'tab');
+            const anchor = fields.nonEmpty('anchor');
+            const zoneText = fields.rawText('zone');
+            const zone = parseDropZone(zoneText);
+            if (zoneText !== undefined && zone === undefined) {
+                return guard(command, 'pane-move-to-tab zone must be above|below|left-of|right-of', 'zone');
+            }
+            return { command, ...scope(), tab, anchor, zone, focus: fields.flag('focus', false) };
+        }
         case 'pane-capture': {
             const failure = requireTargetable();
             if (failure) return failure;

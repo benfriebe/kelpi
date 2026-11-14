@@ -79,9 +79,25 @@ const associations = await api.git.status(workspace.workspaceID, { refresh: true
 await api.ui.reveal(pane.paneID);
 ```
 
-The [domain declarations](domain.d.ts) describe workspaces, groups, panes, layouts, terminal
+The [domain declarations](domain.d.ts) describe workspaces, groups, workspace tabs, panes, layouts, terminal
 input/capture/search/sync, agent lifecycle reports/restart, repositories/worktrees/graft and
-application settings. Inputs and results use camelCase (`workspaceID`, `paneCount`); list helpers
+application settings.
+
+**Workspace tabs.** Every workspace has tabs in the title bar, each with its own split layout.
+`api.tabs.list()` lists the tabs of the view's or command's workspace (or `{ workspaceID }`, or
+`{ all: true }`), and each entry is itself a reference the other helpers take:
+
+```ts
+const [first, second] = await api.tabs.list();
+const docs = await api.tabs.create({ kind: 'web', name: 'docs', focus: false });
+await api.tabs.rename(first, 'main');
+await api.panes.moveToTab(paneID, second, { anchorID: second.paneIDs[0], zone: 'below', focus: false });
+await api.tabs.select({ workspaceID: docs.workspaceID, tabID: docs.tabID });
+```
+
+`tabs.select`, `rename`, `move` (0-based), `close`, `closeOthers`, `duplicate`, `merge` (into the tab
+before it), `split` (each pane its own tab) and `moveToWorkspace` take a `{ workspaceID, tabID }` or a
+`tabs.list` entry, and refuse one without its workspace before anything is sent. Inputs and results use camelCase (`workspaceID`, `paneCount`); list helpers
 return arrays and mutation helpers unwrap the successful reply. Snapshots retain their daemon
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.
@@ -169,6 +185,7 @@ Scoped helpers prefer explicit options, then the live view/backend command conte
 with workspace context can create/list panes there; file and diff helpers use that workspace's
 focused or first visible pane; `reuse:true` requires an actual caller pane or explicit `paneID`.
 `panes.create()`, `panes.split()`, `panes.move()`, `panes.moveAdjacent()`, `panes.moveToWorkspace()`,
+`panes.moveToTab()`, `panes.moveToNewTab()`, `tabs.create()`, `tabs.duplicate()`, `tabs.moveToWorkspace()`,
 `files.open()`, `git.diff()`, `openView()` and `workspaces.create()` focus (or, for a workspace,
 switch to) the result by default, because they assume a user gesture such as a click in a view. **Code that runs
 without a gesture must pass `focus:false`**: a backend creating or moving panes from events, timers,

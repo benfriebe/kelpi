@@ -1354,6 +1354,17 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // workspace-feature.md §12: read per command, so a Settings change governs the next one.
         agentPanePlacement: () => settings.snapshot.general.agentPanePlacement,
         newTabPosition: () => settings.snapshot.general.newTabPosition,
+        // What a bare new tab opens, and the agent a New Agent Tab starts (the New Workspace
+        // sheet's, else Claude): the window's ⌥⌘T and `kelpi tab new` answer alike.
+        newTabOpens: () => settings.snapshot.general.newTabOpens,
+        startAgent: (paneID, workspaceID) => {
+            const chosen = settings.snapshot.general.newWorkspaceAgent;
+            agentLauncher.start({
+                paneID,
+                workspaceID,
+                request: { kind: chosen === 'none' ? 'claude' : chosen, prompt: null, send: false, promptFile: null }
+            });
+        },
         prepareDocumentClose: paneIDs => {
             content.prepareClose(paneIDs);
             // A small csv file saves synchronously and a failure refuses the close; a large one
@@ -2701,15 +2712,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     // workspace-feature.md §12: what a bare ⌥⌘T opens, and the agent a New
                     // Agent Tab starts (the New Workspace sheet's, else Claude).
                     tabs: {
-                        newTabOpens: () => settings.snapshot.general.newTabOpens,
-                        startAgent: (paneID, workspaceID) => {
-                            const chosen = settings.snapshot.general.newWorkspaceAgent;
-                            agentLauncher.start({
-                                paneID,
-                                workspaceID,
-                                request: { kind: chosen === 'none' ? 'claude' : chosen, prompt: null, send: false, promptFile: null }
-                            });
-                        }
+                        ...(ctx.newTabOpens !== undefined ? { newTabOpens: ctx.newTabOpens } : {}),
+                        ...(ctx.startAgent !== undefined ? { startAgent: ctx.startAgent } : {})
                     },
                     ...(onError !== undefined ? { onError } : {})
                 }),

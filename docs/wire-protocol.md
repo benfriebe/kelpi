@@ -45,8 +45,8 @@ seen}` per tab in bar order, where `stash` is a background tab's layout tuple (`
 for the tab on screen, whose tuple is the workspace's own fields. A client must read their
 absence, which is all a daemon older than tabs sends, as one tab holding the workspace's
 `layout` (the mirror's `applyDomainEvent`, `packages/daemon/src/store/events.ts`, keeps its
-single tab then). The tab verbs are WS-only commands (socket-handlers.md §4.17), so nothing
-here or on the control socket changed for them.
+single tab then). The window sends the tab verbs over the WebSocket by id (socket-handlers.md
+§4.17); the control socket carries the same verbs with names (§6.10), additively.
 
 The socket wire (this document) is unversioned: new fields and verbs are additive, and the CLI
 detects a daemon that predates one from its reply (for nesting, the missing `parent_id` echo
@@ -311,7 +311,8 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
    `graft-status`, `ping`, `restart-old-terminals`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
-   `pane-font-size`, `pane-clear`, `pane-move-adjacent`.
+   `pane-font-size`, `pane-clear`, `pane-move-adjacent`, the workspace-tab verbs
+   (`workspace-tab-*`, `pane-move-to-tab`, `pane-move-to-new-tab`, §6.10).
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
    `pane-send` / `pane-split` / `pane-create` / `pane-name` (and the close/capture/
    send-key/sync family) work from a plain shell with no `KELPI_PANE_ID`.
@@ -359,6 +360,9 @@ plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-clear,
 pane-move-adjacent, pane-sync, pane-sync-exclude,
+workspace-tab-list, workspace-tab-new, workspace-tab-select, workspace-tab-rename, workspace-tab-move,
+workspace-tab-close, workspace-tab-close-others, workspace-tab-split-panes, workspace-tab-merge-previous,
+workspace-tab-duplicate, workspace-tab-move-to-workspace, pane-move-to-new-tab, pane-move-to-tab,
 workspace-create, workspace-delete, workspace-nest, workspace-label, workspace-mute, workspace-rename,
 workspace-icon, workspace-color,
 group-set-repo, group-reorder, group-sort,
@@ -549,6 +553,19 @@ carry `"command"`.
 | `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback`, `settle_ms` |
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
+| `workspace-tab-list` | R/R | none | `pane_id`, `workspace`, `all` |
+| `workspace-tab-new` | R/R | none | `pane_id`, `workspace`, `kind`, `name`, `index`, `at_end`, `focus` |
+| `workspace-tab-select` | R/R | `tab`, or `pane_id` for the caller's tab | `workspace` |
+| `workspace-tab-rename` | R/R | `name` or `clear`; `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-move` | R/R | `index` or `at_end`; `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-close` | R/R | `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-close-others` | R/R | `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-split-panes` | R/R | `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-merge-previous` | R/R | `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-duplicate` | R/R | `tab`, or `pane_id` | `workspace`, `focus` |
+| `workspace-tab-move-to-workspace` | R/R | `to_workspace`; `tab`, or `pane_id` | `workspace`, `focus` |
+| `pane-move-to-new-tab` | R/R | one of `pane_id`/`target` | `workspace`, `index`, `at_end`, `focus` |
+| `pane-move-to-tab` | R/R | one of `pane_id`/`target`; `tab` | `workspace`, `anchor`, `zone`, `focus` |
 | `workspace-list` | R/R | — | `group`, `parent` |
 | `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `keep_emoji`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `start_agent`, `agent_prompt`, `send_prompt` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
@@ -2050,6 +2067,54 @@ rather than reaching a browser view that no longer exists: it answers `{"ok":tru
 instead of `{"ok":false,"error":"web pane has no live tab <uuid>"}`. Neither is a new wire field:
 `live` and `rebuilt` are reply keys, and §7 below is the REQUEST dictionary.
 
+### 6.10 Workspace tab commands (all R/R)
+
+Every workspace has tabs, and each tab its own split layout (workspace-feature.md §12). These are
+the window's tab verbs, which it sends over the WebSocket with exact ids (`workspace_id`,
+`tab_id`; socket-handlers.md §4.17), behind the control socket's conventions
+(`packages/daemon/src/handlers/pane/tabs.ts`, `kelpi tab`, cli.md §12a):
+
+- **Named, not only by id.** `workspace` is a name-or-id (strict, §2.1); absent, it is the
+  workspace of `pane_id`, else the one on screen (`lastActiveWorkspaceID`). `tab` is a 1-based
+  number (what ⌥⌘1-9 count), then a tab id, then the title the tab bar shows, exactly and then
+  ignoring case; two tabs with one title are refused (`tab name 'x' is ambiguous in workspace
+  'dev': tabs 2, 4 (use a number or id)`). A verb that acts on one tab and names none acts on
+  the tab holding `pane_id`.
+- **Background unless asked.** Absent `focus` opens, copies or moves without changing what is
+  on screen (#295); the WebSocket verbs read absent as a gesture. `workspace-tab-select` always
+  shows the tab.
+- **Positions are 0-based** on the wire (`index`), the tab's position once placed; `at_end`
+  puts it after the last tab. `kelpi tab` counts from 1 and converts.
+- **Replies** carry `workspace_id`, `workspace_name`, `tab_id` and `tab_number` as they stand
+  after the change; `workspace-tab-new` adds `pane_id` and `kind`, a close adds `closed` (panes),
+  `workspace-tab-split-panes` adds `tab_ids` and `tab_numbers`, `workspace-tab-merge-previous`
+  names the tab it merged into (and `merged_tab_id`), `workspace-tab-duplicate` names the copy
+  (and `source_tab_id`), `workspace-tab-move-to-workspace` names the destination (and
+  `from_workspace_id`).
+
+`workspace-tab-list` answers `{"ok":true,"workspace_id":…,"workspace_name":…,"tabs":[…]}` (with
+`all`, every workspace's tabs and no workspace keys), one entry per tab in bar order:
+
+```json
+{"id":"…","number":2,"name":"build","title":"build","workspace_id":"…","workspace_name":"dev",
+ "pane_ids":["…","…"],"pane_count":2,"is_active":false,"status":"running","zoomed":false}
+```
+
+`name` is null while the tab is named after its focused pane; `title` is what the bar shows
+either way, and `status` is the busiest of its panes (`waitingForInput`, `running`, `idle`).
+
+```json
+{"command":"workspace-tab-new","pane_id":"…","kind":"terminal","name":"logs","at_end":true}
+{"command":"workspace-tab-select","workspace":"dev","tab":"2"}
+{"command":"pane-move-to-tab","target":"worker","tab":"build","anchor":"lead","zone":"below"}
+```
+
+The refusals are the WebSocket verbs' (`a workspace keeps at least one tab`, `the first tab has
+no tab before it to merge into`, `the tab is already in that workspace`) plus the addressing
+ones above, `no tab 7 in workspace 'dev' (it has 2 tabs)`, `no position 6 in workspace 'dev'
+(it has 2 tabs)`, `the pane is alone in its tab already` (`pane-move-to-new-tab`) and `the pane
+is in that tab already` (`pane-move-to-tab` with no `anchor`).
+
 ---
 
 ## 7. Full wire-field dictionary
@@ -2076,7 +2141,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `mcp_server`, `cwd`, `permission_mode` | string | `permission-request` (#388) |
 | `direction` | string | `pane-split`, `pane-move`, `web-open` (GUI split anchor) |
 | `path` | string | `pane-split`, `pane-create`, `workspace-create`, `open` |
-| `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name) |
+| `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name), `workspace-tab-new`/`workspace-tab-rename` (the tab's name) |
 | `color` | string | `workspace-create`, `workspace-color`, `group-create` |
 | `target` | string | pane-target commands, `web-open` (GUI split anchor) |
 | `text` | string | `pane-send`; **`pane-move-to-workspace`'s create flag (`"true"`)**; `web-type` |
@@ -2087,10 +2152,10 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `force` | bool | `workspace-delete` |
 | `worktree_paths`, `force_worktree_paths`, `batch_ids` | string[] | `workspace-delete` |
 | `prune_worktrees`, `delete_branches` | bool | `workspace-delete` |
-| `index` | int | `workspace-move`, `workspace-nest`, `group-move` |
+| `index` | int | `workspace-move`, `workspace-nest`, `group-move`, `workspace-tab-new`, `workspace-tab-move`, `pane-move-to-new-tab` (a tab's 0-based position) |
 | `group` | string | `workspace-create`, `workspace-move`, `workspace-list` |
 | `profile` | string | `workspace-create`, `workspace-profile`, `session-start` (+ dual-fire on any session-id-bearing event, §3.1) |
-| `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination) |
+| `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination), `workspace-tab-*` (§6.10) |
 | `scope` | string | `pane-list` |
 | `reuse` | bool | `open` |
 | `as` | string | `open` (`"markdown"` only: force a markdown pane for a `.csv`/`.tsv` path, #324, or an image path, content-panes.md §12) |
@@ -2101,18 +2166,18 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `url` | string | `web-open`, `web-navigate`, `web-tab-new` |
 | `mode` | string | `web-capture` |
 | `hard` | bool | `web-reload` |
-| `tab` | string | `web-tab-close`, `web-tab-select` |
+| `tab` | string | `web-tab-close`, `web-tab-select` (a web pane's tab); `workspace-tab-*`, `pane-move-to-tab` (a workspace tab: 1-based number, id or title, §6.10) |
 | `make_active` | bool | `web-tab-new` |
 | `since` | uint64 | `web-console` |
 | `level` | string | `web-console` |
-| `clear` | bool | `web-console`, `web-inspect-result`, `group-set-repo` |
+| `clear` | bool | `web-console`, `web-inspect-result`, `group-set-repo`, `workspace-tab-rename` |
 | `follow` | bool | `web-console` |
 | `send_to` | string | `web-inspect` |
 | `submit` | bool | `web-inspect`, `web-type` |
 | `disarm` | bool | `web-inspect` |
 | `private` | bool | `web-open`, `web-private` |
 | `domain` | string | `web-cookies-clear`, `web-cookies-delete` |
-| `all` | bool | `web-cookies-clear` |
+| `all` | bool | `web-cookies-clear`, `workspace-tab-list` |
 | `selector` | string | `web-click`, `web-type`, `web-q-*`, `web-wait`, `web-select`, `web-scroll`, `web-hover`, `web-key` |
 | `double`, `right` | bool | `web-click` |
 | `at_x`, `at_y` | double | `web-click` |
@@ -2135,7 +2200,10 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `ratio`, `delta` | double | `pane-resize` |
 | `size` | int | `pane-font-size` |
 | `reset` | bool | `pane-font-size` |
-| `anchor`, `zone` | string | `pane-move-adjacent` |
+| `anchor`, `zone` | string | `pane-move-adjacent`, `pane-move-to-tab` |
+| `kind` | string | `workspace-tab-new` (`terminal`, `same`, `agent`, `web`, `scratchpad`) |
+| `to_workspace` | string | `workspace-tab-move-to-workspace` (destination name-or-id) |
+| `at_end` | bool | `workspace-tab-new`, `workspace-tab-move`, `pane-move-to-new-tab` (after the last tab) |
 | `label_op` | string | `workspace-label` |
 | `label_values` | string[] | `workspace-label` |
 | `order` | string[] | `group-reorder` |
@@ -2148,7 +2216,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
 | `start_agent`, `agent_prompt` | string | `workspace-create` (`start_agent` decoded raw, §6.3) |
 | `send_prompt` | bool | `workspace-create` |
-| `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), all absent = background |
+| `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), `workspace-tab-new`, `workspace-tab-duplicate`, `workspace-tab-move-to-workspace`, `pane-move-to-tab`, `pane-move-to-new-tab` (§6.10), all absent = background |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
 | `settle_ms` | int | `pane-capture` (wait for that much quiet before reading, capped at 10000, #390) |
@@ -2407,9 +2475,13 @@ saved state keep working:
     `git.diff` and `openView` helpers send `focus: true` unless the plugin passes
     `focus: false`, as item 17's pane helpers do.
 
-22. **Workspace tabs are additive (workspace-feature.md §12).** No request field is new.
-    `pane-list` lists every tab's panes, tab by tab, and its entries gain `tab_id`,
-    `tab_number` and `is_active_tab` once a workspace has two tabs; `pane-split` /
+22. **Workspace tabs are additive (workspace-feature.md §12).** The tab verbs (§6.10) are new
+    commands with new request fields (`kind`, `to_workspace`, `at_end`; `tab`, `index`, `name`,
+    `clear`, `all`, `anchor`, `zone` and `focus` gain uses); no existing command's request
+    changed. `workspace-list` entries gain `tab_count` and `active_tab_id` once a workspace has
+    two tabs, and the table a TABS column. `pane-list` lists every tab's panes, tab by tab, and
+    its entries gain `tab_id`, `tab_number` and `is_active_tab` once a workspace has two tabs
+    (the table, a TAB column); `pane-split` /
     `pane-create` put the new pane in its source's tab (or, under
     `agent-pane-placement = new-tab`, a new background tab); `layout-cycle` /
     `layout-select` lay out the caller's tab. Compatibility, in each direction:
@@ -2417,7 +2489,10 @@ saved state keep working:
       reader ignores, and the panes of background tabs, which an agent needs to keep
       addressing its workers. Its background splits stay in the caller's tab, wherever the
       user is looking.
-    - **New CLI, old daemon:** no tab keys and one tree per workspace, exactly as before.
+    - **New CLI, old daemon:** no tab keys and one tree per workspace, exactly as before. A
+      daemon older than the control-socket tab verbs does not know them and writes nothing, so
+      `kelpi tab …` and `kelpi pane move-to-tab|move-to-new-tab` exit 1 with "no response from
+      Kelpi (upgrade required?)".
     - **Old window client, new daemon:** the WS generation moved to 4, so a window client that
       predates tabs (a cached phone PWA bundle, an older remote view) is refused with
       `protocol-mismatch` and shows the update sentence instead of a grid that hides every

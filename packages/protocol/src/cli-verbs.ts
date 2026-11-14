@@ -11,6 +11,7 @@ export const BUILTIN_CLI_VERBS: readonly string[] = [
     'pane',
     'workspace',
     'group',
+    'tab',
     'layout',
     'open',
     'md',

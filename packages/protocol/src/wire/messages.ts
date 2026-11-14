@@ -240,6 +240,110 @@ export interface PaneListMessage {
     scope?: string | undefined;
 }
 
+// ── workspace tabs on the control socket (workspace-feature.md §12, socket-handlers.md §4.17) ──
+
+/**
+ * The workspace a tab verb acts in, and the tab. The same verbs ride the window's WS channel
+ * with exact ids (`workspace_id`, `tab_id`); here both are named, as every other control verb
+ * names what it touches.
+ */
+export interface TabScope {
+    /** The caller's pane: its workspace, and its tab for a verb that takes one, when none is named. */
+    pane_id?: string | undefined;
+    /** Name-or-id; absent = the caller's workspace, else the active one. */
+    workspace?: string | undefined;
+    /** A 1-based number, an id, or the title the tab bar shows. */
+    tab?: string | undefined;
+}
+
+export interface WorkspaceTabListMessage extends TabScope {
+    command: 'workspace-tab-list';
+    /** Every workspace's tabs rather than one workspace's. */
+    all: boolean;
+}
+
+export interface WorkspaceTabNewMessage extends TabScope {
+    command: 'workspace-tab-new';
+    /** `terminal|same|agent|web|scratchpad`; absent = Settings "A new tab opens". */
+    kind?: string | undefined;
+    /** Names the new tab; absent leaves it named after its pane. */
+    name?: string | undefined;
+    /** 0-based insertion position; absent = Settings "New tabs go". */
+    index?: number | undefined;
+    /** After the last tab, whatever "New tabs go" says. */
+    at_end: boolean;
+    /** #295: show the new tab. Absent (or false) opens it in the BACKGROUND. */
+    focus?: boolean | undefined;
+}
+
+export interface WorkspaceTabSelectMessage extends TabScope {
+    command: 'workspace-tab-select';
+}
+
+export interface WorkspaceTabRenameMessage extends TabScope {
+    command: 'workspace-tab-rename';
+    name?: string | undefined;
+    /** Drop the name, so the tab is named after its focused pane again. */
+    clear: boolean;
+}
+
+export interface WorkspaceTabMoveMessage extends TabScope {
+    command: 'workspace-tab-move';
+    /** The tab's 0-based position once moved. */
+    index?: number | undefined;
+    at_end: boolean;
+}
+
+export interface WorkspaceTabCloseMessage extends TabScope {
+    command: 'workspace-tab-close';
+}
+
+export interface WorkspaceTabCloseOthersMessage extends TabScope {
+    command: 'workspace-tab-close-others';
+}
+
+export interface WorkspaceTabSplitPanesMessage extends TabScope {
+    command: 'workspace-tab-split-panes';
+}
+
+export interface WorkspaceTabMergePreviousMessage extends TabScope {
+    command: 'workspace-tab-merge-previous';
+}
+
+export interface WorkspaceTabDuplicateMessage extends TabScope {
+    command: 'workspace-tab-duplicate';
+    /** #295: show the copy. Absent (or false) opens it in the BACKGROUND. */
+    focus?: boolean | undefined;
+}
+
+export interface WorkspaceTabMoveToWorkspaceMessage extends TabScope {
+    command: 'workspace-tab-move-to-workspace';
+    /** Destination workspace name-or-id. */
+    to_workspace: string;
+    /** Follow the tab to its new workspace. Absent (or false) moves it in the BACKGROUND. */
+    focus?: boolean | undefined;
+}
+
+export interface PaneMoveToNewTabMessage extends PaneTargetScope {
+    command: 'pane-move-to-new-tab';
+    /** 0-based position of the new tab; absent = just after the pane's own tab. */
+    index?: number | undefined;
+    at_end: boolean;
+    /** #295: show the new tab. Absent (or false) moves the pane in the BACKGROUND. */
+    focus?: boolean | undefined;
+}
+
+export interface PaneMoveToTabMessage extends PaneTargetScope {
+    command: 'pane-move-to-tab';
+    /** A 1-based number, an id, or a title, in the pane's workspace. */
+    tab: string;
+    /** Dock beside this pane of the tab (name-or-uuid), on `zone`; absent = beside its focused pane. */
+    anchor?: string | undefined;
+    zone?: DropZone | undefined;
+    /** #295: show the tab the pane went to. Absent (or false) moves it in the BACKGROUND. */
+    focus?: boolean | undefined;
+}
+
 export interface PaneCaptureMessage extends PaneTargetScope {
     command: 'pane-capture';
     lines?: number | undefined;
@@ -900,6 +1004,19 @@ export type WireMessage =
     | PaneCaptureMessage
     | PaneSyncMessage
     | PaneSyncExcludeMessage
+    | WorkspaceTabListMessage
+    | WorkspaceTabNewMessage
+    | WorkspaceTabSelectMessage
+    | WorkspaceTabRenameMessage
+    | WorkspaceTabMoveMessage
+    | WorkspaceTabCloseMessage
+    | WorkspaceTabCloseOthersMessage
+    | WorkspaceTabSplitPanesMessage
+    | WorkspaceTabMergePreviousMessage
+    | WorkspaceTabDuplicateMessage
+    | WorkspaceTabMoveToWorkspaceMessage
+    | PaneMoveToNewTabMessage
+    | PaneMoveToTabMessage
     | WorkspaceListMessage
     | WorkspaceCreateMessage
     | WorkspaceMoveMessage
@@ -1008,6 +1125,19 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'pane-font-size',
     'pane-clear',
     'pane-move-adjacent',
+    'workspace-tab-list',
+    'workspace-tab-new',
+    'workspace-tab-select',
+    'workspace-tab-rename',
+    'workspace-tab-move',
+    'workspace-tab-close',
+    'workspace-tab-close-others',
+    'workspace-tab-split-panes',
+    'workspace-tab-merge-previous',
+    'workspace-tab-duplicate',
+    'workspace-tab-move-to-workspace',
+    'pane-move-to-new-tab',
+    'pane-move-to-tab',
     'web-open',
     'web-navigate',
     'web-url',

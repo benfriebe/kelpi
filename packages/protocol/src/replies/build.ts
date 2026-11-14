@@ -95,6 +95,8 @@ export interface WorkspaceListEntryInput {
     readonly parent?: GroupRef | undefined;
     readonly repos?: readonly WorkspaceListRepo[] | undefined;
     readonly pull_requests?: readonly WorkspaceListPullRequest[] | undefined;
+    /** workspace-feature.md §12: the tab count and the tab on screen. */
+    readonly tabs?: { readonly count: number; readonly active_id: string } | undefined;
 }
 
 export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): WorkspaceListEntry {
@@ -122,6 +124,10 @@ export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): Workspa
         ...(input.repos !== undefined && input.repos.length > 0 ? { repos: input.repos } : {}),
         ...(input.pull_requests !== undefined && input.pull_requests.length > 0
             ? { pull_requests: input.pull_requests }
+            : {}),
+        // Only worth fields once there is a choice of tab, as on `pane-list`.
+        ...(input.tabs !== undefined && input.tabs.count > 1
+            ? { tab_count: input.tabs.count, active_tab_id: input.tabs.active_id }
             : {})
     };
 }

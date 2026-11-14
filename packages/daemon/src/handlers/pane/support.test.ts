@@ -298,7 +298,21 @@ describe('the handler table', () => {
                 'pane-send-key',
                 'pane-split',
                 'pane-sync',
-                'pane-sync-exclude'
+                'pane-sync-exclude',
+                // workspace-feature.md §12: the tab verbs need the pane context too (`tabs.ts`).
+                'pane-move-to-new-tab',
+                'pane-move-to-tab',
+                'workspace-tab-list',
+                'workspace-tab-new',
+                'workspace-tab-select',
+                'workspace-tab-rename',
+                'workspace-tab-move',
+                'workspace-tab-close',
+                'workspace-tab-close-others',
+                'workspace-tab-split-panes',
+                'workspace-tab-merge-previous',
+                'workspace-tab-duplicate',
+                'workspace-tab-move-to-workspace'
             ].sort()
         );
     });

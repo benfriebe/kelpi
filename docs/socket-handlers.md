@@ -948,11 +948,12 @@ Inputs: `paneID?`, `target?`, `workspaceFilter?`.
 The window sends this for ⌘K (`clear_screen`, config-keybindings.md §4), and only when the
 focused pane's own renderer is not on the alternate screen (`client/src/app/clear-screen.ts`).
 
-### 4.17 Workspace tab verbs (WS only)
+### 4.17 Workspace tab verbs
 
 The window's tab gestures (shell-ui.md §3.3) raise the tab actions of workspace-feature.md
-§12.5 through twelve WS-only `command` frames: no `kelpi` verb sends them, and none is a
-control-socket command. They ride the pane lifecycle channel beside `reopen-closed-pane`
+§12.5 through twelve WS `command` frames, by id. The control socket carries the same verbs
+with names, for `kelpi tab` and agents (§4.17.1). On the WebSocket they ride the pane
+lifecycle channel beside `reopen-closed-pane`
 (`packages/daemon/src/ws/panes.ts`; the verbs are `packages/daemon/src/ws/workspace-tabs.ts`)
 because they are more than a dispatch: a new tab mints ids and may need a PTY, a close ends
 PTYs as `pane-close` does, and a move changes which sync group a shell is in, so each refreshes
@@ -1030,6 +1031,39 @@ leaves the change in the background.
   `pane-move-to-tab requires a pane and a tab of the same workspace`,
   `unknown zone '<zone>': use above, below, left-of, right-of`. A pane already in that tab
   changes nothing. Reply `workspace_id`, `pane_id`, `tab_id`.
+
+#### 4.17.1 On the control socket
+
+The control socket answers the same verbs, plus `workspace-tab-list`, with the control
+socket's conventions (`packages/daemon/src/handlers/pane/tabs.ts`, wire-protocol.md §6.10).
+Each handler resolves what was named, then runs the verb above on the same channel, built per
+command so it reads the settings of the moment:
+
+- **Addressing.** `workspace` is a name-or-id (§2.1, strict); absent, the workspace of
+  `pane_id` (the caller), else the active one. `tab` is a 1-based number, a tab id, or the
+  title the tab bar shows (`workspaceTabTitle`, exactly, then ignoring case; two tabs with one
+  title are refused, never guessed). A verb on one tab that names none takes the tab holding
+  `pane_id`, else is refused `name a tab in workspace '<name>': a number, an id or a title`.
+  `pane-move-to-tab` and `pane-move-to-new-tab` resolve their pane as every pane-target
+  command does (§2.4, `target` then `pane_id`), and the `tab`, and an `anchor`, within that
+  pane's workspace; the anchor must be in that tab.
+- **Background by default.** Absent `focus` is false (#295), where the WS frames read it as a
+  gesture; the handler always sends the channel an explicit `focus`.
+- **Positions.** `index` is the tab's 0-based position once placed (an `index` past the end is
+  the end; negative is refused), `at_end` the end. `workspace-tab-move` refuses a position past
+  the last tab: `no position <n> in workspace '<name>' (it has <count> tabs)`.
+- **`workspace-tab-new`** takes `name` too, which renames the new tab once it exists.
+- **Replies** add `workspace_name` and `tab_number`, as both stand after the change, to the
+  channel's reply (wire-protocol.md §6.10 lists the extras per verb).
+- **Refusals** of its own: `the pane is alone in its tab already` (`pane-move-to-new-tab`; move
+  the tab instead), `the pane is in that tab already` (`pane-move-to-tab` without an anchor),
+  `no pane matching '<anchor>' in that tab`. A verb the channel does not know answers
+  `this Kelpi does not support <verb>`.
+
+`workspace-tab-list` `{workspace?, pane_id?, all?}` answers every tab of one workspace (or of
+all, with `all`) in bar order: `id`, `number`, `name` (null while unnamed), `title`,
+`workspace_id`, `workspace_name`, `pane_ids` (layout order), `pane_count`, `is_active`,
+`status` (the busiest pane's) and `zoomed`.
 
 ---
 

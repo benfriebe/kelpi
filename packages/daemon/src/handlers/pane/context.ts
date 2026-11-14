@@ -169,4 +169,11 @@ export interface PaneHandlerContext
     readonly newTabPosition?: (() => 'after-current' | 'end') | undefined;
     /** Pre-minted workspace tab ids; defaults to `newUUID`. */
     readonly mintTabID?: (() => string) | undefined;
+    /**
+     * Settings ▸ Workspaces "A new tab opens", for a `workspace-tab-new` naming no kind (the tab
+     * verbs on the control socket, `handlers/pane/tabs.ts`). Unset = a terminal.
+     */
+    readonly newTabOpens?: (() => 'terminal' | 'same' | 'agent') | undefined;
+    /** Start the configured agent in a new tab's terminal. Unset = no agent tabs. */
+    readonly startAgent?: ((paneID: string, workspaceID: string) => void) | undefined;
 }

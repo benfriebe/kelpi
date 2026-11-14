@@ -2098,6 +2098,11 @@ opens there, else where OSC 7 last said). Both re-read the workspace once the an
 one deleted meanwhile is a refusal rather than a tab in nothing. The shells of a duplicated tab
 are spawned after the one dispatch.
 
+Scripts and agents reach the same verbs on the control socket (`kelpi tab …`, `kelpi pane
+move-to-tab|move-to-new-tab`, the plugin SDK's `tabs` and `panes.moveToTab|moveToNewTab`;
+cli.md §12a, socket-handlers.md §4.17.1), where a tab is named by its number, id or title,
+and nothing changes on screen without `focus`.
+
 A window asks before it closes tabs with agents in them (`chrome/TabCloseGate.tsx`): when the
 tabs' panes, and the shells parked behind them, hold any agent session (running, waiting or
 inactive, as the workspace gate counts them) and `confirm-workspace-delete` is on, Close Tab, ×,
@@ -2148,4 +2153,11 @@ again" turns that setting off, for workspaces and tabs alike. The WS verbs thems
 
 ### 12.8 Not covered
 
-`kelpi tab` CLI verbs.
+Everything the design drew is built. What is left is smaller:
+
+- The phone shows a workspace's tabs as chips and switches between them, but opens, closes and
+  renames none (the design drew the chips only).
+- A tab dragged onto a sidebar row moves to that workspace only for this window's own daemon;
+  a paired daemon's rows take no drop, and its tab menu's Move Tab to Workspace is the way
+  there.
+- `kelpi tab new --kind web` and a New Web Tab open a blank web pane; neither takes a URL.

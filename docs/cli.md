@@ -98,7 +98,7 @@ Example failure reply:
 kelpi <subcommand> [args...]
 ```
 
-Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, `md`,
+Top-level subcommands: `event`, `pane`, `workspace`, `group`, `tab` (§12a), `layout`, `open`, `md`,
 `diff`, `document`, `graft`, `web`, `plugin` ([plugin commands](#plugin-commands)), `doctor`,
 `install-hooks` (section 17), plus the pseudo-subcommands
 `--version`/`version` (`packages/cli/src/cli.ts:43`) and `--help`/`-h`/`help`
@@ -622,7 +622,7 @@ prompt. Every failure therefore ends at the prompt, never at "allow". Transport 
 Dispatcher: `kelpi pane <action>`; missing action prints
 `Usage: kelpi pane split|create|close|name|send|send-key|move|list|capture|sync|id [...]` to
 stderr, exit 1. Unknown action prints `Unknown pane action: <x>` +
-`Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, list, capture, sync, id`,
+`Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, move-to-tab, move-to-new-tab, list, capture, sync, id`,
 exit 1.
 
 ### 9.0 Target resolution model (server-side contract, referenced everywhere)
@@ -946,10 +946,13 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   so a pane in a background tab is listed (and addressable) like one on screen. Once a
   workspace has two or more tabs its entries also carry `tab_id`, `tab_number` (1-based, the N
   of ⌥⌘N) and `is_active_tab`; with one tab, none of the three. `is_focused` is true only for
-  the focused pane of the tab on screen. The table has no tab column; `--json` shows them.
+  the focused pane of the tab on screen.
 - `--json`: print the `panes` **array unwrapped**, compact JSON, sorted keys, exit 0.
 - Table rendering (`--no-header` omits the header row):
-  - Columns: `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`.
+  - Columns: `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`, with `TAB` after WORKSPACE
+    only when some listed pane carries `tab_number` (so the table is unchanged for everyone
+    with one tab per workspace). TAB is the tab's number with `*` on the tab on screen
+    (`2*`), or `-` for a pane of a workspace with one tab.
   - ID prints the **full UUID** (copy-pasteable into `--target`; issue #240).
   - LABEL: `label` or `-`. TYPE: `type` or `-`.
   - SESSION: `-` when `agent_session_id` empty; else truncated as `first8…last4`
@@ -1038,6 +1041,39 @@ existing exclusions, while `toggle` always transitions and therefore always clea
 an `exclude` staged while sync is off does not survive the next `on`. Scope defaults to
 the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
+### 9.14 `kelpi pane move-to-tab` (workspace-feature.md §12)
+
+```
+kelpi pane move-to-tab <tab> [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--focus] [--json]
+kelpi pane move-to-tab <tab> --target X (--above|--below|--left-of|--right-of) Y [--focus]
+```
+
+- Moves a pane into another tab of its workspace. `<tab>` is the tab's number, id or title
+  (§12a). The pane is `--target`, else the caller; outside a pane with no `--target`:
+  `kelpi pane move-to-tab: requires --target <name-or-uuid> when called from outside a Kelpi
+  pane`, exit 1, nothing sent. A missing `<tab>`: `kelpi pane move-to-tab: name the tab: a
+  number, an id or a title`, exit 1.
+- One edge flag at most docks the pane beside that pane of the tab (resolved in the pane's
+  workspace, and it must be in that tab); without one it lands beside the tab's focused pane.
+- Request/response: `{"command":"pane-move-to-tab", pane_id?, target?, workspace?, "tab":…,
+  anchor?, zone?, focus?}`. Background unless `--focus` (#295).
+- Ack: `moved pane <pane-id> to tab <n> (<tab-id>) in workspace <name>`. `--json`: the reply
+  without `ok`. An empty reply (an older daemon) is "this Kelpi is too old", exit 1 (§6.5).
+
+### 9.15 `kelpi pane move-to-new-tab` (workspace-feature.md §12)
+
+```
+kelpi pane move-to-new-tab [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--at <n> | --end] [--focus] [--json]
+```
+
+- ⇧⌥⌘T for a script: the pane leaves its tab for a new tab of its own, just after its old
+  tab, or at `--at <n>` (1-based) or `--end`. Same subject rules as §9.14. `--at` that is not
+  a whole number from 1, or `--at` with `--end`, is refused before anything is sent.
+- Request/response: `{"command":"pane-move-to-new-tab", pane_id?, target?, workspace?, index?,
+  at_end?, focus?}` (`index` is 0-based on the wire). Refused for a pane alone in its tab:
+  `the pane is alone in its tab already`.
+- Ack: `moved pane <pane-id> to new tab <n> (<tab-id>) in workspace <name>`.
+
 ---
 
 ## 10. `kelpi workspace`
@@ -1074,15 +1110,18 @@ kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--
   when there are none; `--json` only), optional `pull_requests` (the GitHub PRs for those
   branches, workspace-feature.md §11: `number`, `title`, `url`, `state` (`open`, `draft`,
   `merged` or `closed`), `repo_id`, `branch`; open first; absent when there are none;
-  `--json` only). Timestamps ISO 8601.
+  `--json` only), optional `tab_count`/`active_tab_id` (workspace-feature.md §12; both
+  absent while the workspace has one tab). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
 - `--json`: the array unwrapped, compact, sorted keys.
 - Table columns: `ID  NAME  GROUP  PANES  ACTIVE  LABELS`, with `PARENT` after GROUP only
-  when some listed workspace is nested (so the table is unchanged for anyone who never nests).
+  when some listed workspace is nested, and `TABS` after PANES only when some listed workspace
+  has more than one tab (so the table is unchanged for anyone who never nests or tabs).
   - ID short-form `first8…last4` (>=12 chars only).
   - GROUP: `group_name` or `-`.
   - PARENT: `parent_name` or `-`.
+  - TABS: `tab_count`, else `1`.
   - ACTIVE: `●` when `is_active` else `-`.
   - LABELS: comma-joined (no spaces) or `-`.
   - Width computation like pane list; LABELS (last column) unpadded. Note: LABELS does not
@@ -1666,6 +1705,60 @@ kelpi layout select <name>
   exit 1. Fire-and-forget `{"command":"layout-select","pane_id":...,"name":<verbatim>}`
   (no client-side validation of the layout name).
 - Unknown action => `Unknown layout action: <x>` + `Valid actions: cycle, select`, exit 1.
+
+---
+
+## 12a. `kelpi tab` (workspace tabs, workspace-feature.md §12)
+
+```
+kelpi tab list [--workspace <name-or-id> | --all] [--json] [--no-header]
+kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
+kelpi tab select|show [<tab>] [--workspace <name-or-id>] [--json]
+kelpi tab rename <tab> <new-name> | <new-name> | [<tab>] --clear   [--workspace <name-or-id>] [--json]
+kelpi tab move [<tab>] (--to <n> | --end) [--workspace <name-or-id>] [--json]
+kelpi tab close|close-others|duplicate|merge|split [<tab>] [--workspace <name-or-id>] [--json]
+kelpi tab duplicate [<tab>] [--focus]
+kelpi tab move-to-workspace [<tab>] --to-workspace <name-or-id> [--workspace <name-or-id>] [--focus] [--json]
+```
+
+`packages/cli/src/commands/tab.ts`; every verb is request/response over the control-socket tab
+verbs (wire-protocol.md §6.10, socket-handlers.md §4.17.1).
+
+- **Dispatcher.** Missing action => one-line usage to stderr, exit 1; `--help|-h|help` => the
+  group usage to stdout, exit 0; unknown action => `Unknown tab action: <x>` and the valid
+  list, exit 1. `-h`/`--help` anywhere after a subcommand prints its usage, exit 0, nothing
+  sent.
+- **Addressing.** `<tab>` is a 1-based number (as `tab list` and ⌥⌘1-9 count), a tab id, or the
+  title the tab bar shows; the daemon resolves it (exact title, then ignoring case; two tabs
+  with one title are refused). Without `<tab>` the calling pane's own tab is meant: the CLI
+  sends `pane_id` (`KELPI_PANE_ID`) on every verb, and outside a pane a verb that acts on one
+  tab refuses before sending: `kelpi tab <verb>: name a tab (a number, id or title) when not in
+  a Kelpi pane`, exit 1. `--workspace` (name or id) picks the workspace; without it, the
+  calling pane's, else the one on screen. `--` ends the flags, so a name can start with a dash.
+- **Background unless `--focus`** (#295) for `new`, `duplicate` and `move-to-workspace`;
+  `select` always shows the tab, and the other verbs change no focus of their own.
+- **Positions.** `--at <n>` / `--to <n>` count from 1 and go on the wire as a 0-based
+  `index`; `--end` is `at_end`. A position that is not a whole number from 1, `--at` with
+  `--end`, or `move` without exactly one of `--to`/`--end`, is refused before sending.
+- **`new`**: `--kind` is checked locally (`unknown kind '<x>'; use terminal, same, agent, web,
+  scratchpad`); absent, Settings "A new tab opens" decides. `--name` names the tab. Ack:
+  `created tab <n> (<id>) in workspace <name>`.
+- **`rename`**: two positionals are `<tab> <new-name>`; one is the new name of the caller's
+  tab; `--clear` takes the tab alone (or none) and sends `clear`. Ack:
+  `renamed tab <n> (<id>) in workspace <name> to <new-name>`, or
+  `tab <n> (<id>) in workspace <name> is named after its pane again`.
+- **Acks** for the rest: `showing tab <n> (<id>) in workspace <name>`, `moved to tab <n> …`,
+  `closed tab <id> in workspace <name> (<k> panes)`, `closed every tab but tab <n> … (<k>
+  panes)`, `duplicated as tab <n> …` (the copy), `merged into tab <n> …` (the tab before it),
+  `split into tabs <n>, <n+1>, … in workspace <name>`, `moved to tab <n> (<id>) in workspace
+  <destination>`.
+- **`--json`** prints the reply without `ok`, compact with sorted keys (the pane family's
+  shape); `list --json` prints the `tabs` array.
+- **`list`** table: `TAB  ACTIVE  TITLE  PANES  STATUS  ID` (ACTIVE `●` or `-`; ID the full
+  uuid, unpadded, last), with a leading `WORKSPACE` column under `--all`. `--all` with
+  `--workspace` is refused.
+- A daemon's `ok:false` prints `kelpi tab <verb>: <error>` to stderr, exit 1; a daemon older than
+  these verbs writes nothing: `no response from Kelpi (upgrade required?)`, exit 1 (§6.1).
 
 ---
 

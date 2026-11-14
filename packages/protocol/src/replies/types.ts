@@ -154,6 +154,34 @@ export interface WorkspaceListEntry {
      * first; absent when there are none (or PR status is off, or gh is unavailable).
      */
     readonly pull_requests?: readonly WorkspaceListPullRequest[];
+    /**
+     * workspace-feature.md §12: how many tabs the workspace has and which is on screen. Both
+     * present or both absent: absent for a workspace with one tab (and from a daemon older than
+     * tabs), so its entry is what it always was.
+     */
+    readonly tab_count?: number;
+    readonly active_tab_id?: string;
+}
+
+/** One `workspace-tab-list` entry (workspace-feature.md §12, socket-handlers.md §4.17). */
+export interface WorkspaceTabListEntry {
+    readonly id: string;
+    /** 1-based position in the tab bar, what ⌥⌘1-9 count. */
+    readonly number: number;
+    /** The name a person gave it; null while it is named after its focused pane. */
+    readonly name: string | null;
+    /** What the tab bar shows: the name, else its focused pane's. */
+    readonly title: string;
+    readonly workspace_id: string;
+    readonly workspace_name: string;
+    /** Its panes in layout order. */
+    readonly pane_ids: readonly string[];
+    readonly pane_count: number;
+    /** The tab on screen. */
+    readonly is_active: boolean;
+    /** The busiest of its panes: `waitingForInput`, else `running`, else `idle`. */
+    readonly status: 'idle' | 'running' | 'waitingForInput';
+    readonly zoomed: boolean;
 }
 
 /** One PR on a `workspace-list` entry (workspace-feature.md §11). */

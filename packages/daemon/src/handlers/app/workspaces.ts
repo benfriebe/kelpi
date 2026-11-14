@@ -64,7 +64,9 @@ import {
 import type { AgentLaunchRequest } from '../../agent-launch/index.js';
 import type { ReplyHandle } from '../../seams.js';
 import {
+    activeTabIDOf,
     workspaceAgentSummary,
+    workspaceTabs,
     groupByID,
     groupIDForWorkspace,
     nestingRefusal,
@@ -179,7 +181,9 @@ function workspaceEntry(state: DaemonState, workspace: WorkspaceState, index: Li
             state: pullRequest.state,
             repo_id: uuidOut(pullRequest.repoID),
             branch: pullRequest.branch
-        }))
+        })),
+        // workspace-feature.md §12: elided by the builder for a workspace with one tab.
+        tabs: { count: workspaceTabs(workspace).length, active_id: uuidOut(activeTabIDOf(workspace)) }
     });
 }
 

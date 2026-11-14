@@ -10,8 +10,7 @@
 import {
     activeTabIDOf,
     onScreenPaneIDs,
-    resolvedActiveTab,
-    tabDisplayLabel,
+    paneTabTitle,
     tabLayout,
     tabPaneIDs,
     workspaceTabs,
@@ -19,7 +18,6 @@ import {
     type WorkspaceState
 } from '@kelpi/daemon/store';
 import { summarizeAgentPanes, type WorkspaceAgentSummary } from '@kelpi/core/agent';
-import { basename, paneDisplayTitle } from '../pane-chrome/model';
 
 export type WorkspaceTabKind = 'terminal' | 'agent' | 'web' | 'document' | 'scratchpad' | 'image';
 export type WorkspaceTabStatus = 'idle' | 'running' | 'waitingForInput';
@@ -76,26 +74,8 @@ function kindOf(pane: Pane | undefined): WorkspaceTabKind {
     }
 }
 
-/** What a tab named after `pane` is called: its label, else what its header would say, shortened. */
-export function paneTabTitle(workspace: WorkspaceState, pane: Pane | undefined): string {
-    if (pane === undefined) return 'Tab';
-    if (pane.label !== null && pane.label !== '') return pane.label;
-    if (pane.type === 'shell') {
-        if (pane.agentSessionID !== null && pane.agentKind !== null) return pane.agentKind;
-        const title = pane.title ?? '';
-        // A shell's title is usually its directory or the command it runs; either way the last
-        // path component is the part that tells tabs apart.
-        const fromTitle = basename(title.trim());
-        if (fromTitle !== '') return fromTitle;
-        return basename(pane.workingDirectory) || 'Terminal';
-    }
-    if (pane.type === 'web') {
-        const sidecar = workspace.webPanes[pane.id];
-        const tab = sidecar === undefined ? null : resolvedActiveTab(sidecar);
-        return tab === null ? 'New Tab' : tabDisplayLabel(tab);
-    }
-    return paneDisplayTitle(pane);
-}
+/** What a tab named after `pane` is called; the daemon's rule, so `kelpi tab` finds tabs by it. */
+export { paneTabTitle };
 
 function busiest(panes: readonly (Pane | undefined)[]): WorkspaceTabStatus {
     if (panes.some((pane) => pane?.status === 'waitingForInput')) return 'waitingForInput';

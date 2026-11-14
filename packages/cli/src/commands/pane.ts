@@ -34,6 +34,8 @@ import {
     paneCloseUsage,
     paneCreateUsage,
     paneListUsage,
+    paneMoveToNewTabUsage,
+    paneMoveToTabUsage,
     paneMoveUsage,
     paneNameUsage,
     paneResizeUsage,
@@ -149,6 +151,10 @@ export async function handlePane(args: string[]): Promise<void> {
             return handlePaneMove(args);
         case 'move-to-workspace':
             return handlePaneMoveToWorkspace(args);
+        case 'move-to-tab':
+            return handlePaneMoveToTab(args);
+        case 'move-to-new-tab':
+            return handlePaneMoveToNewTab(args);
         case 'list':
             return handlePaneList(args);
         case 'capture':
@@ -158,7 +164,7 @@ export async function handlePane(args: string[]): Promise<void> {
         default:
             errLine(`Unknown pane action: ${action}`);
             errLine(
-                'Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, list, capture, sync, id'
+                'Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, move-to-tab, move-to-new-tab, list, capture, sync, id'
             );
             exit(1);
     }
@@ -579,6 +585,107 @@ async function handlePaneMoveToWorkspace(args: string[]): Promise<void> {
     // #298: without --focus the move is background (unless it is the pane the user is in).
     if (popSwitch('--focus', args)) payload['focus'] = true;
     await sendJSON(payload);
+}
+
+/** The subject of a tab move: `--target`, else the caller; outside a pane one must be named. */
+function tabMoveSubject(target: string | null, workspace: string | null, verb: string, usage: string): JsonObject {
+    const payload: JsonObject = {};
+    const origin = originPaneID();
+    if (target === null && origin === undefined) {
+        errLine(`kelpi pane ${verb}: requires --target <name-or-uuid> when called from outside a Kelpi pane`);
+        writeErr(usage);
+        exit(1);
+    }
+    if (origin !== undefined) payload['pane_id'] = origin;
+    if (target !== null) payload['target'] = target;
+    if (workspace !== null) payload['workspace'] = workspace;
+    return payload;
+}
+
+/** `moved pane <id> to tab 2 (<tab-id>) in workspace dev`. */
+function printTabMoveAck(reply: JsonObject, fresh: boolean): void {
+    const pane = asString(reply['pane_id']) ?? '?';
+    const number = asNumber(reply['tab_number']);
+    const tab = asString(reply['tab_id']) ?? '?';
+    const workspace = asString(reply['workspace_name']);
+    let line = `moved pane ${pane} to ${fresh ? 'new ' : ''}tab ${number === undefined ? '?' : String(number)} (${tab})`;
+    if (workspace !== undefined) line += ` in workspace ${workspace}`;
+    printLine(line);
+}
+
+/**
+ * `kelpi pane move-to-tab <tab>` (workspace-feature.md §12): into another tab of the pane's
+ * workspace, beside its focused pane or on an edge of a named pane of that tab.
+ */
+async function handlePaneMoveToTab(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(paneMoveToTabUsage);
+        exit(0);
+    }
+    const target = parseFlag('--target', args);
+    const workspace = parseFlag('--workspace', args);
+    const zones = ZONE_FLAGS.map(([zone, flag]) => [zone, parseFlag(flag, args)] as const);
+    const given = zones.filter(([, anchor]) => anchor !== null);
+    const focus = popSwitch('--focus', args);
+    const asJSON = popSwitch('--json', args);
+    const tab = args[0] !== undefined && !args[0].startsWith('-') ? args.shift() : undefined;
+    rejectLeftoverArgs(args, 'kelpi pane move-to-tab', { usage: (write) => write(paneMoveToTabUsage) });
+    if (tab === undefined) {
+        errLine('kelpi pane move-to-tab: name the tab: a number, an id or a title');
+        writeErr(paneMoveToTabUsage);
+        exit(1);
+    }
+    if (given.length > 1) {
+        errLine('kelpi pane move-to-tab: at most one of --above / --below / --left-of / --right-of');
+        exit(1);
+    }
+    const payload: JsonObject = { command: 'pane-move-to-tab', ...tabMoveSubject(target, workspace, 'move-to-tab', paneMoveToTabUsage), tab };
+    const edge = given[0];
+    if (edge !== undefined && edge[1] !== null) {
+        payload['anchor'] = edge[1];
+        payload['zone'] = edge[0];
+    }
+    if (focus) payload['focus'] = true;
+    const reply = await readReplyOrEmptyError(payload, 'kelpi pane move-to-tab');
+    if (asJSON) {
+        printReplyWithoutOk(reply);
+        return;
+    }
+    printTabMoveAck(reply, false);
+}
+
+/** `kelpi pane move-to-new-tab` (⇧⌥⌘T): out of its tab into a new tab of its own. */
+async function handlePaneMoveToNewTab(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(paneMoveToNewTabUsage);
+        exit(0);
+    }
+    const target = parseFlag('--target', args);
+    const workspace = parseFlag('--workspace', args);
+    const atRaw = parseFlag('--at', args);
+    const end = popSwitch('--end', args);
+    const focus = popSwitch('--focus', args);
+    const asJSON = popSwitch('--json', args);
+    rejectLeftoverArgs(args, 'kelpi pane move-to-new-tab', { usage: (write) => write(paneMoveToNewTabUsage) });
+    const at = atRaw === null ? null : parseIntStrict(atRaw);
+    if (atRaw !== null && (at === null || at < 1)) {
+        errLine('kelpi pane move-to-new-tab: --at takes a position from 1');
+        exit(1);
+    }
+    if (at !== null && end) {
+        errLine('kelpi pane move-to-new-tab: --at and --end are mutually exclusive');
+        exit(1);
+    }
+    const payload: JsonObject = { command: 'pane-move-to-new-tab', ...tabMoveSubject(target, workspace, 'move-to-new-tab', paneMoveToNewTabUsage) };
+    if (at !== null) payload['index'] = at - 1;
+    if (end) payload['at_end'] = true;
+    if (focus) payload['focus'] = true;
+    const reply = await readReplyOrEmptyError(payload, 'kelpi pane move-to-new-tab');
+    if (asJSON) {
+        printReplyWithoutOk(reply);
+        return;
+    }
+    printTabMoveAck(reply, true);
 }
 
 async function handlePaneList(args: string[]): Promise<void> {

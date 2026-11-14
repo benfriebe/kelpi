@@ -41,6 +41,7 @@ const SETTINGS: WsSettingsSnapshot = {
         fontSize: 15,
         windowPaddingX: 4,
         windowPaddingY: 3,
+        cellHeightAdjust: { unit: 'percent', value: 40 },
         isDark: false,
         theme: 'Catppuccin Latte',
         // §APP-014: and what that name RESOLVED to — the palette the daemon read out of the
@@ -58,6 +59,17 @@ const SETTINGS: WsSettingsSnapshot = {
 describe('hydrateSettings', () => {
     it('accepts a well-formed payload verbatim', () => {
         expect(hydrateSettings(SETTINGS)).toEqual(SETTINGS);
+    });
+
+    it('keeps the row height adjustment only when it is a known unit and a finite number', () => {
+        const adjust = (value: unknown): unknown =>
+            hydrateSettings({ appearance: { cellHeightAdjust: value } })?.appearance.cellHeightAdjust;
+        expect(adjust({ unit: 'px', value: -2 })).toEqual({ unit: 'px', value: -2 });
+        expect(adjust({ unit: 'em', value: 2 })).toBeNull();
+        expect(adjust({ unit: 'px', value: 'tall' })).toBeNull();
+        expect(adjust('50%')).toBeNull();
+        // A daemon that predates the key sends nothing: rows keep the font's height.
+        expect(hydrateSettings({ appearance: {} })?.appearance.cellHeightAdjust).toBeNull();
     });
 
     it('falls back per field rather than blanking the whole snapshot', () => {

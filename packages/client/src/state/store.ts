@@ -507,6 +507,12 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
         value === 'ask' || value === 'remove' || value === 'keep' ? value : fallback;
     const nullableNum = (value: unknown): number | null =>
         typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const cellHeightAdjust = (value: unknown): { unit: 'px' | 'percent'; value: number } | null => {
+        if (typeof value !== 'object' || value === null) return null;
+        const unit = (value as Record<string, unknown>)['unit'];
+        const amount = nullableNum((value as Record<string, unknown>)['value']);
+        return (unit === 'px' || unit === 'percent') && amount !== null ? { unit, value: amount } : null;
+    };
     const nonBlankText = (value: unknown, fallback: string): string =>
         typeof value === 'string' && value.trim() !== '' ? value : fallback;
     const agentChoice = (value: unknown, fallback: 'none' | 'claude' | 'codex'): 'none' | 'claude' | 'codex' =>
@@ -640,6 +646,7 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             fontSize: nullableNum(appearance['fontSize']),
             windowPaddingX: nullableNum(appearance['windowPaddingX']),
             windowPaddingY: nullableNum(appearance['windowPaddingY']),
+            cellHeightAdjust: cellHeightAdjust(appearance['cellHeightAdjust']),
             isDark: bool(appearance['isDark'], fallbackAppearance.isDark),
             theme: nullableText(appearance['theme']),
             // §APP-014: what that theme name RESOLVED to. Additive in the same way as every

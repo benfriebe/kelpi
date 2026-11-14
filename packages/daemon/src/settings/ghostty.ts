@@ -25,7 +25,7 @@
  */
 
 import { parseConfigLines } from '@kelpi/core/config';
-import { DEFAULT_SETTINGS_BACKGROUND } from '@kelpi/protocol';
+import { DEFAULT_SETTINGS_BACKGROUND, type WsCellHeightAdjust } from '@kelpi/protocol';
 
 export interface GhosttyAppearance {
     /** `#rrggbb`, lowercase. Always concrete: the luminance rule needs a real color. */
@@ -48,6 +48,14 @@ export interface GhosttyAppearance {
     readonly windowPaddingX: number | null;
     readonly windowPaddingY: number | null;
     /**
+     * `adjust-cell-height`: how much taller (or shorter) every terminal row is than the font's
+     * own height, as whole pixels or a percentage of that height (`4`, `-2`, `50%`). Null = unset
+     * or unparseable, rows keep the font's height. Clamped (see `MIN_/MAX_CELL_HEIGHT_ADJUST_*`)
+     * so a runaway value cannot make a row absurd. The client also stops a shrink at half the
+     * row, because only it knows the font a pane really uses.
+     */
+    readonly cellHeightAdjust: GhosttyCellHeightAdjust | null;
+    /**
      * Did the file actually carry a parseable `background = …` line?
      *
      * `backgroundColor` is always concrete (the luminance rule needs a real colour), so "the
@@ -67,8 +75,36 @@ export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
     theme: null,
     windowPaddingX: null,
     windowPaddingY: null,
+    cellHeightAdjust: null,
     hasExplicitBackground: false
 };
+
+export type GhosttyCellHeightAdjust = WsCellHeightAdjust;
+
+/** See `GhosttyAppearance.cellHeightAdjust` — the range a parsed value is clamped to. */
+export const MIN_CELL_HEIGHT_ADJUST_PX = -2;
+export const MAX_CELL_HEIGHT_ADJUST_PX = 64;
+export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -10;
+export const MAX_CELL_HEIGHT_ADJUST_PERCENT = 200;
+
+const CELL_HEIGHT_ADJUST = /^([+-]?\d+(?:\.\d+)?)(%?)$/;
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+}
+
+function parseCellHeightAdjust(raw: string): GhosttyCellHeightAdjust | null {
+    const match = CELL_HEIGHT_ADJUST.exec(raw.trim());
+    if (match === null) return null;
+    const value = Number.parseFloat(match[1] as string);
+    if (match[2] === '%') {
+        return {
+            unit: 'percent',
+            value: clamp(Math.round(value), MIN_CELL_HEIGHT_ADJUST_PERCENT, MAX_CELL_HEIGHT_ADJUST_PERCENT)
+        };
+    }
+    return { unit: 'px', value: clamp(Math.round(value), MIN_CELL_HEIGHT_ADJUST_PX, MAX_CELL_HEIGHT_ADJUST_PX) };
+}
 
 /** See `GhosttyAppearance.windowPaddingX` — the ceiling a parsed padding is clamped to. */
 export const MAX_WINDOW_PADDING = 64;
@@ -128,6 +164,7 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
     let theme: string | null = null;
     let windowPaddingX: number | null = null;
     let windowPaddingY: number | null = null;
+    let cellHeightAdjust: GhosttyCellHeightAdjust | null = null;
     let families: string[] = [];
     let hasExplicitBackground = false;
 
@@ -171,6 +208,16 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
                 if (parsed !== null) windowPaddingY = parsed;
                 break;
             }
+            case 'adjust-cell-height': {
+                // ghostty: an empty value resets the key to its default, like `font-family`.
+                if (value.trim() === '') {
+                    cellHeightAdjust = null;
+                    break;
+                }
+                const parsed = parseCellHeightAdjust(value);
+                if (parsed !== null) cellHeightAdjust = parsed;
+                break;
+            }
             default:
                 break;
         }
@@ -184,6 +231,7 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
         theme,
         windowPaddingX,
         windowPaddingY,
+        cellHeightAdjust,
         hasExplicitBackground
     };
 }

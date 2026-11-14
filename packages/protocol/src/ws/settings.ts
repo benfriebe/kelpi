@@ -384,6 +384,12 @@ export const DEFAULT_WS_TERMINAL_THEME: WsTerminalThemeResolution = {
     error: null
 };
 
+/** ghostty's `adjust-cell-height`: whole pixels, or a percentage of the font's own row height. */
+export interface WsCellHeightAdjust {
+    readonly unit: 'px' | 'percent';
+    readonly value: number;
+}
+
 /**
  * `~/.config/ghostty/config` appearance (content-panes.md §3.1, §3.8).
  *
@@ -412,6 +418,13 @@ export interface WsAppearanceSettings {
      */
     readonly windowPaddingX: number | null;
     readonly windowPaddingY: number | null;
+    /**
+     * ghostty `adjust-cell-height`: extra (or, negative, fewer) pixels of height for every
+     * terminal row, whole pixels or a percentage of the font's own row height. Null = key unset,
+     * rows keep the font's height. Additive: a daemon that predates it omits the field and the
+     * hydrator fills null.
+     */
+    readonly cellHeightAdjust: WsCellHeightAdjust | null;
     /** The luminance rule against `backgroundColor`. */
     readonly isDark: boolean;
     /** ghostty's own `theme = <name>` value, passed through opaquely. Null when unset. */
@@ -510,6 +523,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         fontSize: null,
         windowPaddingX: null,
         windowPaddingY: null,
+        cellHeightAdjust: null,
         isDark: true,
         theme: null,
         terminalTheme: DEFAULT_WS_TERMINAL_THEME

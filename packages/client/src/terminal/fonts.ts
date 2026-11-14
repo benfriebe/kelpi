@@ -216,6 +216,26 @@ export function measureCellSize(fontSize: number, fontFamily: string): MeasuredC
     return measured;
 }
 
+/** The engine pads every row by 2px; that padding is all a shrink may take. */
+const MAX_CELL_HEIGHT_SHRINK_PX = 2;
+
+/**
+ * ghostty's `adjust-cell-height` as whole CSS pixels. A percentage is of the font's own row
+ * height, measured here the way the engine measures it, so it follows a per-pane font size.
+ * A shrink stops at the 2px of padding the engine adds to every row, the same floor the engine
+ * keeps: past it the glyph and its underline no longer fit the row.
+ */
+export function resolveCellHeightAdjust(
+    adjust: { readonly unit: 'px' | 'percent'; readonly value: number } | null | undefined,
+    fontSize: number,
+    fontFamily: string
+): number {
+    if (adjust === null || adjust === undefined || !Number.isFinite(adjust.value)) return 0;
+    const natural = measureCellSize(fontSize, fontFamily).height;
+    const pixels = adjust.unit === 'px' ? adjust.value : (natural * adjust.value) / 100;
+    return Math.max(-MAX_CELL_HEIGHT_SHRINK_PX, Math.round(pixels));
+}
+
 function fallbackCell(fontSize: number): MeasuredCell {
     return {
         width: Math.max(1, Math.ceil(fontSize * 0.6)),

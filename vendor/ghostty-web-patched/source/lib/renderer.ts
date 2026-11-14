@@ -64,6 +64,11 @@ export interface IScrollbackProvider {
 export interface RendererOptions {
   fontSize?: number; // Default: 15
   fontFamily?: string; // Default: 'monospace'
+  /**
+   * Extra CSS pixels added to (or, negative, taken from) every cell's height (vendor
+   * 0.4.0-kelpi.26). The glyph sits in the middle of the taller cell. Whole pixels; default 0.
+   */
+  cellHeightAdjust?: number;
   cursorStyle?: 'block' | 'underline' | 'bar'; // Default: 'block'
   cursorBlink?: boolean; // Default: false
   theme?: ITheme;
@@ -166,6 +171,7 @@ export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D;
   private fontSize: number;
   private fontFamily: string;
+  private cellHeightAdjust: number;
   private cursorStyle: 'block' | 'underline' | 'bar';
   private cursorBlink: boolean;
   private theme: Required<ITheme>;
@@ -292,6 +298,7 @@ export class CanvasRenderer {
     // Apply options
     this.fontSize = options.fontSize ?? 15;
     this.fontFamily = options.fontFamily ?? 'monospace';
+    this.cellHeightAdjust = CanvasRenderer.wholePixels(options.cellHeightAdjust);
     this.cursorStyle = options.cursorStyle ?? 'block';
     this.cursorBlink = options.cursorBlink ?? false;
     this.theme = { ...DEFAULT_THEME, ...options.theme };
@@ -353,10 +360,20 @@ export class CanvasRenderer {
 
     // Add 2px padding to height to account for glyphs that overflow (like 'f', 'd', 'g', 'p')
     // and anti-aliasing pixels
-    const height = Math.ceil(ascent + descent) + 2;
-    const baseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+    const naturalHeight = Math.ceil(ascent + descent) + 2;
+    const naturalBaseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+
+    // vendor 0.4.0-kelpi.26: the adjustment can shrink a cell, but only by the 2px of padding
+    // above. Past that the glyph and its underline no longer fit the row and get clipped.
+    const height = Math.max(naturalHeight - 2, naturalHeight + this.cellHeightAdjust);
+    // The glyph stays in the middle of the cell: half of the change goes above it.
+    const baseline = naturalBaseline + Math.floor((height - naturalHeight) / 2);
 
     return { width, height, baseline };
+  }
+
+  private static wholePixels(value: number | undefined): number {
+    return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : 0;
   }
 
   /**
@@ -1373,6 +1390,15 @@ export class CanvasRenderer {
   public setFontFamily(family: string): void {
     this.invalidate();
     this.fontFamily = family;
+    this.metrics = this.measureFont();
+  }
+
+  /**
+   * Update the extra cell height in CSS pixels (vendor 0.4.0-kelpi.26)
+   */
+  public setCellHeightAdjust(pixels: number): void {
+    this.invalidate();
+    this.cellHeightAdjust = CanvasRenderer.wholePixels(pixels);
     this.metrics = this.measureFont();
   }
 

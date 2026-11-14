@@ -101,6 +101,8 @@ export interface TerminalRendererOptions {
     readonly engine?: TerminalEngine | undefined;
     readonly fontFamily?: string | undefined;
     readonly fontSize?: number | undefined;
+    /** Extra CSS pixels of row height (negative: fewer). ghostty engine only; default 0. */
+    readonly cellHeightAdjust?: number | undefined;
     readonly theme?: TerminalTheme | undefined;
     readonly cols?: number | undefined;
     readonly rows?: number | undefined;
@@ -465,9 +467,10 @@ export interface TerminalRenderer {
      * Re-measure the cell after a font has loaded. Optional because a fake or a third engine
      * may have nothing to re-measure; the pane calls it when the bundled face settles AFTER
      * the engine was built (a slow link), which is the only way to correct metrics that were
-     * taken against the fallback.
+     * taken against the fallback. `cellHeightAdjust` is the row adjustment resolved against the
+     * font that arrived, since a percentage measured on the fallback is wrong for it.
      */
-    remeasure?(): void;
+    remeasure?(cellHeightAdjust?: number): void;
     /**
      * Is the engine currently holding its paint across a resize→replay window? (§N24.)
      *
@@ -551,9 +554,10 @@ export interface EngineHandle {
     setTheme?(theme: TerminalTheme): void;
     /**
      * Re-measure the font after it has loaded. The engines measure their cell once, at
-     * construction; a face that arrives later leaves them drawing at fallback metrics.
+     * construction; a face that arrives later leaves them drawing at fallback metrics. An engine
+     * with a row-height option takes the freshly resolved adjustment here.
      */
-    remeasure?(): void;
+    remeasure?(cellHeightAdjust?: number): void;
     /** Force a full redraw. */
     repaint?(): void;
     /**
@@ -641,6 +645,7 @@ export interface ResolvedRendererOptions {
     readonly engine: TerminalEngine;
     readonly fontFamily: string;
     readonly fontSize: number;
+    readonly cellHeightAdjust: number;
     readonly theme: TerminalTheme;
     readonly cols: number;
     readonly rows: number;
@@ -1035,6 +1040,7 @@ function resolveOptions(options: TerminalRendererOptions | undefined, engine: Te
         engine,
         fontFamily: options?.fontFamily ?? DEFAULT_FONT_FAMILY,
         fontSize: options?.fontSize ?? DEFAULT_FONT_SIZE,
+        cellHeightAdjust: Number.isFinite(options?.cellHeightAdjust) ? Math.round(options?.cellHeightAdjust ?? 0) : 0,
         theme: options?.theme ?? DEFAULT_TERMINAL_THEME,
         cols: Math.max(1, Math.trunc(options?.cols ?? 80)),
         rows: Math.max(1, Math.trunc(options?.rows ?? 24)),
@@ -1616,7 +1622,9 @@ class AdapterRenderer implements TerminalRenderer {
     cellSize(): CellSize {
         const measured = this.handle?.cellSize?.();
         if (measured !== undefined && measured.width > 0 && measured.height > 0) return measured;
-        return estimateCellSize(this.options.fontSize, this.options.fontFamily);
+        const estimate = estimateCellSize(this.options.fontSize, this.options.fontFamily);
+        if (this.options.engine !== 'ghostty' || this.options.cellHeightAdjust === 0) return estimate;
+        return { width: estimate.width, height: Math.max(1, estimate.height + this.options.cellHeightAdjust) };
     }
 
     repaint(): void {
@@ -1625,9 +1633,9 @@ class AdapterRenderer implements TerminalRenderer {
         this.guard(() => this.handle?.repaint?.(), 'repaint');
     }
 
-    remeasure(): void {
+    remeasure(cellHeightAdjust?: number): void {
         if (this.disposed || this.poisoned) return;
-        this.swallow(() => this.handle?.remeasure?.());
+        this.swallow(() => this.handle?.remeasure?.(cellHeightAdjust));
     }
 
     revealMatch(match: TerminalMatchLocation): void {
@@ -2326,6 +2334,7 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         rows: options.rows,
         fontSize: options.fontSize,
         fontFamily: options.fontFamily,
+        cellHeightAdjust: options.cellHeightAdjust,
         theme: compactTheme(options.theme),
         // BYTES here, not lines (ghostty-web#140).
         scrollback: options.scrollbackBytes,
@@ -2393,9 +2402,12 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
              */
             renderer?.clear();
         },
-        remeasure: (): void => {
+        remeasure: (cellHeightAdjust?: number): void => {
             // Belt and braces: the loader already awaited the font, but a face that landed
             // during `open()` would otherwise leave the cell at fallback metrics forever.
+            if (cellHeightAdjust !== undefined && Number.isFinite(cellHeightAdjust)) {
+                terminal.options.cellHeightAdjust = Math.round(cellHeightAdjust);
+            }
             terminal.renderer?.remeasureFont();
         },
         // §N20 — `ghostty_surface_set_focus`'s port. Safe before `open()`: the engine keeps the

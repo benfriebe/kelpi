@@ -220,6 +220,7 @@ export class Terminal implements ITerminalCore {
       scrollback: options.scrollback ?? 10000,
       fontSize: options.fontSize ?? 15,
       fontFamily: options.fontFamily ?? 'monospace',
+      cellHeightAdjust: options.cellHeightAdjust ?? 0,
       allowTransparency: options.allowTransparency ?? false,
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
@@ -290,6 +291,14 @@ export class Terminal implements ITerminalCore {
       case 'fontSize':
         if (this.renderer) {
           this.renderer.setFontSize(this.options.fontSize);
+          this.handleFontChange();
+        }
+        break;
+
+      case 'cellHeightAdjust':
+        // vendor 0.4.0-kelpi.26: a taller or shorter cell moves every pixel position
+        if (this.renderer) {
+          this.renderer.setCellHeightAdjust(this.options.cellHeightAdjust);
           this.handleFontChange();
         }
         break;
@@ -562,6 +571,7 @@ export class Terminal implements ITerminalCore {
       this.renderer = new CanvasRenderer(this.canvas, {
         fontSize: this.options.fontSize,
         fontFamily: this.options.fontFamily,
+        cellHeightAdjust: this.options.cellHeightAdjust,
         cursorStyle: this.options.cursorStyle,
         cursorBlink: this.options.cursorBlink,
         theme: this.options.theme,

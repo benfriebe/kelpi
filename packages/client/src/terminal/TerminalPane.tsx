@@ -48,7 +48,7 @@ import { modalPresenceCount } from '../chrome/modal-presence';
 import type { PtyStreamHandle, PtySubscription, TerminalHistoryAt } from '../connection';
 import { offerLink, offerSelection } from '../state/clipboard';
 import { dispatchPaste } from './KeyBar';
-import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
+import { loadTerminalFonts, onTerminalFontsReady, resolveCellHeightAdjust, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import {
     PHONE_KEYBOARD_SETTLE_MS,
@@ -79,6 +79,8 @@ import {
     type PaneVtModes
 } from './mouse';
 import {
+    DEFAULT_FONT_FAMILY,
+    DEFAULT_FONT_SIZE,
     createTerminalRenderer,
     engineKeyTarget,
     resolveTerminalTheme,
@@ -328,6 +330,11 @@ export interface TerminalPaneProps {
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly fontFamily?: string | undefined;
     readonly fontSize?: number | undefined;
+    /**
+     * ghostty's `adjust-cell-height`: pixels or a percentage of the font's row height. Undefined
+     * = rows keep the font's height. Like the font, it is fixed at engine construction.
+     */
+    readonly cellHeightAdjust?: { readonly unit: 'px' | 'percent'; readonly value: number } | undefined;
     /**
      * Edge padding in CSS pixels, from the ghostty config's `window-padding-x` /
      * `window-padding-y` (Settings ▸ Appearance ▸ Terminal padding). Undefined = the shipped
@@ -1272,6 +1279,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             const renderer = factory({
                 ...(current.fontFamily !== undefined ? { fontFamily: current.fontFamily } : {}),
                 ...(current.fontSize !== undefined ? { fontSize: current.fontSize } : {}),
+                cellHeightAdjust: resolveCellHeightAdjust(
+                    current.cellHeightAdjust,
+                    current.fontSize ?? DEFAULT_FONT_SIZE,
+                    current.fontFamily ?? DEFAULT_FONT_FAMILY
+                ),
                 // §N17: only when assembly says the pane fill is translucent. Absent (a test
                 // harness, a standalone mount) the engine keeps its opaque default background,
                 // which is what every caller before this got.
@@ -1667,7 +1679,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         publishMirror,
         releasePosterWhenPainted,
         props.fontFamily,
-        props.fontSize
+        props.fontSize,
+        // The unit and value, not the object: a caller passing a fresh literal must not rebuild it.
+        props.cellHeightAdjust?.unit,
+        props.cellHeightAdjust?.value
     ]);
 
     // A failed engine shows its error placeholder, and a poster must not cover it.
@@ -1752,7 +1767,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         return onTerminalFontsReady(() => {
             const renderer = rendererRef.current;
             if (renderer === null) return;
-            renderer.remeasure?.();
+            // A percentage row height was measured on the fallback face; resolve it again.
+            const current = latest.current;
+            renderer.remeasure?.(
+                current.cellHeightAdjust === undefined
+                    ? undefined
+                    : resolveCellHeightAdjust(
+                          current.cellHeightAdjust,
+                          current.fontSize ?? DEFAULT_FONT_SIZE,
+                          current.fontFamily ?? DEFAULT_FONT_FAMILY
+                      )
+            );
             syncGeometry(true);
             renderer.repaint();
         });

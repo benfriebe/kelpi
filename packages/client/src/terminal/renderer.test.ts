@@ -130,6 +130,8 @@ class StubEngine {
     readonly themes: TerminalTheme[] = [];
     repaints = 0;
     remeasures = 0;
+    /** The row adjustment each `remeasure` call carried, in order (`undefined` when none). */
+    readonly remeasureArgs: (number | undefined)[] = [];
     onRemeasure: (() => void) | undefined;
     cell: CellSize | undefined;
     /** §N20 — every surface-focus report the handle received, in order. */
@@ -166,8 +168,9 @@ class StubEngine {
             repaint: (): void => {
                 this.repaints += 1;
             },
-            remeasure: (): void => {
+            remeasure: (cellHeightAdjust?: number): void => {
                 this.remeasures += 1;
+                this.remeasureArgs.push(cellHeightAdjust);
                 this.onRemeasure?.();
             },
             setSurfaceFocus: (focused: boolean): void => {
@@ -318,6 +321,22 @@ describe('TerminalRenderer adapter', () => {
         expect(order).toEqual(['remeasure', 'resize', 'write']);
         expect(engine.terminal.cols).toBe(120);
         expect(engine.terminal.rows).toBe(40);
+        renderer.dispose();
+    });
+
+    it('hands a re-resolved row adjustment to the engine when the font arrives late', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader, { cellHeightAdjust: 4 });
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+        // The open itself re-measures with nothing to say about rows.
+        expect(engine.remeasureArgs).toEqual([undefined]);
+
+        renderer.remeasure?.(9);
+        expect(engine.remeasureArgs).toEqual([undefined, 9]);
+        renderer.remeasure?.();
+        expect(engine.remeasureArgs).toEqual([undefined, 9, undefined]);
         renderer.dispose();
     });
 
@@ -635,6 +654,21 @@ describe('TerminalRenderer adapter', () => {
 
         expect(renderer.cellSize()).toEqual({ width: 8.4, height: 17 });
         renderer.dispose();
+    });
+
+    it('adds the row height adjustment to the estimate for ghostty only, and never below one pixel', () => {
+        const natural = estimateCellSize(20, DEFAULT_FONT_FAMILY);
+        const estimate = (engine: 'ghostty' | 'xterm', cellHeightAdjust: number): { width: number; height: number } =>
+            createRendererFromLoader(engine, stubEngine().loader, { fontSize: 20, cellHeightAdjust }).cellSize();
+
+        expect(estimate('ghostty', 5)).toEqual({ width: natural.width, height: natural.height + 5 });
+        expect(estimate('ghostty', 0)).toEqual(natural);
+        // The xterm engine has no such option, so its estimate must not pretend otherwise.
+        expect(estimate('xterm', 5)).toEqual(natural);
+        expect(estimate('ghostty', -500).height).toBe(1);
+        // A value that is not a finite number is no adjustment at all.
+        expect(estimate('ghostty', Number.POSITIVE_INFINITY)).toEqual(natural);
+        expect(estimate('ghostty', Number.NaN)).toEqual(natural);
     });
 
     it('routes setTheme and repaint to the engine', async () => {
@@ -1375,6 +1409,7 @@ describe('ghostty loader (mocked module)', () => {
                 engine: 'ghostty',
                 fontFamily: DEFAULT_FONT_FAMILY,
                 fontSize: 13,
+                cellHeightAdjust: 6,
                 theme: DEFAULT_TERMINAL_THEME,
                 cols: 80,
                 rows: 24,
@@ -1384,6 +1419,9 @@ describe('ghostty loader (mocked module)', () => {
                 allowTransparency: false
             });
             const terminal = handle.terminal as unknown as FakeGhosttyTerminal;
+            // The engine gets the pixel adjustment at construction, which is the only time it
+            // is set (a change rebuilds the engine, like a font change).
+            expect((terminal.options as { cellHeightAdjust?: number }).cellHeightAdjust).toBe(6);
 
             // The measured cell comes straight from the engine's metrics (CSS px).
             expect(handle.cellSize?.()).toEqual({ width: 8, height: 17 });

@@ -199,6 +199,7 @@ export {
     measureCellSize,
     onTerminalFontsReady,
     resetTerminalFontsForTests,
+    resolveCellHeightAdjust,
     terminalFontStack,
     terminalFontsReady,
     type MeasuredCell

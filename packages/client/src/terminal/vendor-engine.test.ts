@@ -45,7 +45,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-kelpi.25';
+const EXPECTED_VERSION = '0.4.0-kelpi.26';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -512,6 +512,16 @@ describe('vendored ghostty-web engine', () => {
         // The selection manager's own wake: a drag outside the pane reaches no element listener.
         const selectionSource = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
         expect(selectionSource).toContain("this.terminal['requestRender']();");
+    });
+
+    it('adjusts a cell\'s height by whole pixels (§-kelpi.26)', () => {
+        // Take a future npm release wholesale and `adjust-cell-height` silently stops doing anything.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toContain('setCellHeightAdjust');
+        const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
+        expect(rendererSource).toContain(
+            'const height = Math.max(naturalHeight - 2, naturalHeight + this.cellHeightAdjust);'
+        );
     });
 
     it('keeps the snapshotted source in step with the bundle', () => {

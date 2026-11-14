@@ -12,6 +12,7 @@ import {
     workspacePaneOrder,
     workspaceTabs
 } from './tabs.js';
+import { paneTabTitle } from './tab-title.js';
 import { harness, HOME, id, NOW, seededState, W1, W2, type Harness } from './testing.js';
 import type { DaemonState, DomainAction, WorkspaceState, WorkspaceTab } from './types.js';
 import { syncedPaneIDs } from './derived.js';
@@ -637,6 +638,96 @@ describe('duplicate-tab', () => {
         g.dispatch(duplicate({ paneIDs: { [P0]: P2 }, webTabIDs: {} }));
         expect(ws(g).panes.find((pane) => pane.id === P2)).toMatchObject({ type: 'shell', workingDirectory: ws(g).panes[0]?.workingDirectory });
         expect(ws(g).panes.find((pane) => pane.id === P2)?.unavailable).toBeUndefined();
+    });
+
+    it('keeps what a document, diff or plugin view is called, and leaves only a shell\'s label behind', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'set-pane-label', workspaceID: W1, paneID: P0, label: 'worker-1' });
+        h.dispatch({
+            type: 'create-plugin-pane',
+            workspaceID: W1,
+            paneID: P1,
+            title: 'Plan',
+            plugin: { pluginID: 'acme.plan', viewID: 'plan', stateVersion: 1, state: {} },
+            sourcePaneID: P0,
+            now: NOW
+        });
+        h.dispatch({ type: 'open-diff-pane', workspaceID: W1, paneID: P2, repoPath: '/code/kelpi', targetPath: '/code/kelpi/src', sourcePaneID: P0, now: NOW });
+        h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: P3, filePath: '/Users/test/README.md', now: NOW, sourcePaneID: P0 });
+        const [C0, C1, C2, C3] = [4, 5, 6, 7].map((n) => id('cccccccc', n)) as [string, string, string, string];
+        h.dispatch(duplicate({ paneIDs: { [P0]: C0, [P1]: C1, [P2]: C2, [P3]: C3 }, webTabIDs: {} }));
+        const workspace = ws(h);
+        const pane = (paneID: string): Pane => workspace.panes.find((candidate) => candidate.id === paneID) as Pane;
+        expect(pane(C0).label).toBeNull();
+        for (const [source, copy] of [[P1, C1], [P2, C2], [P3, C3]] as const) {
+            expect(pane(copy)).toMatchObject({ label: pane(source).label, title: pane(source).title });
+            expect(paneTabTitle(workspace, pane(copy))).toBe(paneTabTitle(workspace, pane(source)));
+        }
+        expect(paneTabTitle(workspace, pane(C1))).toBe('Plan');
+        expect(paneTabTitle(workspace, pane(C2))).toBe('src');
+    });
+
+    it('leaves the copy of a shell kept out of sync input out of it too', () => {
+        const h = harness(seededState());
+        const P4 = id('cccccccc', 4);
+        const P5 = id('cccccccc', 5);
+        h.dispatch(split(P1, P0, true));
+        h.dispatch(split(P4, P1, true));
+        h.dispatch({ type: 'set-sync-input-active', workspaceID: W1, active: true });
+        h.dispatch({ type: 'set-sync-input-excluded', workspaceID: W1, paneID: P1, excluded: true });
+        let mirror: DaemonState = h.state();
+        const before = h.batches.length;
+        h.dispatch(duplicate({ paneIDs: { [P0]: P2, [P1]: P3, [P4]: P5 }, webTabIDs: {} }));
+        for (const batch of h.batches.slice(before)) mirror = applyDomainEvents(mirror, batch);
+        expect(mirror.workspaces).toEqual(h.state().workspaces);
+        expect(ws(h).syncInputExcluded).toEqual([P1, P3]);
+        expect(syncedPaneIDs(ws(h)).sort()).toEqual([P2, P5].sort());
+    });
+
+    it('copies what a zoomed tab shows: a pane opened beside the zoomed one comes along, placed beside it', () => {
+        const h = harness(seededState());
+        h.dispatch(split(P1, P0, true));
+        h.dispatch({ type: 'toggle-zoom', workspaceID: W1 });
+        const zoomed = ws(h).zoomedPaneID as string;
+        // A document opened beside a zoomed pane lands only in the zoomed tree (§7.4's QUIRK).
+        h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: P2, filePath: '/Users/test/README.md', now: NOW, sourcePaneID: zoomed });
+        expect(allPaneIDs(ws(h).savedLayout ?? leaf(P0))).not.toContain(P2);
+        const copies: Record<string, string> = { [P0]: id('cccccccc', 4), [P1]: id('cccccccc', 5), [P2]: id('cccccccc', 6) };
+        h.dispatch(duplicate({ paneIDs: copies, webTabIDs: {} }));
+        const tree = ws(h).layout;
+        expect(allPaneIDs(tree).sort()).toEqual(Object.values(copies).sort());
+        // The document's copy sits right beside the zoomed pane's copy, as it does on screen.
+        const ids = allPaneIDs(tree);
+        expect(ids.indexOf(copies[P2] as string)).toBe(ids.indexOf(copies[zoomed] as string) + 1);
+    });
+
+    it('leaves out a leaf with no pane behind it rather than refusing the whole copy', () => {
+        const h = harness(seededState());
+        h.dispatch(split(P1, P0, true));
+        const state = h.state();
+        const stale: DaemonState = {
+            ...state,
+            workspaces: state.workspaces.map((workspace) => ({
+                ...workspace,
+                zoomedPaneID: P0,
+                savedLayout: workspace.layout,
+                layout: leaf(P0),
+                panes: workspace.panes.filter((pane) => pane.id !== P1)
+            }))
+        };
+        const g = harness(stale);
+        g.dispatch(duplicate({ paneIDs: { [P0]: P2 }, webTabIDs: {} }));
+        expect(workspaceTabs(ws(g))).toHaveLength(2);
+        expect(allPaneIDs(ws(g).layout)).toEqual([P2]);
+    });
+
+    it('refuses a new id another workspace already uses', () => {
+        const h = source();
+        h.dispatch({ type: 'create-workspace', id: W2, paneID: id('cccccccc', 9), name: 'ops', color: 'red', now: NOW });
+        const before = h.state();
+        h.dispatch(duplicate({ paneIDs: { [P0]: id('cccccccc', 9), [P1]: P3 } }));
+        h.dispatch(duplicate({ newTabID: W2 }));
+        expect(h.state()).toBe(before);
     });
 
     it('makes nothing without an id for every pane, with an id already taken, or for an unknown tab', () => {

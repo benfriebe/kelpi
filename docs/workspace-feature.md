@@ -2067,7 +2067,7 @@ Restored after every dispatch, on every workspace the dispatch touched (`normali
 | `move-tab-to-workspace` | Moves the tab, its panes (lane records, web sidecars, and the `--here` sources they park, whole chains of them, with theirs) and its tree to the other workspace, appended, shown there unless `focus: false` (which also leaves `lastActiveWorkspaceID`). A workspace's only tab moves too, leaving the empty tab `replacementTabID` names; without one it is a no-op. |
 | `close-tab` | Closes every pane in the tab through `closePaneInWorkspace` (7.7, so each lands in the reopen stack), panes a `--here` close un-parks included. A workspace's only tab never closes. |
 | `close-other-tabs` | `close-tab` on every other tab; the named tab is shown. |
-| `duplicate-tab` | Duplicate Tab: a new tab just after the tab, with its name (an unnamed tab's copy stays unnamed), its un-zoomed tree and split ratios, and a fresh pane of the same kind for every pane in it, the caller minting every id (`paneIDs`, and `webTabIDs` for web panes). The copy's focus is the copy of the tab's focused pane, and it is not zoomed. Shown unless `focus: false` (then background and unseen). Nothing is made unless every pane in the tab has an id that is not taken. |
+| `duplicate-tab` | Duplicate Tab: a new tab just after the tab, with its name (an unnamed tab's copy stays unnamed), the tree it shows (`duplicableTree`: the un-zoomed tree and its split ratios, plus any pane a zoomed tab shows beside the zoomed one that the un-zoomed tree lacks, placed there; a leaf with no pane behind it is left out), and a fresh pane of the same kind for every pane in that tree, the caller minting every id (`paneIDs`, and `webTabIDs` for web panes). The copy's focus is the copy of the tab's focused pane, and it is not zoomed. Shown unless `focus: false` (then background and unseen). Nothing is made unless every pane copied has an id, and the new pane and tab ids are taken nowhere in the state. |
 
 What a copy of each pane is, in `duplicate-tab`:
 
@@ -2083,8 +2083,13 @@ What a copy of each pane is, in `duplicate-tab`:
 - **Plugin view**: the same view with the same state. A plugin view whose plugin is gone (an
   unavailable pane) is a terminal in the source's directory.
 
-No copy carries its source's label: labels address panes (`--target`), so two panes must not
-answer to one. Each copy starts with its own status, and the source tab is untouched.
+A shell's copy leaves its source's label behind: a shell's label is a name someone gave it to
+address it by (`--target worker-1`), so two shells must not answer to one. Every other copy
+keeps its source's label and title, which name what it shows (a plugin view's title, a
+document's file name, a diff's scope) and are what its header and its tab are called, so the
+copied tab reads as its source does. A shell left out of sync input (1.10) is left out in its
+copy too, so typing reaches the copy exactly as it reaches the source. Each copy starts with its
+own status, and the source tab is untouched.
 
 `move-pane-to-workspace` (socket-handlers.md §4.11) carries a pane's parked `--here` sources
 the same way (`movingCargo`), so closing the pane in its new workspace un-parks its source there.
@@ -2094,9 +2099,15 @@ mint the ids, end the PTYs of every pane a close removed (as `pane-close` does),
 close when a document pane's save fails. Two of them ask the OS where shells really are before
 they dispatch, so their reply waits on it: `workspace-tab-duplicate` for every shell in the tab,
 and a `workspace-tab-new` of the same kind as a focused shell for that shell (whose new terminal
-opens there, else where OSC 7 last said). Both re-read the workspace once the answer is in, so
-one deleted meanwhile is a refusal rather than a tab in nothing. The shells of a duplicated tab
-are spawned after the one dispatch.
+opens there, else where OSC 7 last said). Each shell's answer has its own deadline
+(`LIVE_DIRECTORY_DEADLINE_MS`, 1.5 s), after which that shell's stored directory is used, so
+one stalled lookup holds nothing else up. Both re-read the workspace once the answers are in, so
+one deleted meanwhile is a refusal rather than a tab in nothing, and a user who switched tabs
+while they waited keeps the tab they switched to: the new tab or copy then opens behind it. A
+duplicate saves the tab's documents first (`prepareDocumentClose`, which saves and closes
+nothing here; a save that fails leaves the copy with what was saved), so a scratchpad copied
+mid-typing has its last keystrokes. The shells of a duplicated tab are spawned after the one
+dispatch.
 
 Scripts and agents reach the same verbs on the control socket (`kelpi tab …`, `kelpi pane
 move-to-tab|move-to-new-tab`, the plugin SDK's `tabs` and `panes.moveToTab|moveToNewTab`;

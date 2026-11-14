@@ -947,8 +947,11 @@ describe('move-pane-to-workspace', () => {
         const source = ws(h.state(), W1);
         expect(source.zoomedPaneID).toBe(PA);
         expect(source.layout).toEqual({ kind: 'leaf', paneID: PA });
-        // The saved layout still holds both leaves; only the visible tree lost P0.
-        expect(allPaneIDs(source.savedLayout ?? { kind: 'empty' })).toEqual([P0, PA]);
+        // The saved layout loses P0 too: un-zooming (or a save, which writes `savedLayout`)
+        // must not bring back a leaf whose pane now lives in another workspace.
+        expect(allPaneIDs(source.savedLayout ?? { kind: 'empty' })).toEqual([PA]);
+        h.dispatch({ type: 'toggle-zoom', workspaceID: W1 });
+        expect(allPaneIDs(ws(h.state(), W1).layout)).toEqual([PA]);
     });
 
     it('carries the web sidecar across', () => {

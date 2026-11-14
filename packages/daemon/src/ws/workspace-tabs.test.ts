@@ -1,12 +1,13 @@
 import { leaf } from '@kelpi/core/layout';
 import type { JsonObject } from '@kelpi/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PaneHandlerContext } from '../handlers/pane/index.js';
 import { harness, seedSplit, seedWorkspace, testID, W1, W2, type Harness } from '../handlers/pane/testing.js';
 import { onScreenPaneIDs, tabPaneIDs, workspaceTabs } from '../store/tabs.js';
 import type { WorkspaceTab } from '../store/types.js';
 import {
+    LIVE_DIRECTORY_DEADLINE_MS,
     createWorkspaceTabChannel,
     isWorkspaceTabCommand,
     type WorkspaceTabChannelOptions,
@@ -148,6 +149,40 @@ describe('workspace-tab-new of the same kind as a shell', () => {
         const f = fixture({ liveWorkingDirectory: () => Promise.resolve('/elsewhere') });
         expect(f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'terminal' })).not.toBeInstanceOf(Promise);
     });
+
+    it('stops waiting on a lookup that never answers, and opens where the shell last said', async () => {
+        vi.useFakeTimers();
+        const f = fixture({ liveWorkingDirectory: () => new Promise<string | null>(() => undefined) });
+        const pending = f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'same' });
+        await vi.advanceTimersByTimeAsync(LIVE_DIRECTORY_DEADLINE_MS);
+        const reply = await pending;
+        expect(reply).toMatchObject({ ok: true });
+        expect(f.h.workspace(W1).panes.find((pane) => pane.id === reply['pane_id'])?.workingDirectory).toBe('/tmp/work');
+    });
+
+    it('opens behind the tab the user switched to while it asked', async () => {
+        let answer: (directory: string) => void = () => undefined;
+        const f = fixture({
+            tabs: [T1, T2, T3],
+            liveWorkingDirectory: () =>
+                new Promise<string>((resolve) => {
+                    answer = resolve;
+                })
+        });
+        f.run('workspace-tab-new', { workspace_id: W1, kind: 'terminal', focus: false });
+        const pending = f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'same' });
+        f.h.store.dispatch({ type: 'select-tab', workspaceID: W1, tabID: T1 });
+        answer('/tmp/work/deeper');
+        const reply = await pending;
+        expect(reply).toMatchObject({ ok: true, tab_id: T2 });
+        const workspace = f.h.workspace(W1);
+        expect(workspace.activeTabID).toBe(T1);
+        expect(workspaceTabs(workspace).find((tab) => tab.id === T2)?.seen).toBe(false);
+    });
+});
+
+afterEach(() => {
+    vi.useRealTimers();
 });
 
 describe('workspace-tab-duplicate', () => {
@@ -187,6 +222,84 @@ describe('workspace-tab-duplicate', () => {
 
     it('rides the pane lifecycle channel', () => {
         expect(isPaneLifecycleCommand('workspace-tab-duplicate')).toBe(true);
+    });
+
+    it('gives each shell its own deadline: one stuck lookup costs only its own directory', async () => {
+        vi.useFakeTimers();
+        const f = fixture({
+            liveWorkingDirectory: (paneID) => (paneID === P0 ? new Promise<string | null>(() => undefined) : Promise.resolve('/tmp/live'))
+        });
+        seedSplit(f.h, { workspaceID: W1, sourcePaneID: P0, paneID: P1 });
+        const pending = f.channel.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1 });
+        await vi.advanceTimersByTimeAsync(LIVE_DIRECTORY_DEADLINE_MS);
+        const reply = await pending;
+        const copies = reply['pane_ids'] as string[];
+        const directories = copies.map((paneID) => f.h.workspace(W1).panes.find((pane) => pane.id === paneID)?.workingDirectory);
+        expect(directories).toEqual(['/tmp/work', '/tmp/live']);
+    });
+
+    it('opens the copy behind the tab the user switched to while it asked', async () => {
+        let answer: (directory: string) => void = () => undefined;
+        const f = fixture({
+            liveWorkingDirectory: () =>
+                new Promise<string>((resolve) => {
+                    answer = resolve;
+                })
+        });
+        const other = f.run('workspace-tab-new', { workspace_id: W1, kind: 'terminal', focus: false });
+        const pending = f.channel.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1 });
+        f.h.store.dispatch({ type: 'select-tab', workspaceID: W1, tabID: String(other['tab_id']) });
+        answer('/tmp/work');
+        const reply = await pending;
+        const workspace = f.h.workspace(W1);
+        expect(workspace.activeTabID).toBe(other['tab_id']);
+        expect(workspaceTabs(workspace).find((tab) => tab.id === reply['tab_id'])?.seen).toBe(false);
+    });
+
+    it('saves what is being typed into the tab\'s documents first, so the copy has it', () => {
+        const f = fixture();
+        const SCRATCH = testID('D', 102);
+        f.h.store.dispatch({ type: 'create-scratchpad', workspaceID: W1, paneID: SCRATCH, now: 1 });
+        f.h.store.dispatch({ type: 'scratchpad-content-changed', workspaceID: W1, paneID: SCRATCH, content: 'saved draft' });
+        const flushed: string[][] = [];
+        const channel = createWorkspaceTabChannel({
+            ctx: {
+                ...f.h.ctx,
+                mintTabID: () => T1,
+                // The content service's flush: the buffered keystrokes reach the store.
+                prepareDocumentClose: (paneIDs) => {
+                    flushed.push([...paneIDs]);
+                    f.h.store.dispatch({ type: 'scratchpad-content-changed', workspaceID: W1, paneID: SCRATCH, content: 'saved draft plus the last line' });
+                }
+            }
+        });
+        const reply = channel.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1 }) as JsonObject;
+        expect(flushed[0]?.sort()).toEqual([P0, SCRATCH].sort());
+        const copy = (reply['pane_ids'] as string[]).find((paneID) => f.h.workspace(W1).panes.find((pane) => pane.id === paneID)?.type === 'scratchpad');
+        expect(f.h.workspace(W1).panes.find((pane) => pane.id === copy)?.scratchpadContent).toBe('saved draft plus the last line');
+    });
+
+    it('still copies when a document will not save, with what was saved', () => {
+        const f = fixture();
+        const channel = createWorkspaceTabChannel({
+            ctx: {
+                ...f.h.ctx,
+                mintTabID: () => T1,
+                prepareDocumentClose: () => {
+                    throw new Error('could not save notes.md');
+                }
+            }
+        });
+        expect(channel.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1 })).toMatchObject({ ok: true, tab_id: T1 });
+    });
+
+    it('mints a copied web pane\'s page id through the same seam as tab ids', () => {
+        const f = fixture();
+        f.h.store.dispatch({ type: 'open-web-pane', workspaceID: W1, paneID: P1, tabID: testID('A', 1), url: 'https://example.com', now: 1, sourcePaneID: P0 });
+        const reply = f.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1 });
+        const webCopy = (reply['pane_ids'] as string[]).find((paneID) => f.h.workspace(W1).webPanes[paneID] !== undefined) as string;
+        expect(f.h.workspace(W1).webPanes[webCopy]?.activeTabID).toBe(T1);
+        expect(reply['tab_id']).toBe(T2);
     });
 });
 

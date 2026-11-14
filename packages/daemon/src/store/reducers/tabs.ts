@@ -17,6 +17,7 @@ import { workspaceByID, workspaceContainingPane, workspaceContainingVisiblePane 
 import {
     activeTabIDOf,
     backgroundStash,
+    duplicableTree,
     inTab,
     insertTab,
     isActiveTab,
@@ -365,24 +366,27 @@ function renamedLeaves(layout: PaneLayout, rename: ReadonlyMap<string, string>):
 }
 
 /**
- * A fresh pane of `source`'s kind: the same directory, file, content, sizes and wrap, but no
- * label (labels address panes, so a copy must not answer to its source's), no agent session and
- * a status of its own. A shell starts where its source's shell really is when the caller found
- * out. A pane that cannot be made again (a plugin view whose plugin is gone) is a terminal in
- * the source's directory.
+ * A fresh pane of `source`'s kind: the same directory, file, content, sizes and wrap, no agent
+ * session and a status of its own. A shell starts where its source's shell really is when the
+ * caller found out, and leaves its label behind: a shell's label is a name someone gave it to
+ * address it by (`--target worker-1`), so a copy must not answer to it. Every other pane keeps
+ * its label and title, which name what it shows (a plugin view's title, a document's file, a
+ * diff's scope) and are what its header and its tab are called. A pane that cannot be made
+ * again (a plugin view whose plugin is gone) is a terminal in the source's directory.
  */
 function copiedPane(source: Pane, id: string, action: Extract<DomainAction, { type: 'duplicate-tab' }>): Pane {
     if (source.unavailable !== undefined || (source.type === 'plugin' && source.plugin === undefined)) {
         return newPane({ id, workingDirectory: source.workingDirectory, nowMillis: action.now });
     }
+    const shell = source.type === 'shell';
     const pane = newPane({
         id,
-        workingDirectory:
-            source.type === 'shell' ? (action.workingDirectories?.[source.id] ?? source.workingDirectory) : source.workingDirectory,
+        workingDirectory: shell ? (action.workingDirectories?.[source.id] ?? source.workingDirectory) : source.workingDirectory,
         nowMillis: action.now,
         type: source.type,
-        // A web pane's title is its page's, and the copy opens the same page.
-        title: source.type === 'web' ? source.title : null,
+        label: shell ? null : source.label,
+        // A shell's title is whatever its process last said; a fresh shell says its own.
+        title: shell ? null : source.title,
         filePath: source.filePath,
         scratchpadContent: source.scratchpadContent,
         csvHeaderRow: source.csvHeaderRow,
@@ -407,14 +411,30 @@ function copiedWebPane(source: WebPaneState | undefined, webTabID: string): WebP
     };
 }
 
-function duplicateTab(workspace: WorkspaceState, action: Extract<DomainAction, { type: 'duplicate-tab' }>): WorkspaceState {
+/** Every pane and tab id in use anywhere, which a copy's new ids must avoid. */
+function takenIDs(state: DaemonState): { readonly panes: Set<string>; readonly tabs: Set<string> } {
+    const panes = new Set<string>();
+    const tabs = new Set<string>();
+    for (const workspace of state.workspaces) {
+        for (const pane of [...workspace.panes, ...workspace.parkedPanes]) panes.add(pane.id);
+        for (const tab of workspaceTabs(workspace)) tabs.add(tab.id);
+    }
+    return { panes, tabs };
+}
+
+function duplicateTab(
+    state: DaemonState,
+    workspace: WorkspaceState,
+    action: Extract<DomainAction, { type: 'duplicate-tab' }>
+): WorkspaceState {
     const source = tabByID(workspace, action.tabID);
-    if (source === null || tabByID(workspace, action.newTabID) !== null) return workspace;
+    const inUse = takenIDs(state);
+    const taken = inUse.panes;
+    if (source === null || inUse.tabs.has(action.newTabID)) return workspace;
     const tuple = tabLayout(workspace, source);
-    const tree = tuple.savedLayout ?? tuple.layout;
+    const tree = duplicableTree(workspace, source);
     const ids = allPaneIDs(tree);
     if (ids.length === 0) return workspace;
-    const taken = new Set([...workspace.panes, ...workspace.parkedPanes].map((pane) => pane.id));
     const rename = new Map<string, string>();
     const copies: Pane[] = [];
     let webPanes = workspace.webPanes;
@@ -440,7 +460,19 @@ function duplicateTab(workspace: WorkspaceState, action: Extract<DomainAction, {
         visit,
         backgroundStash(renamedLeaves(tree, rename), rename.get(focusSource) ?? null)
     );
-    const next = insertTab({ ...workspace, panes: [...workspace.panes, ...copies], webPanes }, tab, tabIndex(workspace, source.id) + 1);
+    // A shell left out of sync input stays out of it in the copy: typing reaches the copy
+    // exactly as it reaches its source.
+    const excluded = ids.filter((id) => workspace.syncInputExcluded.includes(id)).map((id) => rename.get(id) as string);
+    const next = insertTab(
+        {
+            ...workspace,
+            panes: [...workspace.panes, ...copies],
+            webPanes,
+            ...(excluded.length === 0 ? {} : { syncInputExcluded: [...workspace.syncInputExcluded, ...excluded] })
+        },
+        tab,
+        tabIndex(workspace, source.id) + 1
+    );
     return visit ? showTab(next, tab.id) : next;
 }
 
@@ -492,7 +524,7 @@ export function reduceTabAction(state: DaemonState, action: TabAction, reduceFam
         case 'close-other-tabs':
             return updateWorkspace(state, action.workspaceID, (workspace) => closeOtherTabs(workspace, action.tabID));
         case 'duplicate-tab':
-            return updateWorkspace(state, action.workspaceID, (workspace) => duplicateTab(workspace, action));
+            return updateWorkspace(state, action.workspaceID, (workspace) => duplicateTab(state, workspace, action));
     }
 }
 

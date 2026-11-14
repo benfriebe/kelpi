@@ -2163,7 +2163,9 @@ hook scripts and saved state keep working; each explains why the code does somet
     the distinct `"pane capture failed: …"` line instead.
 16. **Zoom interactions.** `pane-resize` refuses while zoomed (specific error), and
     `pane-move-to-workspace` un-zooms by restoring the saved layout minus the moved pane.
-    Both touch points are preserved.
+    Moving any other pane leaves the zoom on and takes the pane out of the saved layout too, so
+    un-zooming (or a save, which writes the saved layout) never brings back a leaf whose pane
+    lives in another workspace. Both touch points are preserved.
 17. **`workspace-delete --prune-worktree` is daemon-side.** The CLI sends
     `prune_worktrees` and the daemon removes the workspace's linked worktrees from its repo
     associations (graft-git.md §8.7). The `path` field (first shell pane's cwd) is still

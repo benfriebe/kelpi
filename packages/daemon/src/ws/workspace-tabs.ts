@@ -15,12 +15,13 @@
  */
 
 import { newUUID } from '@kelpi/core/codec';
-import { dropZoneForWireEdge } from '@kelpi/core/layout';
+import { allPaneIDs as treePaneIDs, dropZoneForWireEdge } from '@kelpi/core/layout';
 import { DROP_ZONES, type DropZone as WireDropZone, type JsonObject } from '@kelpi/protocol';
 
 import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../handlers/pane/index.js';
 import {
     activeTabIDOf,
+    duplicableTree,
     tabByID,
     tabIndex,
     tabOfPane,
@@ -53,6 +54,30 @@ export type WorkspaceTabCommand = (typeof WORKSPACE_TAB_COMMANDS)[number];
 export type WaitingWorkspaceTabCommand = 'workspace-tab-new' | 'workspace-tab-duplicate';
 /** Every other verb: its reply is there when `run` returns. */
 export type ImmediateWorkspaceTabCommand = Exclude<WorkspaceTabCommand, WaitingWorkspaceTabCommand>;
+
+/**
+ * How long a new or copied tab waits on the OS for where one shell is (`liveWorkingDirectory`)
+ * before it uses the directory the shell last reported. The lookup is bounded in production, but
+ * resolving the answer touches the filesystem, and a stalled mount must not hold the tab up.
+ */
+export const LIVE_DIRECTORY_DEADLINE_MS = 1_500;
+
+/** `promise`'s value, or `fallback` if it fails or has not settled within `ms`. */
+function withDeadline<T>(promise: Promise<T>, fallback: T, ms: number): Promise<T> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(fallback), ms);
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            () => {
+                clearTimeout(timer);
+                resolve(fallback);
+            }
+        );
+    });
+}
 
 export function isWorkspaceTabCommand(command: string): command is WorkspaceTabCommand {
     return (WORKSPACE_TAB_COMMANDS as readonly string[]).includes(command);
@@ -153,7 +178,15 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         const lookup = ctx.liveWorkingDirectory;
         const shells = paneIDs.filter((paneID) => visiblePane(workspace, paneID)?.type === 'shell');
         if (lookup === undefined || shells.length === 0) return null;
-        return Promise.all(shells.map((paneID) => lookup(paneID).catch(() => null))).then((found) => {
+        // Each shell on its own deadline, so one stuck lookup costs only its own answer.
+        const asked = shells.map((paneID) =>
+            withDeadline(
+                Promise.resolve().then(() => lookup(paneID)),
+                null,
+                LIVE_DIRECTORY_DEADLINE_MS
+            )
+        );
+        return Promise.all(asked).then((found) => {
             const directories: Record<string, string> = {};
             shells.forEach((paneID, index) => {
                 const directory = found[index];
@@ -175,9 +208,19 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         // "The same kind as the focused pane", for a shell: a terminal where that shell is now,
         // which only the OS knows (OSC 7 may never have said), so ask before opening it.
         const asking = requested === 'same' && focusedPane?.type === 'shell' ? liveDirectories(workspace, [focusedPane.id]) : null;
-        if (asking === null || focusedPane === null) return openNewTab(payload, requested as NewTabKind, {});
-        return asking.then((found) => openNewTab(payload, requested as NewTabKind, found));
+        if (asking === null || focusedPane === null) return openNewTab(payload, requested as NewTabKind, {}, null);
+        const shown = activeTabIDOf(workspace);
+        return asking.then((found) => openNewTab(payload, requested as NewTabKind, found, shown));
     };
+
+    /**
+     * Whether a tab opened after a wait may take the screen: only if it was asked to and the
+     * user is still looking at the tab they were on when it was asked for (`shownBefore`; null =
+     * nothing was waited on). A tab they switched to meanwhile is theirs, so the new one opens
+     * behind it instead.
+     */
+    const mayShow = (payload: Record<string, unknown>, workspace: WorkspaceState, shownBefore: string | null): boolean =>
+        payload['focus'] !== false && (shownBefore === null || activeTabIDOf(workspace) === shownBefore);
 
     /**
      * `newTab` once any wait is over: re-read, since the workspace can change or go meanwhile. A
@@ -186,7 +229,8 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
     const openNewTab = (
         payload: Record<string, unknown>,
         requested: NewTabKind,
-        liveDirectories: Readonly<Record<string, string>>
+        liveDirectories: Readonly<Record<string, string>>,
+        shownBefore: string | null
     ): JsonObject => {
         const workspace = workspaceFor(payload);
         if (workspace === null) return failure('workspace-tab-new requires a known workspace_id');
@@ -212,7 +256,7 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
                     : workspaceFolder(workspace);
             create = { type: 'create-pane', workspaceID: workspace.id, paneID, now: at, workingDirectory: directory, focus: true };
         }
-        const focus = payload['focus'] !== false;
+        const focus = mayShow(payload, workspace, shownBefore);
         ctx.store.dispatch({
             type: 'create-tab',
             workspaceID: workspace.id,
@@ -250,21 +294,36 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
     const duplicate = (payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
         const args = tabArgs(payload, 'workspace-tab-duplicate');
         if (isFailure(args)) return args;
-        const asking = liveDirectories(args.workspace, workspaceTabPanes(args.workspace, args.tabID));
-        if (asking === null) return copyTab(payload, {});
-        return asking.then((directories) => copyTab(payload, directories));
+        const asking = liveDirectories(args.workspace, copySources(args.workspace, args.tabID));
+        if (asking === null) return copyTab(payload, {}, null);
+        const shown = activeTabIDOf(args.workspace);
+        return asking.then((directories) => copyTab(payload, directories, shown));
     };
 
-    const copyTab = (payload: Record<string, unknown>, workingDirectories: Readonly<Record<string, string>>): JsonObject => {
+    const copyTab = (
+        payload: Record<string, unknown>,
+        workingDirectories: Readonly<Record<string, string>>,
+        shownBefore: string | null
+    ): JsonObject => {
+        const before = tabArgs(payload, 'workspace-tab-duplicate');
+        if (isFailure(before)) return before;
+        // Save what is being typed into the tab's documents first (a scratchpad holds its last
+        // keystrokes in a buffer for half a second), so the copy has it. This saves and closes
+        // nothing; a save that fails leaves the copy with what was saved before it.
+        try {
+            ctx.prepareDocumentClose?.(copySources(before.workspace, before.tabID));
+        } catch {
+            // The copy takes what is saved.
+        }
         const args = tabArgs(payload, 'workspace-tab-duplicate');
         if (isFailure(args)) return args;
         const workspace = args.workspace;
-        const sources = workspaceTabPanes(workspace, args.tabID);
+        const sources = copySources(workspace, args.tabID);
         const paneIDs: Record<string, string> = {};
         const webTabIDs: Record<string, string> = {};
         for (const sourceID of sources) {
             paneIDs[sourceID] = mintPane();
-            if (visiblePane(workspace, sourceID)?.type === 'web') webTabIDs[sourceID] = newUUID();
+            if (visiblePane(workspace, sourceID)?.type === 'web') webTabIDs[sourceID] = mintTab();
         }
         const newTabID = mintTab();
         ctx.store.dispatch({
@@ -276,7 +335,7 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
             webTabIDs,
             workingDirectories,
             now: now(),
-            focus: payload['focus'] !== false
+            focus: mayShow(payload, workspace, shownBefore)
         });
         const after = workspaceByID(state(), workspace.id);
         if (after === null || tabByID(after, newTabID) === null) return failure('the tab could not be duplicated');
@@ -435,4 +494,10 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
 function workspaceTabPanes(workspace: WorkspaceState, tabID: string): string[] {
     const tab = tabByID(workspace, tabID);
     return tab === null ? [] : tabPaneIDs(workspace, tab);
+}
+
+/** The panes a copy of the tab takes, in layout order (`duplicableTree`; none for an unknown tab). */
+function copySources(workspace: WorkspaceState, tabID: string): string[] {
+    const tab = tabByID(workspace, tabID);
+    return tab === null ? [] : treePaneIDs(duplicableTree(workspace, tab));
 }

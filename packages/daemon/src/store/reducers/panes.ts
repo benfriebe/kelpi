@@ -622,6 +622,10 @@ function movePaneToWorkspace(
             zoomedPaneID: null,
             savedLayout: null
         };
+    } else if (nextSource.savedLayout !== null) {
+        // Zoomed on another pane: the tree un-zooming restores must not bring the moved pane
+        // back as a leaf with no pane behind it.
+        nextSource = { ...nextSource, savedLayout: removing(nextSource.savedLayout, action.paneID) };
     }
 
     const anchor = target.focusedPaneID ?? allPaneIDs(target.layout)[0] ?? null;

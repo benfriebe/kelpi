@@ -14,7 +14,7 @@
  * Pure, and free of Node imports: the client replays the store and reads these helpers too.
  */
 
-import { allPaneIDs, containsPane, removing, split, type PaneLayout } from '@kelpi/core/layout';
+import { allPaneIDs, containsPane, removing, replacing, split, type PaneLayout } from '@kelpi/core/layout';
 import { initialTab, type TabLayoutStash, type WorkspaceState, type WorkspaceTab } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,38 @@ export function tabTree(workspace: WorkspaceState, tab: WorkspaceTab): PaneLayou
 /** The tab's panes, in layout order. */
 export function tabPaneIDs(workspace: WorkspaceState, tab: WorkspaceTab): string[] {
     return allPaneIDs(tabTree(workspace, tab));
+}
+
+/**
+ * The tree a copy of `tab` takes (Duplicate Tab, workspace-feature.md §12.5): the un-zoomed tree,
+ * with the panes a zoomed tab shows that are not in it (a document opened beside a zoomed pane
+ * lands only in the zoomed tree) placed where they are on screen, beside the zoomed pane, and
+ * without a leaf that has no pane behind it. So the copy holds what the user can see, and older
+ * leftovers never make the whole copy fail.
+ */
+export function duplicableTree(workspace: WorkspaceState, tab: WorkspaceTab): PaneLayout {
+    const tuple = tabLayout(workspace, tab);
+    let tree = tuple.savedLayout ?? tuple.layout;
+    if (tuple.savedLayout !== null) {
+        const saved = tuple.savedLayout;
+        const extras = allPaneIDs(tuple.layout).filter((paneID) => !containsPane(saved, paneID));
+        if (extras.length > 0) {
+            // What is on screen, less the panes the saved tree already places.
+            let shown = tuple.layout;
+            for (const paneID of allPaneIDs(tuple.layout)) {
+                if (paneID !== tuple.zoomedPaneID && containsPane(saved, paneID)) shown = removing(shown, paneID);
+            }
+            const zoomed = tuple.zoomedPaneID;
+            if (zoomed !== null && containsPane(saved, zoomed) && containsPane(shown, zoomed)) tree = replacing(saved, zoomed, shown);
+            else if (saved.kind === 'empty') tree = shown;
+            else tree = split('horizontal', 0.5, saved, shown);
+        }
+    }
+    const live = new Set(workspace.panes.map((pane) => pane.id));
+    for (const paneID of allPaneIDs(tree)) {
+        if (!live.has(paneID)) tree = removing(tree, paneID);
+    }
+    return tree;
 }
 
 /** The tab whose tree holds `paneID`, or null (a parked pane, an orphan, another workspace's). */

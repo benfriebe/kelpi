@@ -25,11 +25,12 @@ import { usePluginCommands } from '../plugins/commands';
  * the pane's links are resolved on this window's daemon, which answers `pane not found`.
  */
 
-import { useEffect, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useMemo, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
 import { wireEdgeForDropZone } from '@kelpi/core/layout';
 import { onScreenPanes } from '../chrome/workspace-tabs';
+import { createWorkspaceTabActions } from '../features/workspace-tabs-actions';
 
 import { tokens } from '../chrome/tokens';
 import { PaneGrid } from '../grid';
@@ -81,6 +82,22 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
      * starts from, never reached this window.
      */
     const defaultFontSize = useStore(runtime.store, remoteDefaultFontSize);
+    /*
+     * workspace-feature.md §12: a pane dragged onto the title bar's tabs, which are this
+     * daemon's while its workspace fills the pane area (`app/remote-tabs.ts`), moves through
+     * this daemon's own verbs. The window's toasts are not reachable from here; a refusal shows
+     * as the pane staying where it was, as `movePaneAdjacent` below already does.
+     */
+    const tabActions = useMemo(
+        () =>
+            createWorkspaceTabActions({
+                commands: runtime.commands,
+                activeWorkspace: () => runtime.store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID) ?? null,
+                focusedPaneID: () => null,
+                run: () => true
+            }),
+        [runtime, workspaceID]
+    );
 
     // The remote daemon fans PTY bytes out by what this connection REPORTS it is showing —
     // the same activation contract the primary window keeps.
@@ -206,6 +223,12 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                     zone: wireEdgeForDropZone(zone)
                 })
             }
+            onMovePaneToNewTab={(paneID) => {
+                tabActions.movePaneToNewTab(paneID);
+            }}
+            onMovePaneToTab={(paneID, target) => {
+                tabActions.movePaneOntoTab(paneID, target);
+            }}
             /* The empty-layout "New Pane" affordance, same swallow if left unwired. */
             onCreatePane={() => void runtime.commands.createPane({ workspace: workspaceID })}
             onSetRatio={(splitPath, ratio, commit) => {

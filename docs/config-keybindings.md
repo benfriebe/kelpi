@@ -325,7 +325,9 @@ connection, command RPC, PTY streams and store mirror (`app/remote-daemons.ts`) 
   the terminal theme stay the local window's (#216). Content and web panes render
   an honest placeholder there (staged); while a remote workspace is showing, the LOCAL
   pane keymap stands down (`hasActiveWorkspace` answers false) so a ⌘D cannot split the
-  hidden local workspace;
+  hidden local workspace. The title bar draws that workspace's tabs, and the "Tabs" actions
+  (section 4) act on it over its daemon's connection, menu rows included (shell-ui.md §3.3,
+  `packages/client/src/app/remote-tabs.ts`);
 - the New Group sheet gains a "Runs on" picker (rendered only when the registry is
   non-empty, defaulting to "This Mac"): choosing a remote creates the group ON that daemon
   over its own connection — no local row exists;
@@ -678,7 +680,8 @@ Legend:
 
 ### Category "Tabs" (visible)
 
-The active workspace's own tabs (workspace-feature.md §12, shell-ui.md §3.3), not a web pane's,
+The tabs of the workspace in the pane area (workspace-feature.md §12, shell-ui.md §3.3), a
+paired daemon's included (section 1.7), not a web pane's,
 which are the `web_tab_*` actions and section 7.3's ⌘T / ⌘⇧[ / ⌘⇧]. All of them are on ⌥⌘
 because those chords, and ⌘1…⌘9, were taken; a web page hands them to the window like its
 other claimed chords.
@@ -1074,8 +1077,11 @@ handleKeyDown(event):
   // 3. Need an active workspace for anything pane-related. A REMOTE workspace showing in
   //    the area counts as none (section 1.7), so a ⌘D cannot split the hidden local one.
   //    The four window-arrangement actions (WINDOW_ARRANGEMENT_ACTIONS, section 7.7) are not
-  //    pane work and pass: Zen Mode over an empty daemon still needs its chord out.
+  //    pane work and pass: Zen Mode over an empty daemon still needs its chord out. The
+  //    "Tabs" actions (WORKSPACE_TAB_ACTIONS) pass while a remote workspace's tabs are in
+  //    the title bar (hasTabWorkspace): they act on that workspace, not the hidden local one.
   if activeWorkspaceID == null and keybindings.action(trigger) not in WINDOW_ARRANGEMENT_ACTIONS
+     and not (keybindings.action(trigger) in WORKSPACE_TAB_ACTIONS and hasTabWorkspace)
      -> return false
 
   trigger = KeyTrigger(event)   // normalized per section 3.1

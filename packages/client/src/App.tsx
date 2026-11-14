@@ -32,6 +32,7 @@ import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureL
 import { createWorkspacesActions } from './features/workspaces-actions';
 import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
+import { remoteWorkspaceOf, tabTargetFor, useRemoteWorkspace, type TabTarget } from './app/remote-tabs';
 import { actionsDuringGesture, createRecentSwitcher, heldModifiersFromEvent } from './app/recent-switcher';
 import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
 import { RecentWorkspaceSwitcherHost } from './chrome/RecentWorkspaceSwitcher';
@@ -358,6 +359,8 @@ export interface AppProps {
     /** The phone shell's two test seams (`phone/PhoneShell.tsx`): the host list's storage and how a host is dialled. */
     readonly phoneHostStorage?: StorageLike | null | undefined;
     readonly phoneRuntimeFactory?: RemoteRuntimeFactory | undefined;
+    /** How the desktop dials a paired daemon (Settings ▸ Remote); a test hands in a fake. */
+    readonly remoteRuntimeFactory?: RemoteRuntimeFactory | undefined;
     /** The camera the phone's Add host scans a pairing code with; a test hands in a fake. */
     readonly phoneQrCamera?: QrCamera | undefined;
 }
@@ -479,7 +482,7 @@ function Shell(props: AppProps): ReactElement {
      * remote workspace (if any) the workspace area is showing. A LOCAL activation clears the
      * selection (`activateWorkspaceAndReveal`); a vanished daemon clears it below.
      */
-    const remoteDaemonRuntimes = useRemoteDaemons(settings.remoteDaemons);
+    const remoteDaemonRuntimes = useRemoteDaemons(settings.remoteDaemons, props.remoteRuntimeFactory);
     /** The phone shell's configured hosts, as one array that only changes when the runtimes do. */
     const configuredDaemonList = useMemo(() => [...remoteDaemonRuntimes.values()], [remoteDaemonRuntimes]);
     const { selection: remoteSelection, select: setRemoteSelection, activeRemote } = useRemoteWorkspaceSelection(remoteDaemonRuntimes);
@@ -1881,14 +1884,25 @@ function Shell(props: AppProps): ReactElement {
         };
 
         const workspacesActions = createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle });
+        const tabTarget = (): TabTarget =>
+            tabTargetFor(remoteSelectionRef.current, activeRemoteRef.current, () => ({
+                commands,
+                workspace: activeWorkspace(),
+                focusedPaneID: focused()
+            }));
         return {
             ...createInspectorActions({ commands, activeWorkspace, focusedPaneID: focused, run, refresh: inspectorData.refresh }),
             ...createToolbarActions({ commands, activeWorkspaceID, focusedPaneID: focused, run, setInspectorVisible }),
-            // workspace-feature.md §12: the tab bar, ⌥⌘T and friends, the menus and the palette.
+            /*
+             * workspace-feature.md §12: the tab bar, ⌥⌘T and friends, the menus and the palette.
+             * They act on whichever workspace fills the pane area: this daemon's, or, while a
+             * paired daemon's workspace is selected (§1.7), that one over its own connection
+             * (`app/remote-tabs.ts`), so no tab gesture reaches the hidden local workspace.
+             */
             ...createWorkspaceTabActions({
-                commands,
-                activeWorkspace,
-                focusedPaneID: focused,
+                commands: { raw: (payload) => tabTarget().commands.raw(payload) },
+                activeWorkspace: () => tabTarget().workspace,
+                focusedPaneID: () => tabTarget().focusedPaneID,
                 run,
                 confirmClose: (workspace, tabIDs, close) => {
                     const agents = tabsAgentSummary(workspace, tabIDs);
@@ -3666,6 +3680,12 @@ function Shell(props: AppProps): ReactElement {
             // header buttons carry those gestures; chords fall through to the terminal.
             hasActiveWorkspace: () =>
                 remoteSelectionRef.current === null && selectActiveWorkspace(store.getState()) !== null,
+            // ...except the tab chords: the title bar draws that workspace's tabs, and they act
+            // on it over its own daemon's connection (workspace-feature.md §12).
+            hasTabWorkspace: () => {
+                const selection = remoteSelectionRef.current;
+                return selection !== null && remoteWorkspaceOf(activeRemoteRef.current, selection.workspaceID) !== null;
+            },
             // §7.2 step 2 (SET-186 / APP-109). Returning false leaves Escape to the normal
             // lookup, which is `close_search` by default.
             onEscape: () => sidebarEscapeRef.current?.() ?? false,
@@ -4909,16 +4929,19 @@ function Shell(props: AppProps): ReactElement {
     });
     const chromeModel = chromeSource.snapshot();
     /*
-     * workspace-feature.md §12 / shell-ui.md §3.3: the active workspace's tabs in the title bar.
-     * The leading section takes the sidebar's width while the sidebar is open on the left, so the
-     * separator ending it continues the sidebar's edge and the first tab starts where the first
-     * pane does; any other arrangement leaves it as wide as its controls.
+     * workspace-feature.md §12 / shell-ui.md §3.3: the tabs of the workspace that fills the pane
+     * area, in the title bar: this daemon's active workspace, or a paired daemon's while one is
+     * selected (§1.7), read from that daemon's mirror and driven over its connection (the tab
+     * actions resolve the same target, `app/remote-tabs.ts`). The leading section takes the
+     * sidebar's width while the sidebar is open on the left, so the separator ending it
+     * continues the sidebar's edge and the first tab starts where the first pane does; any other
+     * arrangement leaves it as wide as its controls.
      */
-    const tabViews = useMemo(() => (workspace === null ? null : workspaceTabViews(workspace)), [workspace]);
+    const remoteWorkspace = useRemoteWorkspace(activeRemote, remoteSelection?.workspaceID ?? null);
+    const tabWorkspace = remoteSelection !== null ? remoteWorkspace : workspace;
+    const tabViews = useMemo(() => (tabWorkspace === null ? null : workspaceTabViews(tabWorkspace)), [tabWorkspace]);
     const tabBar: WorkspaceTabBarProps | undefined =
-        // A remote daemon's workspace fills the pane area: its tabs are that daemon's, which this
-        // bar does not drive yet, so the bar shows the identity it always has there.
-        workspace === null || tabViews === null || remoteSelection !== null
+        tabWorkspace === null || tabViews === null
             ? undefined
             : {
                   tabs: tabViews,
@@ -4937,12 +4960,19 @@ function Shell(props: AppProps): ReactElement {
                   onNewTab: () => {
                       act.newTab();
                   },
-                  onMoveToWorkspace: (tabID, workspaceID) => {
-                      const local = store.getState().daemon.state.workspaces.some((candidate) => candidate.id === workspaceID);
-                      if (local && workspaceID !== workspace.id) act.moveTabToWorkspace(tabID, workspaceID);
-                  },
+                  // A sidebar row is this daemon's workspace; a remote workspace's tab moves to
+                  // another of ITS daemon's workspaces from the tab menu instead.
+                  onMoveToWorkspace:
+                      remoteSelection !== null
+                          ? undefined
+                          : (tabID, workspaceID) => {
+                                const local = store.getState().daemon.state.workspaces.some((candidate) => candidate.id === workspaceID);
+                                if (local && workspaceID !== tabWorkspace.id) act.moveTabToWorkspace(tabID, workspaceID);
+                            },
                   onReleaseCaret: () => {
-                      handBackPaneCaret(selectFocusedPaneID(store.getState()));
+                      handBackPaneCaret(
+                          remoteSelection !== null ? remoteWorkspaceOf(activeRemote, remoteSelection.workspaceID)?.focusedPaneID ?? null : selectFocusedPaneID(store.getState())
+                      );
                   },
                   newTabMenuItems: [
                       { id: 'new-terminal-tab', label: 'New Terminal Tab', onSelect: () => act.newTab('terminal') },
@@ -4953,19 +4983,21 @@ function Shell(props: AppProps): ReactElement {
                       {
                           id: 'move-focused-pane-to-new-tab',
                           label: 'Move Focused Pane to New Tab',
-                          disabled: onScreenPaneIDs(workspace).length <= 1,
+                          disabled: onScreenPaneIDs(tabWorkspace).length <= 1,
                           onSelect: () => act.moveFocusedPaneToNewTab()
                       }
                   ],
                   tabMenuItems: (tab: WorkspaceTabView) => {
-                      const state = store.getState().daemon.state;
+                      // The workspaces of the daemon that owns this one: a tab cannot change machine.
+                      const state = (remoteSelection !== null && activeRemote !== null ? activeRemote.runtime.store : store).getState().daemon.state;
                       const others = sidebarWorkspaceOrder(state)
-                          .filter((id) => id !== workspace.id)
+                          .filter((id) => id !== tabWorkspace.id)
                           .map((id) => state.workspaces.find((candidate) => candidate.id === id))
                           .filter((candidate): candidate is WorkspaceState => candidate !== undefined);
-                      const only = workspaceTabs(workspace).length <= 1;
+                      const only = workspaceTabs(tabWorkspace).length <= 1;
                       return [
                           { id: 'new-tab-right', label: 'New Tab to the Right', onSelect: () => act.newTab(undefined, tab.index + 1) },
+                          { id: 'duplicate-tab', label: 'Duplicate Tab', onSelect: () => act.duplicateTab(tab.id) },
                           { id: 'separator:tab-arrange', label: '', kind: 'separator' },
                           {
                               id: 'split-tab-panes',
@@ -5399,10 +5431,10 @@ function Shell(props: AppProps): ReactElement {
                         onMovePaneToNewTab={(paneID) => {
                             act.movePaneToNewTab(paneID);
                         }}
-                        // workspace-feature.md §12: a pane dropped on the title bar's tabs.
+                        // workspace-feature.md §12: a pane dropped on the title bar's tabs, or into
+                        // a tab the drag opened on its way (beside the pane under the release).
                         onMovePaneToTab={(paneID, target) => {
-                            if (target.kind === 'tab') act.movePaneToTab(paneID, target.tabID);
-                            else act.movePaneToNewTab(paneID, target.index);
+                            act.movePaneOntoTab(paneID, target);
                         }}
                         onCreatePane={act.createPane}
                         onSetRatio={(splitPath, ratio, commit) => {

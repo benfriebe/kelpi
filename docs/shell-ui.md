@@ -306,10 +306,9 @@ Custom 32pt-high bar drawn as content at the very top (the shell creates the win
 no native bar to hide).
 Background = `theme.footerBackground` with a 1px bottom divider.
 
-Left to right: the leading controls (§3.2), then, with a local workspace on screen, that
-workspace's tabs (§3.3), then the trailing controls (§3.2). With no workspace, or while a remote
-daemon's workspace fills the pane area (its tabs are that daemon's, which this bar does not
-drive), the centred identity cluster (§3.1) stands where the tabs would be.
+Left to right: the leading controls (§3.2), then the tabs of the workspace that fills the pane
+area (§3.3), this daemon's or a paired daemon's, then the trailing controls (§3.2). With no
+workspace the centred identity cluster (§3.1) stands where the tabs would be.
 
 **Drag & double-click:** empty bar area drags the window; double-click in the strip
 (excluding the two gutter insets) performs the user's OS "double-click title bar"
@@ -364,10 +363,19 @@ Both are tinted `textSecondary`, 13pt, 14pt apart.
 
 ### 3.3 Workspace tabs
 
-The active workspace's tabs (workspace-feature.md §12), drawn by `WorkspaceTabBar`
-(`packages/client/src/chrome/WorkspaceTabBar.tsx`) from one view per tab
+The tabs of the workspace that fills the pane area (workspace-feature.md §12), drawn by
+`WorkspaceTabBar` (`packages/client/src/chrome/WorkspaceTabBar.tsx`) from one view per tab
 (`chrome/workspace-tabs.ts`) and placed by `TopBar.tsx`. Every gesture is a WS verb
 (socket-handlers.md §4.17) and nothing is optimistic, so every window shows the daemon's tabs.
+
+**A paired daemon's workspace** (config-keybindings.md §1.7): while one fills the pane area the
+bar draws its tabs, read from that daemon's own mirror, and every tab gesture goes over that
+daemon's connection (`packages/client/src/app/remote-tabs.ts`): the bar, the tab menu, the native
+menu rows, the palette and the tab chords, which pass the window dispatcher even though its pane
+chords stand down there. None of them reaches the hidden local workspace. Two differences: a
+tab dragged onto a sidebar row stays put (a row is this daemon's workspace, and a tab cannot
+change machine; Move Tab to Workspace ▸ lists the paired daemon's own workspaces instead), and
+a refused verb shows no toast.
 
 **Layout:**
 
@@ -419,7 +427,8 @@ New Tab (disabled while the tab on screen holds one pane).
 - Double-click renames it in place: a field holding its name, selected (empty, with the title
   as placeholder, while it is named after its pane). Enter or a blur keeps the trimmed text, an
   empty one naming the tab after its pane again; Escape cancels.
-- Right-click opens the tab menu: Rename Tab…, New Tab to the Right, a divider, Give Each Pane
+- Right-click opens the tab menu: Rename Tab…, New Tab to the Right, Duplicate Tab (a copy just
+  after it: the same layout, with new panes of the same kinds), a divider, Give Each Pane
   Its Own Tab (disabled with one pane), Merge Into Previous Tab (disabled on the first tab),
   Move Tab to Workspace ▸ (the other workspaces in sidebar order; disabled when there are none),
   a divider, Close Tab and Close Other Tabs (both disabled while there is one tab).
@@ -449,6 +458,17 @@ grid draws no drop zone of its own.
 
 A pane alone in its tab, dropped between tabs, moves its tab there instead.
 
+**Spring-loading:** a pane held over a tab that is not on screen for 600ms (`TAB_SPRING_MS`,
+`chrome/tab-drop.ts`) opens that tab, and the drag goes on in its grid. The tab fills with an
+accent @ 0.22 wash from the left over the hold (a static wash under reduced motion), and moving
+off it starts over. Released beside a pane of the opened tab, the pane goes in at that drop zone
+(`pane-move-to-tab` with `target_pane_id` and `zone`); released anywhere else over the grid, it
+goes into that tab beside its focused pane; released on the bar, the bar's rules above apply.
+Escape, a release outside the grid and the bar, a release on the button of the tab the drag
+started in, or the window losing the pointer (`chrome/gesture-reset.ts`) show the tab the drag
+started in again and move nothing. Neither the tab on screen, the gaps between tabs nor the
+new-tab slot springs. Escape cancels any pane drag, sprung or not.
+
 **Fullscreen:** a fullscreen window has no traffic lights, so the page keeps no gutter for them
 and the leading controls start 12pt from the edge, tabs or not. The shell adds `&fullscreen=1`
 when it loads the page into a window that is already fullscreen, and relays
@@ -459,8 +479,8 @@ fullscreen, and again when its status socket reconnects (`packages/shell/src/tit
 **Elsewhere:** the sidebar row counts a workspace's tabs (§5.3); the pane header and its menu
 offer Move to New Tab (§4.2); the keyboard has ⌥⌘T, ⌥⌘W, ⌥⌘[ / ⌥⌘], ⇧⌥⌘T and ⌥⌘1…⌥⌘9
 (config-keybindings.md §4 "Tabs"), the File and View menus carry all of them but ⌥⌘1…⌥⌘9,
-and the command palette offers New Tab, New Agent Tab, New Web Tab, Close Tab and Move Pane to New Tab
-(§7). The phone shell shows the same tabs as a row of chips under the pane header once there
+and the command palette offers New Tab, New Agent Tab, New Web Tab, Close Tab, Duplicate Tab and
+Move Pane to New Tab (§7). The phone shell shows the same tabs as a row of chips under the pane header once there
 are two (`packages/client/src/phone/PhoneTabChips.tsx`): status dot with the attention halo,
 title, and the pane count when there is more than one; a tap shows that tab, on a remote
 daemon's workspace through that daemon.
@@ -1331,7 +1351,7 @@ Structure:
   `packages/client/src/App.tsx:4926-4945`), appended after the state-derived items, each with
   an optional shortcut hint (`⌘…`) when the binding map covers its action. New Workspace is
   followed by the workspace tab commands (§3.3): New Tab, New Agent Tab, New Web Tab, Close
-  Tab and Move Pane to New Tab. The next one is titled by the active workspace's state: "Mute
+  Tab, Duplicate Tab and Move Pane to New Tab. The next one is titled by the active workspace's state: "Mute
   Workspace Notifications" or "Unmute Workspace Notifications" (agent-lifecycle.md §7.6). Its
   id names that state too (`cmd:mute-workspace` / `cmd:unmute-workspace`) and it sends the
   explicit state, so a row picked after the state changed is refused as unavailable rather

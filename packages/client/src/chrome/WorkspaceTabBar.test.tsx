@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { setTabDropState } from './tab-drop';
+import { TAB_SPRING_MS, setTabDropState, setTabSpring, tabSpring } from './tab-drop';
 import { TopBar } from './TopBar';
 import { fitTabs, TAB_MIN_WIDTH_PX, WorkspaceTabBar, type WorkspaceTabBarProps } from './WorkspaceTabBar';
 import type { WorkspaceTabView } from './workspace-tabs';
@@ -9,6 +9,8 @@ import type { WorkspaceTabView } from './workspace-tabs';
 afterEach(() => {
     cleanup();
     setTabDropState({ dragging: false, target: null });
+    setTabSpring(null);
+    vi.useRealTimers();
 });
 
 function tab(id: string, index: number, extra: Partial<WorkspaceTabView> = {}): WorkspaceTabView {
@@ -299,6 +301,89 @@ describe('the tab bar controls', () => {
         fireEvent.mouseDown(chevron);
         fireEvent.click(chevron);
         expect(screen.queryByText('New Web Tab')).toBeNull();
+    });
+});
+
+describe('a pane held over a tab (spring-loading)', () => {
+    const hover = (target: Parameters<typeof setTabDropState>[0]['target']): void => {
+        act(() => {
+            setTabDropState({ dragging: true, target });
+        });
+    };
+
+    it('opens a tab behind after the hold, filling it meanwhile, and remembers where the drag began', () => {
+        vi.useFakeTimers();
+        const p = props(TWO);
+        render(<WorkspaceTabBar {...p} />);
+        hover({ kind: 'tab', tabID: 'workers' });
+        expect(screen.getByTestId('workspace-tab-workers').querySelector('[data-testid="workspace-tab-spring"]')).not.toBeNull();
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS - 1);
+        });
+        expect(p.onSelect).not.toHaveBeenCalled();
+        act(() => {
+            vi.advanceTimersByTime(1);
+        });
+        expect(p.onSelect).toHaveBeenCalledWith('workers');
+        expect(tabSpring()).toMatchObject({ originTabID: 'main', tabID: 'workers' });
+        // Going back is showing the tab the drag started in.
+        tabSpring()?.returnHome();
+        expect(p.onSelect).toHaveBeenLastCalledWith('main');
+    });
+
+    it('starts over when the pointer leaves the tab before the hold is up', () => {
+        vi.useFakeTimers();
+        const p = props(TWO);
+        render(<WorkspaceTabBar {...p} />);
+        hover({ kind: 'tab', tabID: 'workers' });
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS - 100);
+        });
+        hover(null);
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS);
+        });
+        expect(p.onSelect).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('workspace-tab-spring')).toBeNull();
+    });
+
+    it('never springs the tab on screen, a gap between tabs or the new-tab slot', () => {
+        vi.useFakeTimers();
+        const p = props(TWO);
+        render(<WorkspaceTabBar {...p} />);
+        for (const target of [{ kind: 'tab' as const, tabID: 'main' }, { kind: 'slot' as const, index: 1 }, { kind: 'slot' as const, index: 2 }]) {
+            hover(target);
+            act(() => {
+                vi.advanceTimersByTime(TAB_SPRING_MS * 2);
+            });
+        }
+        expect(p.onSelect).not.toHaveBeenCalled();
+        expect(tabSpring()).toBeNull();
+    });
+
+    it('keeps the tab the drag began in when it springs on to a third tab, and forgets it back home', () => {
+        vi.useFakeTimers();
+        const three = [tab('main', 0), tab('workers', 1), tab('docs', 2)];
+        const p = props(three);
+        const view = render(<WorkspaceTabBar {...p} />);
+        hover({ kind: 'tab', tabID: 'workers' });
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS);
+        });
+        // The window shows `workers` now.
+        view.rerender(<WorkspaceTabBar {...p} tabs={[tab('main', 0, { active: false }), tab('workers', 1, { active: true }), tab('docs', 2)]} />);
+        hover({ kind: 'tab', tabID: 'docs' });
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS);
+        });
+        expect(tabSpring()).toMatchObject({ originTabID: 'main', tabID: 'docs' });
+        view.rerender(<WorkspaceTabBar {...p} tabs={[tab('main', 0, { active: false }), tab('workers', 1), tab('docs', 2, { active: true })]} />);
+        hover({ kind: 'tab', tabID: 'main' });
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS);
+        });
+        expect(p.onSelect).toHaveBeenLastCalledWith('main');
+        expect(tabSpring()).toBeNull();
     });
 });
 

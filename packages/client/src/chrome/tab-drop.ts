@@ -9,11 +9,16 @@
  * long as a pane is in flight (the release would otherwise land on the OS's title bar).
  */
 
+import type { DropZone } from '@kelpi/core/layout';
 import { useSyncExternalStore } from 'react';
 
-/** What a release over the bar does: into an existing tab, or a new tab at a bar position. */
+/**
+ * What a release does: into an existing tab, or a new tab at a bar position. `beside` is a
+ * release over the grid of a tab the drag opened on its way (spring-loading, below): the pane
+ * goes in at that zone of that pane.
+ */
 export type TabDropTarget =
-    | { readonly kind: 'tab'; readonly tabID: string }
+    | { readonly kind: 'tab'; readonly tabID: string; readonly beside?: { readonly paneID: string; readonly zone: DropZone } | undefined }
     | { readonly kind: 'slot'; readonly index: number };
 
 export interface TabDropState {
@@ -117,4 +122,39 @@ function currentTabDragWorkspace(): string | null {
 /** The workspace a dragged tab would move to if released now, or null. */
 export function useTabDragWorkspace(): string | null {
     return useSyncExternalStore(subscribeWorkspace, currentTabDragWorkspace, currentTabDragWorkspace);
+}
+
+/*
+ * Spring-loading (workspace-feature.md §12, shell-ui.md §3.3): a pane held over a tab that is
+ * not on screen for `TAB_SPRING_MS` opens that tab, and the drag goes on in its grid. The bar
+ * times the hold, draws it and shows the tab; the grid reads this at the end of the drag, so a
+ * release over the grid lands in the tab now on screen and a cancel shows the tab the drag
+ * started in again.
+ */
+export const TAB_SPRING_MS = 600;
+
+export interface TabSpring {
+    /** The tab the drag started in. */
+    readonly originTabID: string;
+    /** The tab the drag opened, on screen now. */
+    readonly tabID: string;
+    /** Show the tab the drag started in again. */
+    readonly returnHome: () => void;
+}
+
+let spring: TabSpring | null = null;
+
+export function setTabSpring(next: TabSpring | null): void {
+    spring = next;
+}
+
+export function tabSpring(): TabSpring | null {
+    return spring;
+}
+
+/** The pane drag is over: a cancelled one goes back to the tab it started in. */
+export function endTabSpring(cancelled: boolean): void {
+    const ended = spring;
+    spring = null;
+    if (cancelled && ended !== null) ended.returnHome();
 }

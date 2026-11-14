@@ -25,7 +25,7 @@ import { ContextMenu, type MenuItemSpec } from './ContextMenu';
 import { registerGestureReset } from './gesture-reset';
 import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon, type ChromeIconName } from './icons';
-import { setTabDragWorkspace, useTabDrop } from './tab-drop';
+import { TAB_SPRING_MS, setTabDragWorkspace, setTabSpring, tabSpring, useTabDrop } from './tab-drop';
 import { withAlpha } from './theme';
 import { tokens } from './tokens';
 import type { WorkspaceTabKind, WorkspaceTabStatus, WorkspaceTabView } from './workspace-tabs';
@@ -207,6 +207,35 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
             observer.disconnect();
         };
     }, []);
+
+    /*
+     * Spring-loading (§12): a pane held over a tab that is not on screen opens it after
+     * `TAB_SPRING_MS`, and the tab fills from the left meanwhile so the wait reads as one. Only
+     * a tab itself springs: the gaps between tabs and the new-tab slot are drops, not tabs.
+     */
+    const [springing, setSpringing] = useState<string | null>(null);
+    const springTarget = paneDrop.dragging && paneDrop.target?.kind === 'tab' ? paneDrop.target.tabID : null;
+    const springCandidate = springTarget !== null && tabs.some((tab) => tab.id === springTarget && !tab.active) ? springTarget : null;
+    useEffect(() => {
+        setSpringing(springCandidate);
+        if (springCandidate === null) return undefined;
+        const timer = setTimeout(() => {
+            setSpringing(null);
+            const current = latest.current;
+            const origin = tabSpring()?.originTabID ?? current.tabs.find((tab) => tab.active)?.id;
+            if (origin === undefined) return;
+            // Back over the tab it started in is home again, not another spring.
+            setTabSpring(
+                springCandidate === origin
+                    ? null
+                    : { originTabID: origin, tabID: springCandidate, returnHome: () => latest.current.onSelect(origin) }
+            );
+            current.onSelect(springCandidate);
+        }, TAB_SPRING_MS);
+        return () => {
+            clearTimeout(timer);
+        };
+    }, [springCandidate]);
 
     // ⌥⌘ held: every tab shows the number ⌥⌘1-9 would go to.
     useEffect(() => {
@@ -476,6 +505,7 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                                 setMenu({ kind: 'tab', tab, x: event.clientX, y: event.clientY });
                             }}
                         >
+                            {springing === tab.id ? <SpringFill /> : null}
                             {insertion === tab.index ? <InsertionMarker side="left" /> : null}
                             {marksAfter && insertion === tab.index + 1 ? <InsertionMarker side="right" /> : null}
                             <span
@@ -669,6 +699,19 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                 />
             )}
         </div>
+    );
+}
+
+/** The hold before a tab under a dragged pane opens: a wash that fills the tab once. */
+function SpringFill(): ReactElement {
+    return (
+        <span
+            aria-hidden
+            data-testid="workspace-tab-spring"
+            // The sweep's length is `TAB_SPRING_MS`, written in styles.css (`.kelpi-tab-spring`).
+            className="kelpi-tab-spring pointer-events-none absolute inset-0 rounded-[3px]"
+            style={{ background: withAlpha(tokens.accent, 0.22) }}
+        />
     );
 }
 

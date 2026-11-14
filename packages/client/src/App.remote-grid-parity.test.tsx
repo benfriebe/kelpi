@@ -72,10 +72,6 @@ const REMOTE_GAPS: readonly string[] = [
     'onToggleScratchpadWrap',
     'onCopyDocument',
     'onSetFontSize',
-    // workspace-feature.md §12: the title bar does not drive a remote daemon's tabs yet, so the
-    // remote grid takes no pane into a tab (header button, drop on the bar).
-    'onMovePaneToNewTab',
-    'onMovePaneToTab',
     // Agent-status verbs: restart and the 600 ms focus-dwell clear (agent-lifecycle.md §5.8).
     'onRestartAgent',
     'onDwellClear',

@@ -58,3 +58,31 @@ describe('closing tabs', () => {
         expect(h.raw).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('duplicating a tab', () => {
+    it('asks the daemon for a copy of the named tab, or of the tab on screen', () => {
+        const h = host();
+        const actions = createWorkspaceTabActions(h);
+        actions.duplicateTab(T1);
+        actions.duplicateActiveTab();
+        expect(h.raw.mock.calls.map(([payload]) => payload)).toEqual([
+            expect.objectContaining({ command: 'workspace-tab-duplicate', workspace_id: W, tab_id: T1 }),
+            expect.objectContaining({ command: 'workspace-tab-duplicate', workspace_id: W, tab_id: T2 })
+        ]);
+    });
+});
+
+describe('a pane dropped onto a tab', () => {
+    it('goes into the tab, beside a pane in the wire spelling, or into a new tab at a bar position', () => {
+        const h = host();
+        const actions = createWorkspaceTabActions(h);
+        actions.movePaneOntoTab(P0, { kind: 'tab', tabID: T1 });
+        actions.movePaneOntoTab(P0, { kind: 'tab', tabID: T1, beside: { paneID: P1, zone: 'left' } });
+        actions.movePaneOntoTab(P0, { kind: 'slot', index: 2 });
+        const sent = h.raw.mock.calls.map(([payload]) => payload as Record<string, unknown>);
+        expect(sent[0]).toMatchObject({ command: 'pane-move-to-tab', pane_id: P0, tab_id: T1 });
+        expect(sent[0]?.['target_pane_id']).toBeUndefined();
+        expect(sent[1]).toMatchObject({ command: 'pane-move-to-tab', pane_id: P0, tab_id: T1, target_pane_id: P1, zone: 'left-of' });
+        expect(sent[2]).toMatchObject({ command: 'pane-move-to-new-tab', pane_id: P0, index: 2 });
+    });
+});

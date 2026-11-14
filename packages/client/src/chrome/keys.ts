@@ -269,6 +269,12 @@ export interface KeyDispatcherOptions {
     /** §7.2 step 3: nothing pane-related dispatches without an active workspace. */
     readonly hasActiveWorkspace?: (() => boolean) | undefined;
     /**
+     * workspace-feature.md §12: the title bar draws a workspace's tabs even where step 3 stands
+     * down, a paired daemon's workspace (§1.7), and the tab chords act on THAT workspace
+     * (`app/remote-tabs.ts`). True lets `WORKSPACE_TAB_ACTIONS` through step 3 then.
+     */
+    readonly hasTabWorkspace?: (() => boolean) | undefined;
+    /**
      * §7.2 step 2: Escape clears a workspace multi-selection BEFORE any binding lookup (so it
      * beats the default `escape=close_search`). Return true when a selection was cleared.
      */
@@ -390,7 +396,12 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         //    out, and a browser tab has no native menu to fall back on.
         const bindings = resolve(options.bindings ?? clientKeyBindings());
         const action = actionForTrigger(bindings, trigger);
-        if (options.hasActiveWorkspace?.() === false && (action === null || !WINDOW_ARRANGEMENT_ACTIONS.has(action))) return false;
+        if (
+            options.hasActiveWorkspace?.() === false &&
+            (action === null ||
+                !(WINDOW_ARRANGEMENT_ACTIONS.has(action) || (WORKSPACE_TAB_ACTIONS.has(action) && options.hasTabWorkspace?.() === true)))
+        )
+            return false;
 
         // 4. Never dispatch the in-app binding that shadows the global hotkey.
         const hotkey = options.globalHotkey?.();
@@ -521,6 +532,16 @@ export const WIRED_KEY_ACTIONS: readonly KelpiAction[] = [
     'go_to_tab_8',
     'go_to_tab_9'
 ];
+
+/** workspace-feature.md §12: the tab chords, which act on whichever workspace's tabs are drawn. */
+export const WORKSPACE_TAB_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
+    'new_tab',
+    'close_tab',
+    'next_tab',
+    'previous_tab',
+    'move_pane_to_new_tab',
+    ...Array.from({ length: 9 }, (_, index) => `go_to_tab_${String(index + 1)}` as KelpiAction)
+]);
 
 /** `switch_to_workspace_N` → the 0-based index into `visibleWorkspaceOrder` (§3.2). */
 export function workspaceSwitchIndex(action: KelpiAction): number | null {

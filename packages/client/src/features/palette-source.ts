@@ -50,6 +50,7 @@ export interface PaletteFeatureActions {
     // workspace-feature.md §12.
     newTab(kind?: 'terminal' | 'same' | 'agent' | 'web' | 'scratchpad'): boolean;
     closeActiveTab(): boolean;
+    duplicateActiveTab(): boolean;
     moveFocusedPaneToNewTab(): boolean;
 }
 
@@ -280,6 +281,8 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 () => act.newTab('web')),
             commandEntry('cmd:close-tab', 'rectangle.stack', 'Close Tab', 'close the tab on screen and its panes', hint('close_tab'),
                 () => act.closeActiveTab()),
+            commandEntry('cmd:duplicate-tab', 'rectangle.stack', 'Duplicate Tab', 'a copy of the tab on screen, with new panes', undefined,
+                () => act.duplicateActiveTab()),
             commandEntry('cmd:move-pane-to-new-tab', 'rectangle.stack', 'Move Pane to New Tab', 'take the focused pane out into a tab',
                 hint('move_pane_to_new_tab'), () => act.moveFocusedPaneToNewTab()),
             ...muteEntries,

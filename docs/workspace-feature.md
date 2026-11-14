@@ -2148,6 +2148,4 @@ again" turns that setting off, for workspaces and tabs alike. The WS verbs thems
 
 ### 12.8 Not covered
 
-A remote daemon's tabs on the desktop (its workspace fills the pane area with its tab on
-screen and the title bar keeps the identity); spring-loading (holding a dragged pane over a
-tab to open it); `kelpi tab` CLI verbs.
+`kelpi tab` CLI verbs.

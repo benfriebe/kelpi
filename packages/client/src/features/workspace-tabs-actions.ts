@@ -6,7 +6,8 @@
  */
 
 import { activeTabIDOf, onScreenPaneIDs, workspaceTabs, type WorkspaceState } from '@kelpi/daemon/store';
-import type { WireMoveEdge } from '@kelpi/core/layout';
+import { wireEdgeForDropZone, type WireMoveEdge } from '@kelpi/core/layout';
+import type { TabDropTarget } from '../chrome/tab-drop';
 import { wirePayload, type CommandClient, type CommandReply } from '../connection/commands';
 
 export type NewTabKind = 'terminal' | 'same' | 'agent' | 'web' | 'scratchpad';
@@ -41,9 +42,15 @@ export interface WorkspaceTabActions {
     /** ⇧⌥⌘T: the focused pane, when its tab holds others. */
     moveFocusedPaneToNewTab(): boolean;
     movePaneToTab(paneID: string, tabID: string, targetPaneID?: string, zone?: WireMoveEdge): boolean;
+    /** A pane dropped on the title bar or into a tab a drag opened (`chrome/tab-drop.ts`). */
+    movePaneOntoTab(paneID: string, target: TabDropTarget): boolean;
     splitTabPanes(tabID: string): boolean;
     mergeTabIntoPrevious(tabID: string): boolean;
     moveTabToWorkspace(tabID: string, workspaceID: string): boolean;
+    /** A copy of the tab just after it: the same layout, with new panes of the same kinds. */
+    duplicateTab(tabID: string): boolean;
+    /** The palette's Duplicate Tab: the tab on screen. */
+    duplicateActiveTab(): boolean;
 }
 
 export function createWorkspaceTabActions(host: WorkspaceTabActionHost): WorkspaceTabActions {
@@ -139,6 +146,16 @@ export function createWorkspaceTabActions(host: WorkspaceTabActionHost): Workspa
         movePaneToTab(paneID, tabID, targetPaneID, zone) {
             return send('Move to tab', 'pane-move-to-tab', { pane_id: paneID, tab_id: tabID, target_pane_id: targetPaneID, zone });
         },
+        movePaneOntoTab(paneID, target) {
+            if (target.kind === 'slot') return send('Move to new tab', 'pane-move-to-new-tab', { pane_id: paneID, index: target.index });
+            const beside = target.beside;
+            return send('Move to tab', 'pane-move-to-tab', {
+                pane_id: paneID,
+                tab_id: target.tabID,
+                target_pane_id: beside?.paneID,
+                zone: beside === undefined ? undefined : wireEdgeForDropZone(beside.zone)
+            });
+        },
         splitTabPanes(tabID) {
             return withWorkspace((workspace) =>
                 send('Give each pane its own tab', 'workspace-tab-split-panes', { workspace_id: workspace.id, tab_id: tabID })
@@ -156,6 +173,16 @@ export function createWorkspaceTabActions(host: WorkspaceTabActionHost): Workspa
                     tab_id: tabID,
                     to_workspace_id: workspaceID
                 })
+            );
+        },
+        duplicateTab(tabID) {
+            return withWorkspace((workspace) =>
+                send('Duplicate tab', 'workspace-tab-duplicate', { workspace_id: workspace.id, tab_id: tabID })
+            );
+        },
+        duplicateActiveTab() {
+            return withWorkspace((workspace) =>
+                send('Duplicate tab', 'workspace-tab-duplicate', { workspace_id: workspace.id, tab_id: activeTabIDOf(workspace) })
             );
         }
     };

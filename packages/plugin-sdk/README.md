@@ -97,7 +97,10 @@ await api.tabs.select({ workspaceID: docs.workspaceID, tabID: docs.tabID });
 
 `tabs.select`, `rename`, `move` (0-based), `close`, `closeOthers`, `duplicate`, `merge` (into the tab
 before it), `split` (each pane its own tab) and `moveToWorkspace` take a `{ workspaceID, tabID }` or a
-`tabs.list` entry, and refuse one without its workspace before anything is sent. Inputs and results use camelCase (`workspaceID`, `paneCount`); list helpers
+`tabs.list` entry, and refuse one without its workspace before anything is sent.
+`panes.moveToNewTab(paneID, { index })` takes the new tab's 0-based position among the tabs as they
+are now; a pane alone in its tab moves that tab instead, and `index` is then a drop slot that counts
+the tab itself, so a slot past it lands one position earlier. Inputs and results use camelCase (`workspaceID`, `paneCount`); list helpers
 return arrays and mutation helpers unwrap the successful reply. Snapshots retain their daemon
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.

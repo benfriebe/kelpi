@@ -15,12 +15,14 @@
  */
 
 import {
+    extractPositionalTail,
     hasHelpFlag,
     parseFlag,
     parseIntStrict,
     parseOptionalAmountFlag,
     popSwitch,
     parseDouble,
+    rejectBlankValue,
     rejectLeftoverArgs
 } from '../args.js';
 import { homeDirectory, originPaneID, replyTimeoutSeconds, requirePaneID } from '../env.js';
@@ -615,9 +617,12 @@ function printTabMoveAck(reply: JsonObject, fresh: boolean): void {
 
 /**
  * `kelpi pane move-to-tab <tab>` (workspace-feature.md §12): into another tab of the pane's
- * workspace, beside its focused pane or on an edge of a named pane of that tab.
+ * workspace, beside its focused pane or on an edge of a named pane of that tab (or of its own
+ * tab, which moves it there as `pane move` does). Flags come from the words before a `--`, so
+ * a tab can be named `-x`; a blank tab, target or edge pane is an unset variable, refused.
  */
 async function handlePaneMoveToTab(args: string[]): Promise<void> {
+    const tail = extractPositionalTail(args);
     if (hasHelpFlag(args)) {
         writeOut(paneMoveToTabUsage);
         exit(0);
@@ -628,13 +633,19 @@ async function handlePaneMoveToTab(args: string[]): Promise<void> {
     const given = zones.filter(([, anchor]) => anchor !== null);
     const focus = popSwitch('--focus', args);
     const asJSON = popSwitch('--json', args);
-    const tab = args[0] !== undefined && !args[0].startsWith('-') ? args.shift() : undefined;
-    rejectLeftoverArgs(args, 'kelpi pane move-to-tab', { usage: (write) => write(paneMoveToTabUsage) });
+    const words: string[] = [];
+    while (args.length > 0 && !(args[0] as string).startsWith('-')) words.push(args.shift() as string);
+    const [tab, ...extra] = [...words, ...tail];
+    rejectLeftoverArgs([...extra, ...args], 'kelpi pane move-to-tab', { usage: (write) => write(paneMoveToTabUsage) });
     if (tab === undefined) {
         errLine('kelpi pane move-to-tab: name the tab: a number, an id or a title');
         writeErr(paneMoveToTabUsage);
         exit(1);
     }
+    rejectBlankValue('kelpi pane move-to-tab', 'the tab', tab);
+    rejectBlankValue('kelpi pane move-to-tab', '--target', target);
+    rejectBlankValue('kelpi pane move-to-tab', '--workspace', workspace);
+    for (const [, anchor] of given) rejectBlankValue('kelpi pane move-to-tab', 'the edge pane', anchor);
     if (given.length > 1) {
         errLine('kelpi pane move-to-tab: at most one of --above / --below / --left-of / --right-of');
         exit(1);
@@ -646,7 +657,8 @@ async function handlePaneMoveToTab(args: string[]): Promise<void> {
         payload['zone'] = edge[0];
     }
     if (focus) payload['focus'] = true;
-    const reply = await readReplyOrEmptyError(payload, 'kelpi pane move-to-tab');
+    // The shared reply path, so a daemon too old for tabs reads as it does for `kelpi tab`.
+    const reply = await decodeReply(payload, 'kelpi pane move-to-tab');
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;
@@ -667,6 +679,8 @@ async function handlePaneMoveToNewTab(args: string[]): Promise<void> {
     const focus = popSwitch('--focus', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi pane move-to-new-tab', { usage: (write) => write(paneMoveToNewTabUsage) });
+    rejectBlankValue('kelpi pane move-to-new-tab', '--target', target);
+    rejectBlankValue('kelpi pane move-to-new-tab', '--workspace', workspace);
     const at = atRaw === null ? null : parseIntStrict(atRaw);
     if (atRaw !== null && (at === null || at < 1)) {
         errLine('kelpi pane move-to-new-tab: --at takes a position from 1');
@@ -680,7 +694,7 @@ async function handlePaneMoveToNewTab(args: string[]): Promise<void> {
     if (at !== null) payload['index'] = at - 1;
     if (end) payload['at_end'] = true;
     if (focus) payload['focus'] = true;
-    const reply = await readReplyOrEmptyError(payload, 'kelpi pane move-to-new-tab');
+    const reply = await decodeReply(payload, 'kelpi pane move-to-new-tab');
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;

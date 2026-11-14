@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { activeTabIDOf, tabOfPane, tabPaneIDs, workspaceTabs } from '../../store/index.js';
+import { allPaneIDs } from '@kelpi/core/layout';
+import { decodeWireObject } from '@kelpi/protocol';
+
+import { activeTabIDOf, tabLayout, tabOfPane, tabPaneIDs, workspaceTabs } from '../../store/index.js';
 import { NOW, W1, W2, harness, seedSplit, seedWorkspace, testID, type Harness, type TestReply } from './testing.js';
 
 const P1 = testID('1', 1);
@@ -273,5 +276,196 @@ describe('moving a pane between tabs', () => {
             ok: false,
             error: 'the pane is in that tab already'
         });
+    });
+});
+
+/** A raw control-socket line through the real decoder, then the handler: a refusal at either step is the reply. */
+async function decoded(h: Harness, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const result = decodeWireObject(raw);
+    if (!result.ok) return { ok: false, error: result.detail };
+    return settled(h, result.message);
+}
+
+function decodedMessage(raw: Record<string, unknown>): Parameters<Harness['run']>[0] {
+    const result = decodeWireObject(raw);
+    if (!result.ok) throw new Error(result.detail);
+    return result.message;
+}
+
+describe('what a tab verb names, and nothing else', () => {
+    it("refuses a blank tab rather than acting on the caller's own tab", async () => {
+        const h = seeded();
+        for (const raw of [
+            { command: 'workspace-tab-close', pane_id: P1, tab: '' },
+            { command: 'workspace-tab-close', pane_id: P1, tab: '   ' },
+            { command: 'workspace-tab-close-others', pane_id: P1, tab: '' },
+            { command: 'workspace-tab-move-to-workspace', pane_id: P1, tab: '', to_workspace: 'dev' }
+        ]) {
+            expect(await decoded(h, raw)).toEqual({ ok: false, error: 'tab is empty (an unset variable?)' });
+        }
+        expect(await decoded(h, { command: 'workspace-tab-close', pane_id: P1, tab: '2', workspace: '' })).toEqual({
+            ok: false,
+            error: 'workspace is empty (an unset variable?)'
+        });
+        expect(await decoded(h, { command: 'workspace-tab-move-to-workspace', pane_id: P1, tab: '2', to_workspace: '' })).toEqual({
+            ok: false,
+            error: 'to_workspace is empty (an unset variable?)'
+        });
+        expect(await decoded(h, { command: 'pane-move-to-tab', pane_id: P1, tab: '2', anchor: '' })).toEqual({
+            ok: false,
+            error: 'anchor is empty (an unset variable?)'
+        });
+        expect(workspaceTabs(h.workspace(W1))).toHaveLength(2);
+        expect(h.workspace(W1).panes).toHaveLength(3);
+    });
+
+    it("acts on the tab the WS shape names by id, never the caller's own", async () => {
+        const h = seeded();
+        const reply = await decoded(h, { command: 'workspace-tab-close', pane_id: P1, workspace_id: W1, tab_id: T2 });
+        expect(reply).toMatchObject({ ok: true, tab_id: T2 });
+        expect(workspaceTabs(h.workspace(W1)).map((tab) => tab.id)).toEqual([W1]);
+        expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P1]);
+    });
+
+    it('refuses both spellings at once, and an id that names nothing', async () => {
+        const h = seeded();
+        expect(await decoded(h, { command: 'workspace-tab-select', pane_id: P1, tab: '2', tab_id: T2 })).toEqual({
+            ok: false,
+            error: 'give tab or tab_id, not both'
+        });
+        expect(await decoded(h, { command: 'workspace-tab-select', pane_id: P1, tab_id: T3 })).toEqual({
+            ok: false,
+            error: `no tab with id ${T3}`
+        });
+        expect(await decoded(h, { command: 'workspace-tab-select', pane_id: P1, workspace_id: W2, tab: '1' })).toEqual({
+            ok: false,
+            error: `no workspace with id ${W2}`
+        });
+    });
+
+    it('moves a pane by the WS shape of pane-move-to-tab: tab_id and target_pane_id', async () => {
+        const h = seeded();
+        const reply = await decoded(h, { command: 'pane-move-to-tab', pane_id: P1, tab_id: T2, target_pane_id: P3, zone: 'below' });
+        expect(reply).toMatchObject({ ok: true, tab_id: T2, anchor_id: P3 });
+        expect(tabOfPane(h.workspace(W1), P1)?.id).toBe(T2);
+    });
+
+    it('moves a pane beside an anchor of its own tab, as pane move does', async () => {
+        const h = seeded();
+        const before = tabLayout(h.workspace(W1), workspaceTabs(h.workspace(W1))[1]!).layout;
+        expect(allPaneIDs(before)).toEqual([P2, P3]);
+        const reply = await decoded(h, { command: 'pane-move-to-tab', pane_id: P2, tab: 'build', anchor: 'worker', zone: 'below' });
+        expect(reply).toMatchObject({ ok: true, pane_id: P2, tab_id: T2, anchor_id: P3, zone: 'below' });
+        const after = tabLayout(h.workspace(W1), workspaceTabs(h.workspace(W1))[1]!).layout;
+        expect(allPaneIDs(after)).toEqual([P3, P2]);
+        expect(after).toMatchObject({ kind: 'split', direction: 'vertical' });
+    });
+
+    it('refuses a caller pane that no longer exists instead of acting on the workspace on screen', async () => {
+        const h = seeded();
+        seedWorkspace(h, { id: W2, name: 'ops', paneID: testID('4', 4) });
+        const gone = testID('8', 8);
+        expect(await decoded(h, { command: 'workspace-tab-new', pane_id: gone })).toEqual({
+            ok: false,
+            error: `origin pane '${gone}' no longer exists; pass --workspace <name-or-id> to address a tab in another workspace`
+        });
+        expect(workspaceTabs(h.workspace(W2))).toHaveLength(1);
+        expect(workspaceTabs(h.workspace(W1))).toHaveLength(2);
+    });
+
+    it('tries a number past the last tab as a title, and keeps a number in range a position', async () => {
+        const h = seeded();
+        h.store.dispatch({ type: 'rename-tab', workspaceID: W1, tabID: T2, name: '7' });
+        expect(await decoded(h, { command: 'workspace-tab-select', pane_id: P1, tab: '7' })).toMatchObject({ ok: true, tab_id: T2 });
+        h.store.dispatch({ type: 'rename-tab', workspaceID: W1, tabID: T2, name: '1' });
+        expect(await decoded(h, { command: 'workspace-tab-select', pane_id: P1, tab: '1' })).toMatchObject({ ok: true, tab_id: W1 });
+    });
+
+    it('finds a tab id in another workspace with no --workspace', async () => {
+        const h = seeded();
+        const opsTab = testID('F', 7);
+        seedWorkspace(h, { id: W2, name: 'ops', paneID: testID('4', 4) });
+        h.store.dispatch({
+            type: 'create-tab',
+            workspaceID: W2,
+            tabID: opsTab,
+            focus: false,
+            create: { type: 'create-pane', workspaceID: W2, paneID: testID('6', 6), now: NOW, focus: true }
+        });
+        h.store.dispatch({ type: 'select-tab', workspaceID: W2, tabID: W2 });
+        const reply = await decoded(h, { command: 'workspace-tab-select', pane_id: P1, tab: opsTab });
+        expect(reply).toMatchObject({ ok: true, workspace_id: W2, tab_id: opsTab, tab_number: 2 });
+        expect(activeTabIDOf(h.workspace(W2))).toBe(opsTab);
+    });
+
+    it('sends a tab to a workspace named in any case', async () => {
+        const h = seeded();
+        seedWorkspace(h, { id: W2, name: 'ops', paneID: testID('4', 4) });
+        const reply = await decoded(h, { command: 'workspace-tab-move-to-workspace', pane_id: P1, tab: 'build', to_workspace: 'OPS' });
+        expect(reply).toMatchObject({ ok: true, workspace_id: W2, tab_id: T2 });
+    });
+
+    it('answers with the name as stored: trimmed, and null once a blank name clears it', async () => {
+        const h = seeded();
+        expect(await decoded(h, { command: 'workspace-tab-rename', pane_id: P1, tab: '2', name: '  spaced  ' })).toMatchObject({ ok: true, name: 'spaced' });
+        expect(await decoded(h, { command: 'workspace-tab-rename', pane_id: P1, tab: '2', name: '   ' })).toMatchObject({ ok: true, name: null });
+        expect(await decoded(h, { command: 'workspace-tab-new', pane_id: P1, name: '  logs ' })).toMatchObject({ ok: true, name: 'logs' });
+    });
+});
+
+describe('duplicate through the control socket, while the OS lookup is out', () => {
+    function waiting(): { readonly h: Harness; readonly answer: (directory: string) => void } {
+        const answers: ((directory: string) => void)[] = [];
+        const h = harness({
+            minted: [NEW],
+            liveWorkingDirectory: () =>
+                new Promise<string | null>((resolve) => {
+                    answers.push(resolve);
+                })
+        });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1, path: '/repo' });
+        h.store.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: T2,
+            focus: false,
+            create: { type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/repo/build', focus: true }
+        });
+        h.store.dispatch({ type: 'select-tab', workspaceID: W1, tabID: W1 });
+        return {
+            h,
+            answer: (directory) => {
+                for (const resolve of answers.splice(0)) resolve(directory);
+            }
+        };
+    }
+
+    async function drain(reply: TestReply): Promise<void> {
+        for (let attempt = 0; attempt < 10 && reply.payloads.length === 0; attempt += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    }
+
+    it('answers once the lookup does, with the copy in the directory the shell is really in', async () => {
+        const { h, answer } = waiting();
+        const reply = h.run(decodedMessage({ command: 'workspace-tab-duplicate', pane_id: P1, tab: '2' }));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(reply.payloads).toHaveLength(0);
+        answer('/repo/build/src');
+        await drain(reply);
+        expect(reply.only()).toMatchObject({ ok: true, tab_number: 3, source_tab_id: T2 });
+        expect(h.pty.spawns.map((spawn) => spawn.cwd)).toEqual(['/repo/build/src']);
+    });
+
+    it('refuses the copy of a tab closed while it waited, and opens nothing', async () => {
+        const { h, answer } = waiting();
+        const reply = h.run(decodedMessage({ command: 'workspace-tab-duplicate', pane_id: P1, tab: '2' }));
+        await new Promise((resolve) => setImmediate(resolve));
+        h.store.dispatch({ type: 'close-tab', workspaceID: W1, tabID: T2 });
+        answer('/repo/build/src');
+        await drain(reply);
+        expect(reply.only()).toMatchObject({ ok: false });
+        expect(workspaceTabs(h.workspace(W1))).toHaveLength(1);
+        expect(h.pty.spawns).toHaveLength(0);
     });
 });

@@ -1052,13 +1052,19 @@ kelpi pane move-to-tab <tab> --target X (--above|--below|--left-of|--right-of) Y
   (§12a). The pane is `--target`, else the caller; outside a pane with no `--target`:
   `kelpi pane move-to-tab: requires --target <name-or-uuid> when called from outside a Kelpi
   pane`, exit 1, nothing sent. A missing `<tab>`: `kelpi pane move-to-tab: name the tab: a
-  number, an id or a title`, exit 1.
+  number, an id or a title`, exit 1. A blank `<tab>`, `--target`, `--workspace` or edge pane
+  (an unset variable) is refused before sending: `kelpi pane move-to-tab: the tab is empty
+  (an unset variable?)`. Flags are read from the words before a `--`; after it every word is
+  a tab name (`kelpi pane move-to-tab -- -x`).
 - One edge flag at most docks the pane beside that pane of the tab (resolved in the pane's
   workspace, and it must be in that tab); without one it lands beside the tab's focused pane.
+  Naming the pane's OWN tab with an edge flag moves it beside that pane, as `kelpi pane move
+  --target X --below Y` does.
 - Request/response: `{"command":"pane-move-to-tab", pane_id?, target?, workspace?, "tab":…,
   anchor?, zone?, focus?}`. Background unless `--focus` (#295).
 - Ack: `moved pane <pane-id> to tab <n> (<tab-id>) in workspace <name>`. `--json`: the reply
-  without `ok`. An empty reply (an older daemon) is "this Kelpi is too old", exit 1 (§6.5).
+  without `ok`. An empty reply (an older daemon) is "no response from Kelpi (upgrade
+  required?)", exit 1, as for `kelpi tab` (§6).
 
 ### 9.15 `kelpi pane move-to-new-tab` (workspace-feature.md §12)
 
@@ -1726,15 +1732,24 @@ verbs (wire-protocol.md §6.10, socket-handlers.md §4.17.1).
 
 - **Dispatcher.** Missing action => one-line usage to stderr, exit 1; `--help|-h|help` => the
   group usage to stdout, exit 0; unknown action => `Unknown tab action: <x>` and the valid
-  list, exit 1. `-h`/`--help` anywhere after a subcommand prints its usage, exit 0, nothing
-  sent.
+  list, exit 1. `-h`/`--help` anywhere after a subcommand and before a `--` prints its usage,
+  exit 0, nothing sent (`hasHelpFlag` stops at `--`, for every command).
 - **Addressing.** `<tab>` is a 1-based number (as `tab list` and ⌥⌘1-9 count), a tab id, or the
   title the tab bar shows; the daemon resolves it (exact title, then ignoring case; two tabs
-  with one title are refused). Without `<tab>` the calling pane's own tab is meant: the CLI
-  sends `pane_id` (`KELPI_PANE_ID`) on every verb, and outside a pane a verb that acts on one
-  tab refuses before sending: `kelpi tab <verb>: name a tab (a number, id or title) when not in
-  a Kelpi pane`, exit 1. `--workspace` (name or id) picks the workspace; without it, the
-  calling pane's, else the one on screen. `--` ends the flags, so a name can start with a dash.
+  with one title are refused). A number in range is always the position; past the last tab it
+  is tried as a title. A tab id is found in whichever workspace holds it, with no
+  `--workspace`. Without `<tab>` the calling pane's own tab is meant: the CLI sends `pane_id`
+  (`KELPI_PANE_ID`) on every verb, and outside a pane a verb that acts on one tab refuses
+  before sending: `kelpi tab <verb>: name a tab (a number, id or title) when not in a Kelpi
+  pane`, exit 1. A calling pane that no longer exists is refused by the daemon rather than
+  read as the workspace on screen. `--workspace` (name or id) picks the workspace; without it,
+  the calling pane's, else the one on screen. `--` ends the flags (they are read from the words
+  before it), so a name can start with a dash.
+- **Blank values are refused** before sending: a blank `<tab>`, `--workspace` or
+  `--to-workspace` is an unset variable far more often than a choice, and absent would mean
+  the caller's own tab (`kelpi tab close "$T"` would close the caller's tab):
+  `kelpi tab <verb>: the tab is empty (an unset variable?)`, exit 1. The daemon refuses the
+  same on the wire.
 - **Background unless `--focus`** (#295) for `new`, `duplicate` and `move-to-workspace`;
   `select` always shows the tab, and the other verbs change no focus of their own.
 - **Positions.** `--at <n>` / `--to <n>` count from 1 and go on the wire as a 0-based
@@ -1747,9 +1762,13 @@ verbs (wire-protocol.md §6.10, socket-handlers.md §4.17.1).
   (`--url is for a web tab, not --kind <kind>`). Ack: `created tab <n> (<id>) in workspace
   <name>`.
 - **`rename`**: two positionals are `<tab> <new-name>`; one is the new name of the caller's
-  tab; `--clear` takes the tab alone (or none) and sends `clear`. Ack:
-  `renamed tab <n> (<id>) in workspace <name> to <new-name>`, or
-  `tab <n> (<id>) in workspace <name> is named after its pane again`.
+  tab; `--clear` takes the tab alone (or none) and sends `clear`. A name that is only digits
+  gets a note on stderr (it also reads as a tab number, and a number names a position first).
+  Ack: `renamed tab <n> (<id>) in workspace <name> to <new-name>` with the name as stored
+  (trimmed), or `tab <n> (<id>) in workspace <name> is named after its pane again` when the
+  name was blank.
+- **`move-to-workspace`**: `--to-workspace` resolves as `kelpi pane move-to-workspace` does
+  (an id, then a name in any case, then a slug).
 - **Acks** for the rest: `showing tab <n> (<id>) in workspace <name>`, `moved to tab <n> …`,
   `closed tab <id> in workspace <name> (<k> panes)`, `closed every tab but tab <n> … (<k>
   panes)`, `duplicated as tab <n> …` (the copy), `merged into tab <n> …` (the tab before it),
@@ -2720,7 +2739,9 @@ state keep working; each explains why the code does something that would otherwi
     a piped stdout is flushed before the process ends.
 11. **Parsing quirks kept faithfully** (`packages/cli/src/args.ts`): flags anywhere in argv;
     values consumed even when dash-prefixed; flag-at-end leaves the flag token to be
-    rejected as unknown; `--` tail only on `web click|type|select`; `pane send` joins all
+    rejected as unknown; `--` tail only on `web click|type|select`, `group
+    create|rename|delete`, the `tab` verbs and `pane move-to-tab` (and `-h`/`--help` after a
+    `--` is a value, not a help request); `pane send` joins all
     leftovers with single spaces (no quoting round-trip: consecutive spaces in the
     original text are collapsed by the shell anyway, but a quoted argument containing
     literal `--json` will be eaten as a flag); labels cannot start with `-`.

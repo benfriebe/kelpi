@@ -290,9 +290,10 @@ export const paneMoveToTabUsage = `Usage:
 Moves a pane into another tab of its workspace (workspace-feature.md §12).
 <tab> is the tab's number (as in kelpi tab list and ⌥⌘1-9), its id, or its
 title. Without --target the calling pane moves (requires KELPI_PANE_ID). The
-pane lands beside the tab's focused pane, or on an edge of the pane you name.
+pane lands beside the tab's focused pane, or on an edge of the pane you name;
+naming its own tab with an edge pane moves it there as kelpi pane move does.
 The move happens in the background unless --focus is given, which shows the
-tab and focuses the pane.
+tab and focuses the pane. Words after -- are tab names, even with a dash.
 
 Options:
   --target <name-or-uuid>     Pane to move.
@@ -709,9 +710,11 @@ workspace, not one of the ten colors).
 /** Shared by every `kelpi tab` verb that acts on one tab. */
 const TAB_ADDRESSING = `<tab> is the tab's number (1 is first, as ⌥⌘1-9 count), its id, or the title
 the tab bar shows (exactly, then ignoring case; two tabs with one title are
-refused). Without <tab> the calling pane's own tab is meant (requires
-KELPI_PANE_ID). --workspace names the workspace (name or id); without it the
-calling pane's workspace, else the one on screen.`;
+refused). A number in range is always the position; past the last tab it is
+tried as a title. A tab id is found in any workspace. Without <tab> the calling
+pane's own tab is meant (requires KELPI_PANE_ID); a blank <tab> is refused.
+--workspace names the workspace (name or id); without it the calling pane's
+workspace, else the one on screen. Words after -- are names, even with a dash.`;
 
 export const tabUsage = `Usage:
   kelpi tab list|new|select|rename|move|close|close-others|duplicate|merge|split|move-to-workspace [...]
@@ -788,7 +791,9 @@ export const tabSelectUsage = `Usage:
   kelpi tab select [<tab>] [--workspace <name-or-id>] [--json]
   kelpi tab show [<tab>] [--workspace <name-or-id>] [--json]
 
-Shows a tab: it becomes the tab on screen in every window.
+Shows a tab in its workspace: it becomes that workspace's tab on screen. It does
+not switch workspaces, as pane split --focus does not; a window looking at
+another workspace stays where it is.
 
 ${TAB_ADDRESSING}
 

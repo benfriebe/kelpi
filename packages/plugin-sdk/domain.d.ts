@@ -163,7 +163,13 @@ export interface PanesAPI {
      * `zone`, else beside the tab's focused pane. `focus` defaults to true, as for the moves above.
      */
     moveToTab(paneID: string, tab: string | TabRef, options?: { anchorID?: string; zone?: DropZone; focus?: boolean }): Promise<PanePlacement & { tabID: string }>;
-    /** Out of its tab into a new tab of its own, just after it unless `index` (0-based) says where. */
+    /**
+     * Out of its tab into a new tab of its own, just after it unless `index` says where: the
+     * 0-based position among the tabs as they are now. A pane ALONE in its tab already has one,
+     * so its tab moves instead, and `index` is then a drop slot that counts that tab too (as a
+     * drop in the window does): a slot past it lands one position earlier (slot 2 from position
+     * 0 ends at position 1). `kelpi pane move-to-new-tab` refuses that case instead.
+     */
     moveToNewTab(paneID: string, options?: { index?: number; focus?: boolean }): Promise<PanePlacement & { tabID: string }>;
     reopen(workspaceID: string): Promise<PanePlacement & { type: PaneType }>;
     scratchpad(workspaceID: string): Promise<PanePlacement>;

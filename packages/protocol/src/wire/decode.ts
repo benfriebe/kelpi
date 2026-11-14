@@ -15,7 +15,7 @@
  * rejection is what makes that choice possible.
  */
 
-import { createFieldAccess, validateWireFields, type WireFieldAccess } from './fields.js';
+import { createFieldAccess, validateWireFields, type WireFieldAccess, type WireFieldName } from './fields.js';
 import {
     EXPLICIT_CHAIN_COMMANDS,
     PANE_FONT_SIZE_MAX,
@@ -23,6 +23,7 @@ import {
     PANE_ID_REQUIRED_COMMANDS,
     isWireCommand,
     type PaneTargetScope,
+    type TabScope,
     type WireCommandName,
     type WireMessage
 } from './messages.js';
@@ -134,6 +135,52 @@ function guard(command: WireCommandName, detail: string, field?: string): WireRe
     return reject('guard', detail, { command, field });
 }
 
+/** A field read by name or by exact id, with blank and doubled spellings already refused. */
+type NamedField = (name: WireFieldName, byID: WireFieldName) => { name?: string; id?: string } | WireRejection;
+
+/** The workspace-tab verbs (socket-handlers.md §4.17.1), once their scope has decoded. */
+function decodeTabVerb(command: WireCommandName, where: TabScope, fields: WireFieldAccess, named: NamedField): WireMessage | WireRejection {
+    switch (command) {
+        case 'workspace-tab-list':
+            return { command, ...where, all: fields.flag('all', false) };
+        case 'workspace-tab-new':
+            return {
+                command,
+                ...where,
+                kind: fields.text('kind'),
+                name: fields.nonEmpty('name'),
+                index: fields.int('index'),
+                at_end: fields.flag('at_end', false),
+                focus: fields.flag('focus', false),
+                url: fields.nonEmpty('url')
+            };
+        case 'workspace-tab-rename': {
+            const name = fields.nonEmpty('name');
+            const clear = fields.flag('clear', false);
+            if (name === undefined && !clear) return guard(command, 'workspace-tab-rename requires name or clear', 'name');
+            return { command, ...where, name, clear };
+        }
+        case 'workspace-tab-move': {
+            const index = fields.int('index');
+            const atEnd = fields.flag('at_end', false);
+            if (index === undefined && !atEnd) return guard(command, 'workspace-tab-move requires index or at_end', 'index');
+            return { command, ...where, index, at_end: atEnd };
+        }
+        case 'workspace-tab-duplicate':
+            return { command, ...where, focus: fields.flag('focus', false) };
+        case 'workspace-tab-move-to-workspace': {
+            const destination = named('to_workspace', 'to_workspace_id');
+            if ('ok' in destination) return destination;
+            if (destination.name === undefined && destination.id === undefined) {
+                return guard(command, 'workspace-tab-move-to-workspace requires to_workspace', 'to_workspace');
+            }
+            return { command, ...where, to_workspace: destination.name, to_workspace_id: destination.id, focus: fields.flag('focus', false) };
+        }
+        default:
+            return { command, ...where } as WireMessage;
+    }
+}
+
 /** Returns the decoded message, or a rejection when a command guard fails. */
 function decodeCommand(
     command: WireCommandName,
@@ -145,11 +192,29 @@ function decodeCommand(
         target: fields.text('target'),
         workspace: fields.text('workspace')
     });
-    const tabScope = (): { pane_id?: string | undefined; workspace?: string | undefined; tab?: string | undefined } => ({
-        pane_id: paneId,
-        workspace: fields.text('workspace'),
-        tab: fields.nonEmpty('tab')
-    });
+    /**
+     * A field the tab verbs read by name OR by the WS shape's exact id (socket-handlers.md
+     * §4.17.1). Present but blank is refused, never read as absent: absent means "the caller's
+     * own tab" (or workspace), so an unset variable in `kelpi tab close "$T"` would otherwise act
+     * on the caller's own. Both spellings at once are refused rather than one silently winning.
+     */
+    const named = (name: WireFieldName, byID: WireFieldName): { name?: string; id?: string } | WireRejection => {
+        for (const key of [name, byID]) {
+            const value = fields.rawText(key);
+            if (value !== undefined && value.trim() === '') return guard(command, `${key} is empty (an unset variable?)`, key);
+        }
+        const text = fields.rawText(name);
+        const id = fields.rawText(byID);
+        if (text !== undefined && id !== undefined) return guard(command, `give ${name} or ${byID}, not both`, byID);
+        return { ...(text !== undefined ? { name: text } : {}), ...(id !== undefined ? { id } : {}) };
+    };
+    const tabScope = (): TabScope | WireRejection => {
+        const workspace = named('workspace', 'workspace_id');
+        if ('ok' in workspace) return workspace;
+        const tab = named('tab', 'tab_id');
+        if ('ok' in tab) return tab;
+        return { pane_id: paneId, workspace: workspace.name, workspace_id: workspace.id, tab: tab.name, tab_id: tab.id };
+    };
     /** §5.7 shared parse-time guard: at least one of pane_id / target. */
     const requireTargetable = (): WireRejection | undefined =>
         paneId === undefined && fields.text('target') === undefined
@@ -369,44 +434,19 @@ function decodeCommand(
             };
         // ── workspace tabs (workspace-feature.md §12, socket-handlers.md §4.17) ──────────────
         case 'workspace-tab-list':
-            return { command, ...tabScope(), all: fields.flag('all', false) };
         case 'workspace-tab-new':
-            return {
-                command,
-                ...tabScope(),
-                kind: fields.text('kind'),
-                name: fields.nonEmpty('name'),
-                index: fields.int('index'),
-                at_end: fields.flag('at_end', false),
-                focus: fields.flag('focus', false),
-                url: fields.nonEmpty('url')
-            };
         case 'workspace-tab-select':
         case 'workspace-tab-close':
         case 'workspace-tab-close-others':
         case 'workspace-tab-split-panes':
         case 'workspace-tab-merge-previous':
-            return { command, ...tabScope() } as WireMessage;
-        case 'workspace-tab-rename': {
-            const name = fields.nonEmpty('name');
-            const clear = fields.flag('clear', false);
-            if (name === undefined && !clear) return guard(command, 'workspace-tab-rename requires name or clear', 'name');
-            return { command, ...tabScope(), name, clear };
-        }
-        case 'workspace-tab-move': {
-            const index = fields.int('index');
-            const atEnd = fields.flag('at_end', false);
-            if (index === undefined && !atEnd) return guard(command, 'workspace-tab-move requires index or at_end', 'index');
-            return { command, ...tabScope(), index, at_end: atEnd };
-        }
+        case 'workspace-tab-rename':
+        case 'workspace-tab-move':
         case 'workspace-tab-duplicate':
-            return { command, ...tabScope(), focus: fields.flag('focus', false) };
         case 'workspace-tab-move-to-workspace': {
-            const destination = fields.text('to_workspace');
-            if (destination === undefined) {
-                return guard(command, 'workspace-tab-move-to-workspace requires to_workspace', 'to_workspace');
-            }
-            return { command, ...tabScope(), to_workspace: destination, focus: fields.flag('focus', false) };
+            const where = tabScope();
+            if ('ok' in where) return where;
+            return decodeTabVerb(command, where, fields, named);
         }
         case 'pane-move-to-new-tab': {
             const failure = requireTargetable();
@@ -422,15 +462,26 @@ function decodeCommand(
         case 'pane-move-to-tab': {
             const failure = requireTargetable();
             if (failure) return failure;
-            const tab = fields.nonEmpty('tab');
-            if (tab === undefined) return guard(command, 'pane-move-to-tab requires tab', 'tab');
-            const anchor = fields.nonEmpty('anchor');
+            const tab = named('tab', 'tab_id');
+            if ('ok' in tab) return tab;
+            if (tab.name === undefined && tab.id === undefined) return guard(command, 'pane-move-to-tab requires tab', 'tab');
+            const anchor = named('anchor', 'target_pane_id');
+            if ('ok' in anchor) return anchor;
             const zoneText = fields.rawText('zone');
             const zone = parseDropZone(zoneText);
             if (zoneText !== undefined && zone === undefined) {
                 return guard(command, 'pane-move-to-tab zone must be above|below|left-of|right-of', 'zone');
             }
-            return { command, ...scope(), tab, anchor, zone, focus: fields.flag('focus', false) };
+            return {
+                command,
+                ...scope(),
+                tab: tab.name,
+                tab_id: tab.id,
+                anchor: anchor.name,
+                anchor_id: anchor.id,
+                zone,
+                focus: fields.flag('focus', false)
+            };
         }
         case 'pane-capture': {
             const failure = requireTargetable();

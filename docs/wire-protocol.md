@@ -2075,11 +2075,23 @@ the window's tab verbs, which it sends over the WebSocket with exact ids (`works
 (`packages/daemon/src/handlers/pane/tabs.ts`, `kelpi tab`, cli.md §12a):
 
 - **Named, not only by id.** `workspace` is a name-or-id (strict, §2.1); absent, it is the
-  workspace of `pane_id`, else the one on screen (`lastActiveWorkspaceID`). `tab` is a 1-based
-  number (what ⌥⌘1-9 count), then a tab id, then the title the tab bar shows, exactly and then
-  ignoring case; two tabs with one title are refused (`tab name 'x' is ambiguous in workspace
-  'dev': tabs 2, 4 (use a number or id)`). A verb that acts on one tab and names none acts on
-  the tab holding `pane_id`.
+  workspace holding the tab named by id, else the workspace of `pane_id` (a `pane_id` naming no
+  visible pane is refused, as for the pane verbs), else the one on screen
+  (`lastActiveWorkspaceID`). `tab` is a 1-based number (what ⌥⌘1-9 count), then a tab id (found
+  in any workspace), then the title the tab bar shows, exactly and then ignoring case; a number
+  past the last tab is tried as a title before it is refused, and two tabs with one title are
+  refused (`tab name 'x' is ambiguous in workspace 'dev': tabs 2, 4 (use a number or id)`). A
+  verb that acts on one tab and names none acts on the tab holding `pane_id`.
+- **Blank is refused.** A `tab`, `workspace`, `to_workspace` or `anchor` (or its id spelling)
+  that is present but blank is refused at decode (`tab is empty (an unset variable?)`): absent
+  means the caller's own, so an unset variable must not close the caller's own tab.
+- **The WS shape works here too.** `workspace_id`, `tab_id`, `to_workspace_id` and, for
+  `pane-move-to-tab`, `target_pane_id` resolve by id only; both spellings of one field at once
+  (`tab` and `tab_id`) are refused (`give tab or tab_id, not both`).
+- **`to_workspace`** resolves leniently, as `pane-move-to-workspace`'s `name` does (§2.3: id,
+  then a name in any case, then a slug).
+- **`pane-move-to-tab` with an `anchor` in the pane's own tab** moves it beside that pane, as
+  `pane-move-adjacent` does; without an anchor it is refused (`the pane is in that tab already`).
 - **Background unless asked.** Absent `focus` opens, copies or moves without changing what is
   on screen (#295); the WebSocket verbs read absent as a gesture. `workspace-tab-select` always
   shows the tab.
@@ -2202,7 +2214,10 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `reset` | bool | `pane-font-size` |
 | `anchor`, `zone` | string | `pane-move-adjacent`, `pane-move-to-tab` |
 | `kind` | string | `workspace-tab-new` (`terminal`, `same`, `agent`, `web`, `scratchpad`) |
-| `to_workspace` | string | `workspace-tab-move-to-workspace` (destination name-or-id) |
+| `to_workspace` | string | `workspace-tab-move-to-workspace` (destination: id, name in any case, or slug) |
+| `workspace_id`, `tab_id` | string (UUID) | `workspace-tab-*` (the WS shape: by id only, instead of `workspace` / `tab`); `tab_id` also `pane-move-to-tab` |
+| `to_workspace_id` | string (UUID) | `workspace-tab-move-to-workspace` (destination by id only) |
+| `target_pane_id` | string (UUID) | `pane-move-to-tab` (the `anchor` by id only) |
 | `at_end` | bool | `workspace-tab-new`, `workspace-tab-move`, `pane-move-to-new-tab` (after the last tab) |
 | `label_op` | string | `workspace-label` |
 | `label_values` | string[] | `workspace-label` |

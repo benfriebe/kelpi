@@ -121,7 +121,11 @@ export const WIRE_FIELD_TYPES = {
     send_prompt: 'bool',
     kind: 'string',
     to_workspace: 'string',
-    at_end: 'bool'
+    at_end: 'bool',
+    workspace_id: 'uuid',
+    tab_id: 'uuid',
+    to_workspace_id: 'uuid',
+    target_pane_id: 'uuid'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;

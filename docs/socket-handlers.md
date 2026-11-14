@@ -1043,14 +1043,35 @@ socket's conventions (`packages/daemon/src/handlers/pane/tabs.ts`, wire-protocol
 Each handler resolves what was named, then runs the verb above on the same channel, built per
 command so it reads the settings of the moment:
 
-- **Addressing.** `workspace` is a name-or-id (§2.1, strict); absent, the workspace of
-  `pane_id` (the caller), else the active one. `tab` is a 1-based number, a tab id, or the
-  title the tab bar shows (`workspaceTabTitle`, exactly, then ignoring case; two tabs with one
-  title are refused, never guessed). A verb on one tab that names none takes the tab holding
-  `pane_id`, else is refused `name a tab in workspace '<name>': a number, an id or a title`.
+- **Addressing.** `workspace` is a name-or-id (§2.1, strict). Absent, the workspace holding
+  the tab named by id (`tab_id`, or a `tab` that is a tab's UUID: tab ids are unique across
+  workspaces), else the workspace of `pane_id` (the caller), else the active one. A `pane_id`
+  that names no visible pane (closed, or parked behind a `--here` open) is refused as the pane
+  verbs refuse it: `origin pane '<id>' no longer exists; pass --workspace <name-or-id> to
+  address a tab in another workspace`, never a fall back to the workspace on screen. `tab` is a
+  1-based number, a tab id, or the title the tab bar shows (`workspaceTabTitle`, exactly, then
+  ignoring case; two tabs with one title are refused, never guessed). A number in range is
+  always the position; one past the last tab is tried as a title before it is refused (`no
+  tab <n> in workspace '<name>' (it has <count> tabs)`), so a tab named "7" stays reachable in
+  a two-tab workspace. A verb on one tab that names none takes the tab holding `pane_id`, else
+  is refused `name a tab in workspace '<name>': a number, an id or a title`.
   `pane-move-to-tab` and `pane-move-to-new-tab` resolve their pane as every pane-target
   command does (§2.4, `target` then `pane_id`), and the `tab`, and an `anchor`, within that
-  pane's workspace; the anchor must be in that tab.
+  pane's workspace; the anchor must be in that tab. An anchor in the pane's OWN tab moves it
+  beside that pane, as `pane-move-adjacent` does (§4.10), rather than reporting a move that
+  changed nothing.
+- **Blank is refused, never absent.** Absent `tab` or `workspace` means the caller's own, so a
+  present but blank `tab`, `tab_id`, `workspace`, `workspace_id`, `to_workspace`,
+  `to_workspace_id`, `anchor` or `target_pane_id` (an unset variable: `kelpi tab close "$T"`)
+  is refused at decode with `<field> is empty (an unset variable?)`, before anything is
+  resolved; the CLI refuses it before sending.
+- **The WS shape is accepted.** A line written for the window (`workspace_id`, `tab_id`,
+  `to_workspace_id`, and `target_pane_id` for `pane-move-to-tab`) acts on exactly what it
+  names: each id resolves by id only, and giving both spellings of one (`tab` and `tab_id`) is
+  refused. Before, those keys were unknown and dropped, and the verb fell back to the caller's
+  own tab.
+- **Destination.** `workspace-tab-move-to-workspace`'s `to_workspace` resolves as
+  `pane-move-to-workspace`'s does (§2.3, lenient: an id, then a name in any case, then a slug).
 - **Background by default.** Absent `focus` is false (#295), where the WS frames read it as a
   gesture; the handler always sends the channel an explicit `focus`.
 - **Positions.** `index` is the tab's 0-based position once placed (an `index` past the end is
@@ -1059,7 +1080,8 @@ command so it reads the settings of the moment:
 - **`workspace-tab-new`** takes `name` too, which renames the new tab once it exists, and
   passes `url` through (a web tab at that address; `kelpi tab new --url`).
 - **Replies** add `workspace_name` and `tab_number`, as both stand after the change, to the
-  channel's reply (wire-protocol.md §6.10 lists the extras per verb).
+  channel's reply (wire-protocol.md §6.10 lists the extras per verb). A `name` in a reply is
+  the name as stored (trimmed; null once a blank rename has cleared it), not as typed.
 - **Refusals** of its own: `the pane is alone in its tab already` (`pane-move-to-new-tab`; move
   the tab instead), `the pane is in that tab already` (`pane-move-to-tab` without an anchor),
   `no pane matching '<anchor>' in that tab`. A verb the channel does not know answers

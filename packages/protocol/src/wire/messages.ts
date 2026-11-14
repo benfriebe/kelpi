@@ -245,15 +245,20 @@ export interface PaneListMessage {
 /**
  * The workspace a tab verb acts in, and the tab. The same verbs ride the window's WS channel
  * with exact ids (`workspace_id`, `tab_id`); here both are named, as every other control verb
- * names what it touches.
+ * names what it touches. The WS shape's ids are accepted too, and resolve by id only, so a
+ * line written for the window acts on the tab it names and never on the caller's own.
  */
 export interface TabScope {
     /** The caller's pane: its workspace, and its tab for a verb that takes one, when none is named. */
     pane_id?: string | undefined;
     /** Name-or-id; absent = the caller's workspace, else the active one. */
     workspace?: string | undefined;
+    /** The workspace by exact id (the WS shape); never with `workspace`. */
+    workspace_id?: string | undefined;
     /** A 1-based number, an id, or the title the tab bar shows. */
     tab?: string | undefined;
+    /** The tab by exact id, in whichever workspace holds it (the WS shape); never with `tab`. */
+    tab_id?: string | undefined;
 }
 
 export interface WorkspaceTabListMessage extends TabScope {
@@ -320,8 +325,10 @@ export interface WorkspaceTabDuplicateMessage extends TabScope {
 
 export interface WorkspaceTabMoveToWorkspaceMessage extends TabScope {
     command: 'workspace-tab-move-to-workspace';
-    /** Destination workspace name-or-id. */
-    to_workspace: string;
+    /** Destination workspace: a name (any case), a slug or an id. One of this or `to_workspace_id`. */
+    to_workspace?: string | undefined;
+    /** Destination workspace by exact id (the WS shape). */
+    to_workspace_id?: string | undefined;
     /** Follow the tab to its new workspace. Absent (or false) moves it in the BACKGROUND. */
     focus?: boolean | undefined;
 }
@@ -337,10 +344,14 @@ export interface PaneMoveToNewTabMessage extends PaneTargetScope {
 
 export interface PaneMoveToTabMessage extends PaneTargetScope {
     command: 'pane-move-to-tab';
-    /** A 1-based number, an id, or a title, in the pane's workspace. */
-    tab: string;
+    /** A 1-based number, an id, or a title, in the pane's workspace. One of this or `tab_id`. */
+    tab?: string | undefined;
+    /** The tab by exact id (the WS shape). */
+    tab_id?: string | undefined;
     /** Dock beside this pane of the tab (name-or-uuid), on `zone`; absent = beside its focused pane. */
     anchor?: string | undefined;
+    /** The same by exact pane id (the WS shape's `target_pane_id`). */
+    anchor_id?: string | undefined;
     zone?: DropZone | undefined;
     /** #295: show the tab the pane went to. Absent (or false) moves it in the BACKGROUND. */
     focus?: boolean | undefined;

@@ -3032,4 +3032,54 @@ describe('kelpi tab (workspace-feature.md §12)', () => {
         expect(result.code).toBe(0);
         expect(result.stdout).toContain('kelpi tab list|new|select');
     });
+
+    it('refuses a blank tab, workspace or edge pane before sending, rather than act on the caller\'s own', async () => {
+        for (const [args, said] of [
+            [['tab', 'close', ''], 'kelpi tab close: the tab is empty (an unset variable?)'],
+            [['tab', 'close-others', '  '], 'kelpi tab close-others: the tab is empty (an unset variable?)'],
+            [['tab', 'close', '2', '--workspace', ''], 'kelpi tab close: --workspace is empty (an unset variable?)'],
+            [['tab', 'move-to-workspace', '2', '--to-workspace', ''], 'kelpi tab move-to-workspace: --to-workspace is empty (an unset variable?)'],
+            [['tab', 'rename', '', 'docs'], 'kelpi tab rename: the tab is empty (an unset variable?)'],
+            [['pane', 'move-to-tab', ''], 'kelpi pane move-to-tab: the tab is empty (an unset variable?)'],
+            [['pane', 'move-to-tab', '2', '--below', ''], 'kelpi pane move-to-tab: the edge pane is empty (an unset variable?)']
+        ] as const) {
+            const result = await runCLI([...args], { port: server.port, paneID: PANE });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(said);
+        }
+        expect(server.requests).toEqual([]);
+    });
+
+    it('reads every word after -- as a value, even --help or a leading dash', async () => {
+        server.respond(() => ({ lines: [{ ...placed, name: '--help' }] }));
+        const renamed = await runCLI(['tab', 'rename', '2', '--', '--help'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-rename', pane_id: PANE, tab: '2', name: '--help' });
+        expect(renamed.stdout).toBe(`renamed tab 2 (${PANE}) in workspace dev to --help\n`);
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER }] }));
+        await runCLI(['pane', 'move-to-tab', '--', '-x'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-to-tab', pane_id: PANE, tab: '-x' });
+        await runCLI(['tab', 'select', '--workspace', 'dev', '--', '-x'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-select', pane_id: PANE, workspace: 'dev', tab: '-x' });
+    });
+
+    it('notes that a name made of digits also reads as a tab number', async () => {
+        server.respond(() => ({ lines: [{ ...placed, name: '7' }] }));
+        const result = await runCLI(['tab', 'rename', '2', '7'], { port: server.port, paneID: PANE });
+        expect(result.code).toBe(0);
+        expect(result.stderr).toContain("'7' also reads as a tab number");
+        expect(result.stdout).toBe(`renamed tab 2 (${PANE}) in workspace dev to 7\n`);
+    });
+
+    it('says the same thing for every tab verb when the daemon is too old to answer', async () => {
+        server.respond(() => ({ silent: true }));
+        for (const [args, label] of [
+            [['tab', 'select', '2'], 'kelpi tab select'],
+            [['pane', 'move-to-tab', '2'], 'kelpi pane move-to-tab'],
+            [['pane', 'move-to-new-tab'], 'kelpi pane move-to-new-tab']
+        ] as const) {
+            const result = await runCLI([...args], { port: server.port, paneID: PANE });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(`${label}: no response from Kelpi (upgrade required?)`);
+        }
+    });
 });

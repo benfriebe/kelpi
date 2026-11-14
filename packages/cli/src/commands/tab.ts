@@ -5,12 +5,25 @@
  * Every verb is request/response. A tab is named by its 1-based number, its id or the title the
  * tab bar shows; without one, the calling pane's own tab is meant. The daemon resolves both the
  * workspace and the tab (`handlers/pane/tabs.ts`), so the CLI only forwards what was typed, plus
- * the caller pane as the default. Creations and moves happen in the background unless `--focus`
- * (#295), as `pane split` does; `select` always shows. `--json` prints the reply without `ok`,
- * the pane family's shape; `list --json` prints the array.
+ * the caller pane as the default. A tab or workspace given but blank is refused here, since
+ * sending it would mean the caller's own (an unset variable, `kelpi tab close "$T"`). Creations
+ * and moves happen in the background unless `--focus` (#295), as `pane split` does; `select`
+ * always shows. Flags are read from the words before a `--`; every word after it is a value, so
+ * a tab can be named `-x`. `--json` prints the reply without `ok`, the pane family's shape;
+ * `list --json` prints the array.
  */
 
-import { extractPositionalTail, hasHelpFlag, isHelpToken, parseFlag, parseIntStrict, popSwitch, rejectLeftoverArgs, type UsagePrinter } from '../args.js';
+import {
+    extractPositionalTail,
+    hasHelpFlag,
+    isHelpToken,
+    parseFlag,
+    parseIntStrict,
+    popSwitch,
+    rejectBlankValue,
+    rejectLeftoverArgs,
+    type UsagePrinter
+} from '../args.js';
 import { originPaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asArray, asInt, asString, stableStringify, type JsonObject } from '../json.js';
@@ -108,9 +121,12 @@ function scoped(command: string, workspace: string | null, tab: string | undefin
     return payload;
 }
 
-/** The positionals left once the flags are taken (`--` lets a name start with a dash). */
-function positionals(args: string[]): string[] {
-    const tail = extractPositionalTail(args);
+/**
+ * The positionals left once the flags are taken: the leading words, then every word after the
+ * `--` the caller took off first (`extractPositionalTail`), which are values even when they
+ * start with a dash.
+ */
+function positionals(args: string[], tail: readonly string[]): string[] {
     const words: string[] = [];
     while (args.length > 0 && !(args[0] as string).startsWith('-')) words.push(args.shift() as string);
     return [...words, ...tail];
@@ -149,6 +165,7 @@ async function handleTabList(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const noHeader = popSwitch('--no-header', args);
     rejectLeftoverArgs(args, 'kelpi tab list', { usage: usagePrinter(tabListUsage) });
+    rejectBlankValue('kelpi tab list', '--workspace', workspace);
     if (all && workspace !== null) {
         errLine('kelpi tab list: --workspace and --all are mutually exclusive');
         exit(1);
@@ -178,6 +195,8 @@ async function handleTabNew(args: string[]): Promise<void> {
     const focus = popSwitch('--focus', args);
     const asJSON = popSwitch('--json', args);
     rejectLeftoverArgs(args, 'kelpi tab new', { usage: usagePrinter(tabNewUsage) });
+    rejectBlankValue('kelpi tab new', '--workspace', workspace);
+    rejectBlankValue('kelpi tab new', '--url', url);
     if (kind !== null && !NEW_TAB_KINDS.includes(kind)) {
         errLine(`kelpi tab new: unknown kind '${kind}'; use ${NEW_TAB_KINDS.join(', ')}`);
         exit(1);
@@ -218,6 +237,7 @@ async function handleOneTab(
     ack: (reply: JsonObject) => string,
     canFocus = false
 ): Promise<void> {
+    const tail = extractPositionalTail(args);
     if (hasHelpFlag(args)) {
         writeOut(usage);
         exit(0);
@@ -225,9 +245,11 @@ async function handleOneTab(
     const workspace = parseFlag('--workspace', args);
     const focus = canFocus && popSwitch('--focus', args);
     const asJSON = popSwitch('--json', args);
-    const words = positionals(args);
+    const words = positionals(args, tail);
     const tab = words.shift();
     rejectLeftoverArgs([...words, ...args], `kelpi tab ${verb}`, { usage: usagePrinter(usage) });
+    rejectBlankValue(`kelpi tab ${verb}`, '--workspace', workspace);
+    rejectBlankValue(`kelpi tab ${verb}`, 'the tab', tab);
     requireTabOutsidePane(tab, verb, usage);
     const payload = scoped(command, workspace, tab);
     if (focus) payload['focus'] = true;
@@ -240,6 +262,7 @@ async function handleOneTab(
 }
 
 async function handleTabRename(args: string[]): Promise<void> {
+    const tail = extractPositionalTail(args);
     if (hasHelpFlag(args)) {
         writeOut(tabRenameUsage);
         exit(0);
@@ -247,8 +270,9 @@ async function handleTabRename(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const clear = popSwitch('--clear', args);
     const asJSON = popSwitch('--json', args);
-    const words = positionals(args);
+    const words = positionals(args, tail);
     rejectLeftoverArgs(args, 'kelpi tab rename', { usage: usagePrinter(tabRenameUsage) });
+    rejectBlankValue('kelpi tab rename', '--workspace', workspace);
     // `rename <tab> <name>`, `rename <name>` (the caller's tab), `rename [<tab>] --clear`.
     let tab: string | undefined;
     let name: string | undefined;
@@ -264,7 +288,13 @@ async function handleTabRename(args: string[]): Promise<void> {
         writeErr(tabRenameUsage);
         exit(1);
     }
+    rejectBlankValue('kelpi tab rename', 'the tab', tab);
     requireTabOutsidePane(tab, 'rename', tabRenameUsage);
+    // A number names a POSITION first wherever a tab is named, so a tab called "7" is reached
+    // by that title only once there are fewer than 7 tabs: say so rather than surprise later.
+    if (name !== undefined && /^[0-9]+$/.test(name.trim())) {
+        errLine(`kelpi tab rename: note: '${name.trim()}' also reads as a tab number, and a number names a position first`);
+    }
     const payload = scoped('workspace-tab-rename', workspace, tab);
     if (clear) payload['clear'] = true;
     else payload['name'] = name ?? '';
@@ -278,6 +308,7 @@ async function handleTabRename(args: string[]): Promise<void> {
 }
 
 async function handleTabMove(args: string[]): Promise<void> {
+    const tail = extractPositionalTail(args);
     if (hasHelpFlag(args)) {
         writeOut(tabMoveUsage);
         exit(0);
@@ -286,9 +317,11 @@ async function handleTabMove(args: string[]): Promise<void> {
     const to = position('--to', parseFlag('--to', args), 'move');
     const end = popSwitch('--end', args);
     const asJSON = popSwitch('--json', args);
-    const words = positionals(args);
+    const words = positionals(args, tail);
     const tab = words.shift();
     rejectLeftoverArgs([...words, ...args], 'kelpi tab move', { usage: usagePrinter(tabMoveUsage) });
+    rejectBlankValue('kelpi tab move', '--workspace', workspace);
+    rejectBlankValue('kelpi tab move', 'the tab', tab);
     if ((to === undefined) === !end) {
         errLine('kelpi tab move: give exactly one of --to <n> or --end');
         writeErr(tabMoveUsage);
@@ -307,6 +340,7 @@ async function handleTabMove(args: string[]): Promise<void> {
 }
 
 async function handleTabMoveToWorkspace(args: string[]): Promise<void> {
+    const tail = extractPositionalTail(args);
     if (hasHelpFlag(args)) {
         writeOut(tabMoveToWorkspaceUsage);
         exit(0);
@@ -315,9 +349,12 @@ async function handleTabMoveToWorkspace(args: string[]): Promise<void> {
     const destination = parseFlag('--to-workspace', args);
     const focus = popSwitch('--focus', args);
     const asJSON = popSwitch('--json', args);
-    const words = positionals(args);
+    const words = positionals(args, tail);
     const tab = words.shift();
     rejectLeftoverArgs([...words, ...args], 'kelpi tab move-to-workspace', { usage: usagePrinter(tabMoveToWorkspaceUsage) });
+    rejectBlankValue('kelpi tab move-to-workspace', '--workspace', workspace);
+    rejectBlankValue('kelpi tab move-to-workspace', '--to-workspace', destination);
+    rejectBlankValue('kelpi tab move-to-workspace', 'the tab', tab);
     if (destination === null) {
         errLine('kelpi tab move-to-workspace: requires --to-workspace <name-or-id>');
         writeErr(tabMoveToWorkspaceUsage);

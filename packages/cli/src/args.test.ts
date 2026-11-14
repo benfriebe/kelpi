@@ -194,4 +194,10 @@ describe('help tokens', () => {
         expect(hasHelpFlag(['--target', 'x', '--help'])).toBe(true);
         expect(hasHelpFlag(['--target', 'x'])).toBe(false);
     });
+
+    it('stops at --: a word after it is a value, not a help request', () => {
+        expect(hasHelpFlag(['2', '--', '--help'])).toBe(false);
+        expect(hasHelpFlag(['2', '--', '-h'])).toBe(false);
+        expect(hasHelpFlag(['-h', '--', 'x'])).toBe(true);
+    });
 });

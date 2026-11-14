@@ -341,6 +341,10 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(payload()).toEqual({ command: 'pane-move-to-tab', pane_id: P1, tab_id: T1, target_pane_id: P1, zone: 'below', focus: true });
         await api.panes.moveToNewTab(P1, { focus: false });
         expect(payload()).toEqual({ command: 'pane-move-to-new-tab', pane_id: P1, focus: false });
+        // `index` goes through as given: the daemon reads it as a position, or as a drop slot
+        // for a pane alone in its tab (domain.d.ts says which).
+        await api.panes.moveToNewTab(P1, { index: 2 });
+        expect(payload()).toEqual({ command: 'pane-move-to-new-tab', pane_id: P1, index: 2, focus: true });
         const sent = calls.length;
         await expect(api.tabs.select({ tabID: T1 } as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
         expect(calls).toHaveLength(sent);

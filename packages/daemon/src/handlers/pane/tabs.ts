@@ -13,7 +13,8 @@
  * script can address the tab next without listing first.
  */
 
-import { idsEqual, isUUIDToken, resolvePaneInWorkspace, resolveWorkspaceStrict, workspacesMatchingName } from '@kelpi/core/resolve';
+import { dropZoneForWireEdge } from '@kelpi/core/layout';
+import { idsEqual, isUUIDToken, resolvePaneInWorkspace, resolveWorkspaceLenient, resolveWorkspaceStrict, workspacesMatchingName } from '@kelpi/core/resolve';
 import type { JsonObject, WireMessage } from '@kelpi/protocol';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
@@ -51,20 +52,50 @@ function plural(count: number, noun: string): string {
     return `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
 }
 
-/** `workspace` named, else the caller's workspace, else the active one. */
-function resolveWorkspace(state: DaemonState, named: string | undefined, paneID: string | undefined): Resolved<WorkspaceState> {
-    if (named !== undefined) {
-        const resolved = resolveWorkspaceStrict(resolveStateOf(state), named);
+/** What a tab verb names: the decoded scope (`TabScope`), by name or by the WS shape's exact ids. */
+interface TabReference {
+    readonly pane_id?: string | undefined;
+    readonly workspace?: string | undefined;
+    readonly workspace_id?: string | undefined;
+    readonly tab?: string | undefined;
+    readonly tab_id?: string | undefined;
+}
+
+/** The workspace holding a tab with this id; tab ids are UUIDs, unique across every workspace. */
+function workspaceHoldingTab(state: DaemonState, tabID: string): WorkspaceState | null {
+    return state.workspaces.find((workspace) => workspaceTabs(workspace).some((tab) => idsEqual(tab.id, tabID))) ?? null;
+}
+
+/**
+ * The workspace a tab verb acts in: the one named (by name-or-id, or `workspace_id` by id only),
+ * else the one holding the tab named by id (`tab_id`, or a `tab` that is a tab's UUID), else
+ * the caller's, else the active one. A caller pane that is gone or parked is an error, as it is
+ * for the pane verbs (`resolvePaneTarget`), never a quiet fall back to whatever is on screen.
+ */
+function resolveWorkspace(state: DaemonState, ref: TabReference): Resolved<WorkspaceState> {
+    if (ref.workspace_id !== undefined) {
+        const byID = state.workspaces.find((workspace) => idsEqual(workspace.id, ref.workspace_id as string)) ?? null;
+        return byID === null ? missing(`no workspace with id ${ref.workspace_id}`) : found(byID);
+    }
+    if (ref.workspace !== undefined) {
+        const resolved = resolveWorkspaceStrict(resolveStateOf(state), ref.workspace);
         const workspace = resolved === null ? null : workspaceByID(state, resolved.id);
         if (workspace !== null) return found(workspace);
-        if (workspacesMatchingName(resolveStateOf(state), named).length > 1) {
-            return missing(`workspace name '${named}' is ambiguous: use its id`);
+        if (workspacesMatchingName(resolveStateOf(state), ref.workspace).length > 1) {
+            return missing(`workspace name '${ref.workspace}' is ambiguous: use its id`);
         }
-        return missing(`workspace not found: ${named}`);
+        return missing(`workspace not found: ${ref.workspace}`);
     }
-    if (paneID !== undefined) {
-        const workspace = workspaceContainingVisiblePane(state, paneID);
+    const tabID = ref.tab_id ?? (ref.tab !== undefined && isUUIDToken(ref.tab) ? ref.tab : undefined);
+    if (tabID !== undefined) {
+        const holder = workspaceHoldingTab(state, tabID);
+        if (holder !== null) return found(holder);
+        if (ref.tab_id !== undefined) return missing(`no tab with id ${ref.tab_id}`);
+    }
+    if (ref.pane_id !== undefined) {
+        const workspace = workspaceContainingVisiblePane(state, ref.pane_id);
         if (workspace !== null) return found(workspace);
+        return missing(`origin pane '${ref.pane_id}' no longer exists; pass --workspace <name-or-id> to address a tab in another workspace`);
     }
     const active = state.lastActiveWorkspaceID === null ? null : workspaceByID(state, state.lastActiveWorkspaceID);
     const fallback = active ?? state.workspaces[0] ?? null;
@@ -73,15 +104,17 @@ function resolveWorkspace(state: DaemonState, named: string | undefined, paneID:
 
 /**
  * A tab of `workspace` by 1-based number, then id, then the title the bar shows (exactly, then
- * ignoring case). Two tabs with the same title are ambiguous, never a guess.
+ * ignoring case). A number past the last tab is tried as a title before it is an error, so a
+ * tab named "7" in a two-tab workspace is still reachable; a number in range is always the
+ * position. Two tabs with the same title are ambiguous, never a guess.
  */
 export function resolveWorkspaceTab(workspace: WorkspaceState, token: string): Resolved<WorkspaceTab> {
     const tabs = workspaceTabs(workspace);
-    if (/^[0-9]+$/.test(token)) {
+    const numbered = /^[0-9]+$/.test(token);
+    if (numbered) {
         const number = Number(token);
         const tab = number >= 1 ? tabs[number - 1] : undefined;
         if (tab !== undefined) return found(tab);
-        return missing(`no tab ${token} in workspace '${workspace.name}' (it has ${plural(tabs.length, 'tab')})`);
     }
     if (isUUIDToken(token)) {
         const byID = tabs.find((tab) => idsEqual(tab.id, token));
@@ -99,13 +132,18 @@ export function resolveWorkspaceTab(workspace: WorkspaceState, token: string): R
             return missing(`tab name '${token}' is ambiguous in workspace '${workspace.name}': tabs ${numbers} (use a number or id)`);
         }
     }
+    if (numbered) return missing(`no tab ${token} in workspace '${workspace.name}' (it has ${plural(tabs.length, 'tab')})`);
     return missing(`no tab matching '${token}' in workspace '${workspace.name}'`);
 }
 
-/** `tab` named, else the caller's own tab when the caller is in this workspace. */
-function resolveTab(workspace: WorkspaceState, named: string | undefined, paneID: string | undefined): Resolved<WorkspaceTab> {
-    if (named !== undefined) return resolveWorkspaceTab(workspace, named);
-    const own = paneID === undefined ? null : tabOfPane(workspace, paneID);
+/** `tab_id` by id only, else `tab` by number, id or title, else the caller's own tab when it is in this workspace. */
+function resolveTab(workspace: WorkspaceState, ref: TabReference): Resolved<WorkspaceTab> {
+    if (ref.tab_id !== undefined) {
+        const byID = workspaceTabs(workspace).find((tab) => idsEqual(tab.id, ref.tab_id as string));
+        return byID === undefined ? missing(`no tab with id ${ref.tab_id} in workspace '${workspace.name}'`) : found(byID);
+    }
+    if (ref.tab !== undefined) return resolveWorkspaceTab(workspace, ref.tab);
+    const own = ref.pane_id === undefined ? null : tabOfPane(workspace, ref.pane_id);
     return own === null ? missing(`name a tab in workspace '${workspace.name}': a number, an id or a title`) : found(own);
 }
 
@@ -125,6 +163,27 @@ function tabEntry(workspace: WorkspaceState, tab: WorkspaceTab, index: number): 
         status: workspaceTabStatus(workspace, tab),
         zoomed: tabLayout(workspace, tab).zoomedPaneID !== null
     };
+}
+
+/**
+ * Where `move-to-workspace` sends a tab: by exact id (`to_workspace_id`), else by the lenient
+ * resolver `pane move-to-workspace` uses (§2.3: id, then a name in any case, then a slug), so
+ * `--to-workspace OPS` finds "ops" for a tab as it does for a pane.
+ */
+function resolveDestination(state: DaemonState, named: string | undefined, id: string | undefined): Resolved<WorkspaceState> {
+    if (id !== undefined) {
+        const byID = state.workspaces.find((workspace) => idsEqual(workspace.id, id)) ?? null;
+        return byID === null ? missing(`no workspace with id ${id}`) : found(byID);
+    }
+    const resolved = named === undefined ? null : resolveWorkspaceLenient(resolveStateOf(state), named);
+    const workspace = resolved === null ? null : workspaceByID(state, resolved.id);
+    return workspace === null ? missing(`workspace not found: ${named ?? ''}`) : found(workspace);
+}
+
+/** The name the tab is stored with (trimmed, blank = none), for a reply that says what it was named. */
+function storedName(ctx: PaneHandlerContext, workspaceID: string, tabID: string): string | null {
+    const workspace = workspaceByID(ctx.store.getState(), workspaceID);
+    return workspace === null ? null : (workspaceTabs(workspace).find((tab) => tab.id === tabID)?.name ?? null);
 }
 
 /** The workspace and the tab's number as they stand now, for every reply. */
@@ -180,12 +239,12 @@ function withTab(
     act: (workspace: WorkspaceState, tab: WorkspaceTab) => Promise<void>
 ): void {
     const state = ctx.store.getState();
-    const workspace = resolveWorkspace(state, msg.workspace, msg.pane_id);
+    const workspace = resolveWorkspace(state, msg);
     if (!workspace.ok) {
         sendError(reply, workspace.error);
         return;
     }
-    const tab = resolveTab(workspace.value, msg.tab, msg.pane_id);
+    const tab = resolveTab(workspace.value, msg);
     if (!tab.ok) {
         sendError(reply, tab.error);
         return;
@@ -202,7 +261,7 @@ export const handleWorkspaceTabList: CommandHandler<PaneHandlerContext> = (msg, 
         sendOK(reply, { tabs });
         return;
     }
-    const workspace = resolveWorkspace(state, msg.workspace, msg.pane_id);
+    const workspace = resolveWorkspace(state, msg);
     if (!workspace.ok) {
         sendError(reply, workspace.error);
         return;
@@ -216,7 +275,7 @@ export const handleWorkspaceTabList: CommandHandler<PaneHandlerContext> = (msg, 
 
 export const handleWorkspaceTabNew: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'workspace-tab-new') return;
-    const workspace = resolveWorkspace(ctx.store.getState(), msg.workspace, msg.pane_id);
+    const workspace = resolveWorkspace(ctx.store.getState(), msg);
     if (!workspace.ok) {
         sendError(reply, workspace.error);
         return;
@@ -242,12 +301,13 @@ export const handleWorkspaceTabNew: CommandHandler<PaneHandlerContext> = (msg, c
         }
         const tabID = String(result['tab_id']);
         if (msg.name !== undefined) ctx.store.dispatch({ type: 'rename-tab', workspaceID: workspace.value.id, tabID, name: msg.name });
+        const name = storedName(ctx, workspace.value.id, tabID);
         sendOK(reply, {
             ...placed(ctx, workspace.value.id, tabID),
             pane_id: result['pane_id'] ?? null,
             kind: result['kind'] ?? null,
             ...(typeof result['url'] === 'string' ? { url: result['url'] } : {}),
-            ...(msg.name !== undefined ? { name: msg.name } : {})
+            ...(name !== null ? { name } : {})
         });
     });
 };
@@ -306,7 +366,8 @@ export const handleWorkspaceTabRename: CommandHandler<PaneHandlerContext> = (msg
             sendError(reply, error);
             return;
         }
-        sendOK(reply, { ...placed(ctx, workspace.id, tab.id), name });
+        // What was stored, not what was typed: the reducer trims, and a blank name clears.
+        sendOK(reply, { ...placed(ctx, workspace.id, tab.id), name: storedName(ctx, workspace.id, tab.id) });
     });
 };
 
@@ -345,7 +406,7 @@ export const handleWorkspaceTabDuplicate: CommandHandler<PaneHandlerContext> = (
 export const handleWorkspaceTabMoveToWorkspace: CommandHandler<PaneHandlerContext> = (msg, ctx, reply) => {
     if (msg.command !== 'workspace-tab-move-to-workspace') return;
     withTab(msg, ctx, reply, async (workspace, tab) => {
-        const target = resolveWorkspace(ctx.store.getState(), msg.to_workspace, undefined);
+        const target = resolveDestination(ctx.store.getState(), msg.to_workspace, msg.to_workspace_id);
         if (!target.ok) {
             sendError(reply, target.error);
             return;
@@ -407,16 +468,17 @@ export const handlePaneMoveToTab: CommandHandler<PaneHandlerContext> = (msg, ctx
         return;
     }
     const { paneID, workspace } = resolution;
-    const tab = resolveWorkspaceTab(workspace, msg.tab);
+    const tab = resolveTab(workspace, { tab: msg.tab, tab_id: msg.tab_id });
     if (!tab.ok) {
         sendError(reply, tab.error);
         return;
     }
     let anchorID: string | undefined;
-    if (msg.anchor !== undefined) {
-        const resolved = resolvePaneInWorkspace(resolveStateOf(ctx.store.getState()), workspace.id, msg.anchor);
+    const anchor = msg.anchor_id ?? msg.anchor;
+    if (anchor !== undefined) {
+        const resolved = resolvePaneInWorkspace(resolveStateOf(ctx.store.getState()), workspace.id, anchor);
         if (resolved === null || !tabPaneIDs(workspace, tab.value).includes(resolved)) {
-            sendError(reply, `no pane matching '${msg.anchor}' in that tab`);
+            sendError(reply, `no pane matching '${anchor}' in that tab`);
             return;
         }
         if (resolved === paneID) {
@@ -426,6 +488,21 @@ export const handlePaneMoveToTab: CommandHandler<PaneHandlerContext> = (msg, ctx
         anchorID = resolved;
     } else if (tabOfPane(workspace, paneID)?.id === tab.value.id) {
         sendError(reply, 'the pane is in that tab already');
+        return;
+    }
+    if (anchorID !== undefined && tabOfPane(workspace, paneID)?.id === tab.value.id) {
+        // Beside a pane of its own tab: the move `kelpi pane move --target X --below Y` makes,
+        // which the tab channel's cross-tab move would read as "already there" and skip.
+        const zone = msg.zone ?? 'right-of';
+        ctx.store.dispatch({
+            type: 'move-pane-adjacent',
+            workspaceID: workspace.id,
+            paneID,
+            targetPaneID: anchorID,
+            zone: dropZoneForWireEdge(zone),
+            focus: msg.focus === true
+        });
+        sendOK(reply, { ...placed(ctx, workspace.id, tab.value.id), pane_id: paneID, anchor_id: anchorID, zone });
         return;
     }
     guarded(reply, async () => {

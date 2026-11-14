@@ -190,6 +190,31 @@ describe('the tab verbs', () => {
         expect(workspaceTabs(h.workspace(W1))).toHaveLength(1);
     });
 
+    it('duplicates a tab by name, in the background, as the tab after it', async () => {
+        const h = seeded();
+        const reply = await settled(h, { command: 'workspace-tab-duplicate', pane_id: P1, tab: 'build' });
+        expect(reply).toMatchObject({ ok: true, workspace_id: W1, tab_number: 3, source_tab_id: T2 });
+        const tabs = workspaceTabs(h.workspace(W1));
+        expect(tabs).toHaveLength(3);
+        const copy = tabs[2]!;
+        expect(reply['tab_id']).toBe(copy.id);
+        expect(copy.name).toBe('build');
+        // Two fresh shells, neither of them the originals, and no label carried over.
+        const copies = tabPaneIDs(h.workspace(W1), copy);
+        expect(copies).toHaveLength(2);
+        expect(copies.some((id) => id === P2 || id === P3)).toBe(false);
+        expect(h.workspace(W1).panes.filter((pane) => copies.includes(pane.id)).map((pane) => pane.label ?? null)).toEqual([null, null]);
+        // Background: the caller's tab stays on screen.
+        expect(activeTabIDOf(h.workspace(W1))).toBe(W1);
+        expect(h.pty.spawns.map((spawn) => spawn.paneID).sort()).toEqual([...copies].sort());
+    });
+
+    it('shows the copy with --focus', async () => {
+        const h = seeded();
+        const reply = await settled(h, { command: 'workspace-tab-duplicate', pane_id: P1, tab: '2', focus: true });
+        expect(activeTabIDOf(h.workspace(W1))).toBe(reply['tab_id']);
+    });
+
     it('reports a duplicate of a tab it cannot find', async () => {
         const h = seeded();
         expect(await settled(h, { command: 'workspace-tab-duplicate', pane_id: P1, tab: 'nope' })).toEqual({

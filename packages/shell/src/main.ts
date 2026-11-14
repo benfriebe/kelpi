@@ -119,7 +119,15 @@ import { focusWindowContents, presentWindow, presentWindowLogLine } from './wind
 import { OPEN_FILE_EXTENSIONS, isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
 import { readClipboardFiles } from './clipboard-files.js';
 import { resolveDroppedFiles, serialized, type DroppedFilesResult } from './dropped-files.js';
-import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
+import {
+    FULLSCREEN_QUERY,
+    fullScreenCommand,
+    titleBarLogLine,
+    titleBarStyleFor,
+    trafficLightQuery,
+    windowButtonsLogLine,
+    windowButtonsVisible
+} from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
 import {
@@ -559,7 +567,9 @@ function loadDaemonUrl(window: BrowserWindow): void {
         // APP-046: the same shape of answer for the traffic lights. With `hiddenInset` the page
         // is drawn UNDER them, so it is told how much leading room to keep clear; a browser tab
         // (and a Linux window) gets no parameter and reserves nothing.
-        trafficLightQuery(TITLE_BAR);
+        trafficLightQuery(TITLE_BAR) +
+        // shell-ui.md §3.3: a window loaded fullscreen has no traffic lights to keep clear.
+        (TITLE_BAR.gutter > 0 && window.isFullScreen() ? FULLSCREEN_QUERY : '');
     // The token rides in the query string (the client reads it, remembers it, and strips it
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
@@ -864,8 +874,15 @@ function createWindow(): BrowserWindow {
     });
     window.on('resize', () => scheduleBoundsSave(window));
     window.on('move', () => scheduleBoundsSave(window));
-    window.on('enter-full-screen', () => saveFullScreenFlag(window, true));
-    window.on('leave-full-screen', () => saveFullScreenFlag(window, false));
+    window.on('enter-full-screen', () => {
+        saveFullScreenFlag(window, true);
+        // shell-ui.md §3.3: the page drops the traffic lights' gutter while there are none.
+        status?.sendMenuRequest(fullScreenCommand(true));
+    });
+    window.on('leave-full-screen', () => {
+        saveFullScreenFlag(window, false);
+        status?.sendMenuRequest(fullScreenCommand(false));
+    });
     window.on('focus', () => {
         /*
          * #75: the fast path back from a hide.
@@ -2094,6 +2111,15 @@ function startStatusController(): void {
                 /** The root arrangement's toolbar, reported by this window's page (`window-chrome`). */
                 windowChromeChanged: (titleBarHidden) => {
                     if (mainWindow !== null) applyWindowButtons(mainWindow, titleBarHidden, 'report');
+                    /*
+                     * shell-ui.md §3.3: the page sends this on every (re)connect, so it is the
+                     * moment to tell it the truth about fullscreen. Its `fullscreen=1` came from
+                     * the URL it loaded with, which a reload keeps, and a change made while it was
+                     * loading or reconnecting reached no page at all.
+                     */
+                    if (mainWindow !== null && !mainWindow.isDestroyed() && TITLE_BAR.gutter > 0) {
+                        status?.sendMenuRequest(fullScreenCommand(mainWindow.isFullScreen()));
+                    }
                 },
                 /*
                  * The same rule as a navigation: a page this shell cannot hear from has not said its
@@ -2109,6 +2135,10 @@ function startStatusController(): void {
                 },
                 statusConnected: () => {
                     daemonWatch?.healthy();
+                    // shell-ui.md §3.3: a page that missed the change while the link was down.
+                    if (mainWindow !== null && !mainWindow.isDestroyed() && TITLE_BAR.gutter > 0) {
+                        status?.sendMenuRequest(fullScreenCommand(mainWindow.isFullScreen()));
+                    }
                     // #312: the daemon came back where it was before the watch looked again; the
                     // window may still be on the stopped page or an error page. A Start Daemon in
                     // flight reloads the window itself.

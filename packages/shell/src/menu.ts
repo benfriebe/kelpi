@@ -87,6 +87,17 @@ export const TOGGLE_BOTTOM_PANEL_COMMAND = 'toggle-bottom-panel';
 export const RESET_WINDOW_ARRANGEMENT_COMMAND = 'reset-window-arrangement';
 
 /**
+ * workspace-feature.md §12: the workspace's tabs. The client answers each with the same handler
+ * its key action runs (`new_tab`, `close_tab`, `next_tab`, `previous_tab`,
+ * `move_pane_to_new_tab`), so a row and its chord cannot do different things.
+ */
+export const NEW_TAB_COMMAND = 'new-tab';
+export const CLOSE_TAB_COMMAND = 'close-tab';
+export const NEXT_TAB_COMMAND = 'next-tab';
+export const PREVIOUS_TAB_COMMAND = 'previous-tab';
+export const MOVE_PANE_TO_NEW_TAB_COMMAND = 'move-pane-to-new-tab';
+
+/**
  * §WS-151's "Switch to Workspace N" rows: `switch-workspace-1` … `switch-workspace-9`.
  *
  * One command per row rather than one command with an argument, because `menu-request` carries a
@@ -266,6 +277,11 @@ export const TOGGLE_STATUS_BAR_LABEL = 'Toggle Status Bar';
 export const TOGGLE_BOTTOM_PANEL_LABEL = 'Toggle Bottom Panel';
 export const RESET_WINDOW_ARRANGEMENT_LABEL = 'Reset Window Arrangement';
 export const NEW_WORKSPACE_LABEL = 'New Workspace';
+export const NEW_TAB_LABEL = 'New Tab';
+export const CLOSE_TAB_LABEL = 'Close Tab';
+export const MOVE_PANE_TO_NEW_TAB_LABEL = 'Move Pane to New Tab';
+export const NEXT_TAB_LABEL = 'Show Next Tab';
+export const PREVIOUS_TAB_LABEL = 'Show Previous Tab';
 /** Was the Swift's "Preview Markdown…"; #324 opens csv tables from the same panel. */
 export const OPEN_FILE_LABEL = 'Open…';
 export const NEW_GROUP_LABEL = 'New Group';
@@ -532,6 +548,9 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
         relayRow(deps, TOGGLE_STATUS_BAR_LABEL, accel.toggle_status_bar, TOGGLE_STATUS_BAR_COMMAND),
         relayRow(deps, TOGGLE_BOTTOM_PANEL_LABEL, accel.toggle_bottom_panel, TOGGLE_BOTTOM_PANEL_COMMAND),
         { type: 'separator' },
+        relayRow(deps, NEXT_TAB_LABEL, accel.next_tab, NEXT_TAB_COMMAND),
+        relayRow(deps, PREVIOUS_TAB_LABEL, accel.previous_tab, PREVIOUS_TAB_COMMAND),
+        { type: 'separator' },
         relayRow(deps, TOGGLE_ZEN_MODE_LABEL, accel.toggle_zen_mode, TOGGLE_ZEN_MODE_COMMAND),
         relayRow(deps, RESET_WINDOW_ARRANGEMENT_LABEL, undefined, RESET_WINDOW_ARRANGEMENT_COMMAND),
         { type: 'separator' },
@@ -691,6 +710,12 @@ export function fileMenuTemplate(deps: FileMenuDeps): MenuItemConstructorOptions
             }
         },
         { type: 'separator' },
+        // workspace-feature.md §12: the workspace's tabs, below the Swift File group (which stays
+        // row for row), with Close Tab beside the pane's Close the way a browser pairs them.
+        relayRow(deps, NEW_TAB_LABEL, accel.new_tab, NEW_TAB_COMMAND),
+        relayRow(deps, MOVE_PANE_TO_NEW_TAB_LABEL, accel.move_pane_to_new_tab, MOVE_PANE_TO_NEW_TAB_COMMAND),
+        { type: 'separator' },
+        relayRow(deps, CLOSE_TAB_LABEL, accel.close_tab, CLOSE_TAB_COMMAND),
         /*
          * N14: the macOS Close row, routed rather than native. See `CLOSE_LABEL` above for the
          * race it removes; the row keeps its label and its ⌘W so the menu still reads like a

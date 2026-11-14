@@ -61,6 +61,7 @@ describe('the keymap model', () => {
             'Pane Management',
             'Navigation',
             'Workspaces',
+            'Tabs',
             'View',
             'Files',
             'Search',

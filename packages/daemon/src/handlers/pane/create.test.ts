@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { allPaneIDs } from '@kelpi/core/layout';
 
+import { activeTabIDOf, tabOfPane, workspaceTabs } from '../../store/tabs.js';
+
 import { NOW, W1, W2, harness, seedSplit, seedWorkspace, testID } from './testing.js';
 
 const P1 = testID('1', 1);
@@ -379,5 +381,33 @@ describe("a split opens where the source's shell really is", () => {
         await live.answer('/repo/sub');
         expect(reply.only()).toMatchObject({ ok: true, pane_id: NEW });
         expect(h.workspace(W1).panes[1]?.workingDirectory).toBe('/repo/sub');
+    });
+});
+
+describe('pane-split under "Panes an agent creates go: into a new tab each" (workspace-feature.md §12)', () => {
+    it('opens a background split as a new background tab after the source\'s, at the source\'s size', () => {
+        const h = harness({ minted: [NEW], agentPanePlacement: 'new-tab' });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1, path: '/repo' });
+        h.store.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: P1, size: 15 });
+        const reply = h.run({ command: 'pane-split', pane_id: P1 });
+
+        expect(reply.only()).toMatchObject({ ok: true, pane_id: NEW });
+        const workspace = h.workspace(W1);
+        const tabs = workspaceTabs(workspace);
+        expect(tabs).toHaveLength(2);
+        expect(tabOfPane(workspace, NEW)?.id).toBe(tabs[1]?.id);
+        // In the background: the agent's tab stays on screen and keeps its focus.
+        expect(activeTabIDOf(workspace)).toBe(tabs[0]?.id);
+        expect(workspace.focusedPaneID).toBe(P1);
+        expect(workspace.panes.find((pane) => pane.id === NEW)).toMatchObject({ workingDirectory: '/repo', terminalFontSize: 15 });
+        expect(h.pty.spawns[0]?.cwd).toBe('/repo');
+    });
+
+    it('still splits in place when the split is focused (a person asked for it)', () => {
+        const h = harness({ minted: [NEW], agentPanePlacement: 'new-tab' });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1, path: '/repo' });
+        h.run({ command: 'pane-split', pane_id: P1, focus: true });
+        expect(workspaceTabs(h.workspace(W1))).toHaveLength(1);
+        expect(allPaneIDs(h.workspace(W1).layout)).toEqual([P1, NEW]);
     });
 });

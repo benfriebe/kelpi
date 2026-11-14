@@ -22,7 +22,8 @@ export function layoutHandlerEntries(deps: AppDeps): readonly (readonly [string,
         forCommand('layout-cycle', (msg, ctx) => {
             const workspaceID = workspaceForPane(ctx, msg.pane_id);
             if (workspaceID === null) return;
-            ctx.store.dispatch({ type: 'cycle-layout', workspaceID });
+            // workspace-feature.md §12: the caller's own tab, which need not be on screen.
+            ctx.store.dispatch({ type: 'cycle-layout', workspaceID, paneID: msg.pane_id });
             deps.persist();
         }),
         forCommand('layout-select', (msg, ctx) => {
@@ -30,7 +31,7 @@ export function layoutHandlerEntries(deps: AppDeps): readonly (readonly [string,
             if (workspaceID === null) return;
             // An unknown layout name is silently dropped (never an error reply — F&F).
             if (!isPredefinedLayoutKind(msg.name)) return;
-            ctx.store.dispatch({ type: 'select-layout', workspaceID, kind: msg.name });
+            ctx.store.dispatch({ type: 'select-layout', workspaceID, kind: msg.name, paneID: msg.pane_id });
             deps.persist();
         })
     ];

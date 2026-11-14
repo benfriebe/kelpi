@@ -57,6 +57,7 @@ import {
     focusCreatedPane,
     findVisiblePane,
     mutatePane,
+    movingCargo,
     mutateVisiblePane,
     newPane,
     popFocusFromHistory,
@@ -87,7 +88,8 @@ function createPane(
             id: action.paneID,
             workingDirectory: directory,
             nowMillis: action.now,
-            label: action.label ?? null
+            label: action.label ?? null,
+            terminalFontSize: action.terminalFontSize ?? null
         });
         // QUIRK: unconditional layout replacement (§7.2). No un-zoom, no layout-index reset.
         const next: WorkspaceState = {
@@ -586,17 +588,20 @@ function movePaneToWorkspace(
     if (target === undefined) return state;
     const pane = findVisiblePane(source, action.paneID) as Pane;
     // A web pane's tabs live in the sidecar, not on the Pane: carry it across or the target
-    // gets a blank pane.
-    const sidecar = pane.type === 'web' ? source.webPanes[action.paneID] : undefined;
+    // gets a blank pane. A `--here` pane's parked source goes too, or closing the pane in
+    // its new workspace could never un-park it and its PTY would be stranded.
+    const cargo = movingCargo(source, new Set([action.paneID]));
 
     let nextSource: WorkspaceState = {
         ...source,
         panes: source.panes.filter((candidate) => candidate.id !== action.paneID),
+        parkedPanes:
+            cargo.parked.length === 0 ? source.parkedPanes : source.parkedPanes.filter((candidate) => !cargo.ids.has(candidate.id)),
         syncInputExcluded: source.syncInputExcluded.filter((id) => id !== action.paneID),
         layout: removing(source.layout, action.paneID),
         currentLayoutIndex: null
     };
-    if (sidecar !== undefined) nextSource = withoutWebSidecar(nextSource, action.paneID);
+    for (const paneID of Object.keys(cargo.sidecars)) nextSource = withoutWebSidecar(nextSource, paneID);
     nextSource = scrubFocusHistory(nextSource, action.paneID);
     if (nextSource.focusedPaneID === action.paneID) {
         const popped = popFocusFromHistory(nextSource, action.paneID);
@@ -623,17 +628,15 @@ function movePaneToWorkspace(
     let nextTarget: WorkspaceState = {
         ...target,
         panes: [...target.panes, pane],
+        parkedPanes: cargo.parked.length === 0 ? target.parkedPanes : [...target.parkedPanes, ...cargo.parked],
         layout:
             target.layout.kind === 'empty' || anchor === null
                 ? leaf(action.paneID)
                 : splitting(target.layout, anchor, 'horizontal', action.paneID).layout,
         currentLayoutIndex: null
     };
-    if (sidecar !== undefined) {
-        nextTarget = {
-            ...nextTarget,
-            webPanes: { ...nextTarget.webPanes, [action.paneID]: sidecar }
-        };
+    if (Object.keys(cargo.sidecars).length > 0) {
+        nextTarget = { ...nextTarget, webPanes: { ...nextTarget.webPanes, ...cargo.sidecars } };
     }
     nextTarget = focusCreatedPane(nextTarget, action.paneID, action.focus);
 

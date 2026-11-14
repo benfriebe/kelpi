@@ -504,7 +504,22 @@ export const WIRED_KEY_ACTIONS: readonly KelpiAction[] = [
     'switch_to_workspace_6',
     'switch_to_workspace_7',
     'switch_to_workspace_8',
-    'switch_to_workspace_9'
+    'switch_to_workspace_9',
+    // workspace-feature.md §12.
+    'new_tab',
+    'close_tab',
+    'next_tab',
+    'previous_tab',
+    'move_pane_to_new_tab',
+    'go_to_tab_1',
+    'go_to_tab_2',
+    'go_to_tab_3',
+    'go_to_tab_4',
+    'go_to_tab_5',
+    'go_to_tab_6',
+    'go_to_tab_7',
+    'go_to_tab_8',
+    'go_to_tab_9'
 ];
 
 /** `switch_to_workspace_N` → the 0-based index into `visibleWorkspaceOrder` (§3.2). */
@@ -512,6 +527,18 @@ export function workspaceSwitchIndex(action: KelpiAction): number | null {
     const match = /^switch_to_workspace_([1-9])$/.exec(action);
     if (match === null) return null;
     return Number.parseInt(match[1] as string, 10) - 1;
+}
+
+/**
+ * The nine `go_to_tab_N` handlers (workspace-feature.md §12) from one 1-based callback; a
+ * number past the last tab returns false, so ⌥⌘7 with three tabs falls through.
+ */
+export function tabNumberHandlers(goTo: (number: number) => boolean): KeyActionRegistry {
+    const registry: KeyActionRegistry = {};
+    for (let number = 1; number <= 9; number += 1) {
+        registry[`go_to_tab_${String(number)}` as KelpiAction] = () => goTo(number);
+    }
+    return registry;
 }
 
 /**

@@ -11,6 +11,7 @@ window never mounts any of it. The code is `packages/client/src/phone/`, assembl
 | --- | --- | --- |
 | Home | Needs you (or All clear, or "Can't reach any host"), a pager with a card per host, and the workspaces of the host the pager is on as tiles | `PhoneHome.tsx` |
 | Pane | The pane's header (name, status, view toggle, actions), the pane itself, the key bar for a terminal, the strip (pane pager, reply chips, attention pill) and the location bar | `PhoneShell.tsx`, `PhonePaneChrome.tsx` |
+| Tab chips | Once the workspace has a second tab, a row of chips under the pane header, one per tab in bar order with its status dot; a tap shows that tab (workspace-feature.md §12) and the pane follows the daemon's focus into it | `PhoneTabChips.tsx` |
 | Location bar | `host › workspace › pane` at the bottom; each segment opens the picker at its level. On Home: the host and Jump to… | `PhoneLocationBar.tsx` |
 | Picker | One card above the bar with three levels: Hosts (with Scan code, Paste URL, Notifications, Settings), Workspaces (groups fold as the daemon has them; New workspace), Panes (New pane: Terminal, Claude, Codex, Web, Scratch, Diff, and any plugin pane views) | `PhonePicker.tsx` |
 | Needs you | Every waiting agent, grouped by host, filterable by host, with Running folded at the foot | `PhoneNeedsYouSheet.tsx` |

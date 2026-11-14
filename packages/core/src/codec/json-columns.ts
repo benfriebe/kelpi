@@ -1,11 +1,13 @@
 /**
- * The remaining JSON TEXT columns: `workspace.labelsJSON`, `workspace_group.childOrderJSON`
- * and `pane.webTabsJSON`. Each is a plain (untagged) Swift `Codable` value, so decoding is
- * all-or-nothing — one bad element fails the whole array, which then degrades to `[]` on the
- * load path.
+ * The remaining JSON TEXT columns: `workspace.labelsJSON`, `workspace_group.childOrderJSON`,
+ * `pane.webTabsJSON` and `workspace.tabsJSON`. The first three are plain (untagged) Swift
+ * `Codable` values, so decoding them is all-or-nothing: one bad element fails the whole array,
+ * which then degrades to `[]` on the load path. `tabsJSON` is Kelpi's own and decodes per entry
+ * (`parseWorkspaceTabsJSON`), so one bad tab costs that tab, not the others.
  */
 
 import { isJSONObject, tryParseJSON } from './json.js';
+import { encodePaneLayout, parsePaneLayout, type PaneLayout } from './pane-layout-json.js';
 import { normalizeUUIDLoose, parseUUID } from './uuid.js';
 
 export interface WebTab {
@@ -119,5 +121,67 @@ export function decodeWebTabsJSON(text: string | null | undefined): WebTab[] {
 export function encodeWebTabsJSON(tabs: readonly WebTab[]): string {
     return JSON.stringify(
         tabs.map((tab) => ({ id: normalizeUUIDLoose(tab.id), url: tab.url, title: tab.title }))
+    );
+}
+
+/**
+ * One entry of `workspace.tabsJSON` (persistence.md §2.1, workspace-feature.md §12): a tab's
+ * id, its name (null = named after its focused pane), its un-zoomed tree in the
+ * `layoutJSON` shape, its focused pane and whether it has been shown yet.
+ */
+export interface WorkspaceTabRecord {
+    readonly id: string;
+    readonly name: string | null;
+    readonly layout: PaneLayout;
+    readonly focusedPaneID: string | null;
+    readonly seen: boolean;
+}
+
+export function parseWorkspaceTabRecord(value: unknown): WorkspaceTabRecord | null {
+    if (!isJSONObject(value)) return null;
+    const id = parseUUID(value['id']);
+    if (id === null) return null;
+    const name = value['name'];
+    if (name !== null && name !== undefined && typeof name !== 'string') return null;
+    const layout = parsePaneLayout(value['layout']);
+    if (layout === null) return null;
+    const focused = value['focusedPaneID'];
+    const focusedPaneID = focused === null || focused === undefined ? null : parseUUID(focused);
+    if (focused !== null && focused !== undefined && focusedPaneID === null) return null;
+    return {
+        id,
+        name: typeof name === 'string' && name.length > 0 ? name : null,
+        layout,
+        focusedPaneID,
+        seen: value['seen'] !== false
+    };
+}
+
+/**
+ * Per entry, unlike the Swift columns above (this one has no Swift counterpart to stay
+ * byte-compatible with): an entry that does not decode is skipped, and the loader puts the panes
+ * only it held into a recovered tab. One bad name must not cost every other tab its tree and
+ * order. Null only when the column is absent or not an array.
+ */
+export function parseWorkspaceTabsJSON(text: string | null | undefined): WorkspaceTabRecord[] | null {
+    const array = parseArrayJSON(text);
+    if (array === null) return null;
+    const result: WorkspaceTabRecord[] = [];
+    for (const entry of array) {
+        const tab = parseWorkspaceTabRecord(entry);
+        if (tab !== null) result.push(tab);
+    }
+    return result;
+}
+
+export function encodeWorkspaceTabsJSON(tabs: readonly WorkspaceTabRecord[]): string {
+    return JSON.stringify(
+        tabs.map((tab) => ({
+            id: normalizeUUIDLoose(tab.id),
+            name: tab.name,
+            layout: encodePaneLayout(tab.layout),
+            focusedPaneID: tab.focusedPaneID === null ? null : normalizeUUIDLoose(tab.focusedPaneID),
+            seen: tab.seen
+        }))
     );
 }

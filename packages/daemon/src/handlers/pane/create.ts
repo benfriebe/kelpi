@@ -23,8 +23,20 @@
 import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
 import type { PaneCreateMessage, PaneSplitMessage } from '@kelpi/protocol';
 
+import { newUUID } from '@kelpi/core/codec';
+
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
-import { resolveStateOf, workspaceByID, type SplitDirection, type WorkspaceState } from '../../store/index.js';
+import {
+    onScreenPaneIDs,
+    resolveStateOf,
+    tabIndex,
+    tabOfPane,
+    visiblePane,
+    workspaceByID,
+    workspaceTabs,
+    type SplitDirection,
+    type WorkspaceState
+} from '../../store/index.js';
 import type { PaneHandlerContext } from './context.js';
 import {
     labelField,
@@ -72,7 +84,8 @@ function routeCreation(ctx: PaneHandlerContext, fields: CreationFields, verb: Cr
         const workspace = workspaceByID(state, resolved.id);
         // Defensive re-lookup (§4.1): the workspace could have gone away underneath us.
         if (workspace === null) return { ok: false, error: 'workspace not found' };
-        const sourcePaneID = workspace.focusedPaneID ?? workspace.panes[0]?.id ?? null;
+        // The tab on screen: a workspace named alone means what the user is looking at there.
+        const sourcePaneID = workspace.focusedPaneID ?? onScreenPaneIDs(workspace)[0] ?? null;
         if (verb === 'split' && sourcePaneID === null) {
             return {
                 ok: false,
@@ -141,6 +154,48 @@ function routeThenRun(
         });
 }
 
+/**
+ * workspace-feature.md §12, "Panes an agent creates go: into a new tab each": a background
+ * split opens its pane as the first pane of a new background tab, just after the source's
+ * tab, in the directory the split would have used. False when there is no source tab to place
+ * it after (the caller then splits as usual).
+ */
+function dispatchInNewTab(
+    ctx: PaneHandlerContext,
+    split: {
+        readonly workspaceID: string;
+        readonly paneID: string;
+        readonly sourcePaneID: string;
+        readonly path: string | undefined;
+        readonly inheritedDirectory: string | undefined;
+        readonly label: string | null;
+        readonly now: number;
+    }
+): boolean {
+    const workspace = workspaceByID(ctx.store.getState(), split.workspaceID);
+    const source = workspace === null ? null : visiblePane(workspace, split.sourcePaneID);
+    const tab = workspace === null ? null : tabOfPane(workspace, split.sourcePaneID);
+    if (workspace === null || source === null || tab === null) return false;
+    ctx.store.dispatch({
+        type: 'create-tab',
+        workspaceID: workspace.id,
+        tabID: (ctx.mintTabID ?? newUUID)(),
+        index: (ctx.newTabPosition?.() ?? 'after-current') === 'end' ? workspaceTabs(workspace).length : tabIndex(workspace, tab.id) + 1,
+        focus: false,
+        create: {
+            type: 'create-pane',
+            workspaceID: workspace.id,
+            paneID: split.paneID,
+            label: split.label,
+            workingDirectory: split.path ?? split.inheritedDirectory ?? source.workingDirectory,
+            now: split.now,
+            focus: false,
+            terminalFontSize: source.terminalFontSize
+        }
+    });
+    return true;
+}
+
 /** The shared ack: the pre-minted id, the destination workspace, and `--name` when given. */
 function ackCreation(
     reply: ReplyHandle | null,
@@ -191,6 +246,7 @@ function dispatchSplit(
     }
 ): void {
     const { path, inheritedDirectory, ...common } = split;
+    if (!split.focus && (ctx.agentPanePlacement?.() ?? 'own-tab') === 'new-tab' && dispatchInNewTab(ctx, split)) return;
     if (path !== undefined) {
         ctx.store.dispatch({ type: 'split-pane-at-path', ...common, path });
     } else {
@@ -263,7 +319,7 @@ function createRouted(
     const now = nowMillis(ctx);
     ackCreation(reply, newPaneID, workspace, msg.name);
 
-    const sourcePaneID = route.sourcePaneID ?? workspace.focusedPaneID ?? workspace.panes[0]?.id ?? null;
+    const sourcePaneID = route.sourcePaneID ?? workspace.focusedPaneID ?? onScreenPaneIDs(workspace)[0] ?? null;
 
     if (sourcePaneID === null) {
         // EMPTY workspace: the create-first-pane route, carrying the acked id plus `--name`

@@ -18,7 +18,7 @@
  * way the daemon handles it rather than by a second implementation here.
  */
 
-import { layoutPaneOrder, visiblePane, type WorkspaceColor, type WorkspaceState } from '@kelpi/daemon/store';
+import { visiblePane, workspacePaneOrder, type WorkspaceColor, type WorkspaceState } from '@kelpi/daemon/store';
 
 import { homeAbbreviated } from './theme';
 import type { ChromePane } from './types';
@@ -94,7 +94,9 @@ export function buildPaletteItems(
             paneID: null,
             workspaceColor: workspace.color
         });
-        for (const paneID of layoutPaneOrder(workspace)) {
+        // workspace-feature.md §12: every tab's panes, tab by tab; picking one in a background tab
+        // focuses it, which brings its tab on screen.
+        for (const paneID of workspacePaneOrder(workspace)) {
             const pane = visiblePane(workspace, paneID);
             if (pane === null) continue;
             items.push({

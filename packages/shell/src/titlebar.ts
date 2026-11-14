@@ -68,6 +68,20 @@ export function titleBarStyleFor(platform: string): TitleBarStyleDecision {
     };
 }
 
+/**
+ * shell-ui.md §3.3: a fullscreen window has no traffic lights and nothing to drag, so the page
+ * should not keep their 80 px clear. The page hears it twice: `&fullscreen=1` on a load made
+ * while the window is fullscreen, and these two relayed `menu-request` commands whenever the
+ * window enters or leaves fullscreen (and again when the shell's status socket reconnects).
+ */
+export const FULLSCREEN_QUERY = '&fullscreen=1';
+export const WINDOW_FULLSCREEN_ON_COMMAND = 'window-fullscreen-on';
+export const WINDOW_FULLSCREEN_OFF_COMMAND = 'window-fullscreen-off';
+
+export function fullScreenCommand(fullScreen: boolean): string {
+    return fullScreen ? WINDOW_FULLSCREEN_ON_COMMAND : WINDOW_FULLSCREEN_OFF_COMMAND;
+}
+
 /** `&trafficLightInset=80`, or nothing at all when there is no gutter to declare. */
 export function trafficLightQuery(decision: TitleBarStyleDecision): string {
     if (decision.gutter <= 0) return '';

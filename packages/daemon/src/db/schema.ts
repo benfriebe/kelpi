@@ -246,6 +246,18 @@ export const MIGRATIONS: readonly Migration[] = [
         // back as idle, which is how every row drew before the menu existed.
         identifier: 'v27_workspace_status',
         apply: (db) => addColumn(db, 'workspace', 'status', `TEXT NOT NULL DEFAULT 'idle'`)
+    },
+    {
+        // Kelpi-only: workspace tabs (workspace-feature.md §12). `tabsJSON` lists every tab with
+        // its own tree, and `activeTabID` names the one on screen, whose tree is ALSO written to
+        // `layoutJSON` so an older reader still sees what was on screen. Both NULL (every
+        // existing row, and every row an older daemon saves) reads back as one tab holding
+        // `layoutJSON`.
+        identifier: 'v28_workspace_tabs',
+        apply: (db) => {
+            addColumn(db, 'workspace', 'tabsJSON', 'TEXT');
+            addColumn(db, 'workspace', 'activeTabID', 'TEXT');
+        }
     }
 ];
 
@@ -266,7 +278,8 @@ export const DAEMON_ONLY_MIGRATIONS: readonly string[] = [
     'v24_pane_terminal_font_size',
     'v25_pane_scratchpad_wrap',
     'v26_workspace_nesting',
-    'v27_workspace_status'
+    'v27_workspace_status',
+    'v28_workspace_tabs'
 ];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {

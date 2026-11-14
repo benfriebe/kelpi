@@ -56,6 +56,16 @@ export const TOGGLE_STATUS_BAR_COMMAND = 'toggle-status-bar';
 export const TOGGLE_BOTTOM_PANEL_COMMAND = 'toggle-bottom-panel';
 export const RESET_WINDOW_ARRANGEMENT_COMMAND = 'reset-window-arrangement';
 
+/**
+ * workspace-feature.md §12: File ▸ New Tab / Close Tab / Move Pane to New Tab and View ▸ Show
+ * Next / Previous Tab, each onto the handler its key action runs. Pinned in both suites.
+ */
+export const NEW_TAB_COMMAND = 'new-tab';
+export const CLOSE_TAB_COMMAND = 'close-tab';
+export const NEXT_TAB_COMMAND = 'next-tab';
+export const PREVIOUS_TAB_COMMAND = 'previous-tab';
+export const MOVE_PANE_TO_NEW_TAB_COMMAND = 'move-pane-to-new-tab';
+
 /** File ▸ Switch to Workspace 1…9 (⌘1…⌘9), as `switch-workspace-1` … `switch-workspace-9`. */
 export const SWITCH_WORKSPACE_COMMAND_PREFIX = 'switch-workspace-';
 

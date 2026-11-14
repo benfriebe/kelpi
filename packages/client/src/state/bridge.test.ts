@@ -220,7 +220,7 @@ describe('store bridge', () => {
             code: 'unauthorized',
             reason: 'bad-token',
             message: "invalid or missing daemon token - open the client via 'kelpid url'",
-            protocolVersion: 3
+            protocolVersion: 4
         });
         h.sockets.last().serverClose(4003, 'bad-token');
 
@@ -246,7 +246,7 @@ describe('store bridge', () => {
             code: 'unauthorized',
             reason: 'bad-token',
             message: 'invalid or missing daemon token',
-            protocolVersion: 3
+            protocolVersion: 4
         });
         h.sockets.last().serverClose(4003, 'bad-token');
 
@@ -269,7 +269,7 @@ describe('store bridge', () => {
             code: 'server-error',
             reason: 'hello-timeout',
             message: 'no hello within 10000ms',
-            protocolVersion: 3
+            protocolVersion: 4
         });
         h.sockets.last().serverClose(4500, 'hello-timeout');
 
@@ -283,14 +283,14 @@ describe('store bridge', () => {
 
     it('classifies rejections the same way for old and new daemons', () => {
         expect(
-            isTokenRejection({ type: 'rejected', code: 'unauthorized', reason: 'bad-token', message: '', protocolVersion: 3 })
+            isTokenRejection({ type: 'rejected', code: 'unauthorized', reason: 'bad-token', message: '', protocolVersion: 4 })
         ).toBe(true);
         // A daemon that predates `reason` still says `unauthorized`.
-        expect(isTokenRejection({ type: 'rejected', code: 'unauthorized', message: '', protocolVersion: 3 })).toBe(true);
+        expect(isTokenRejection({ type: 'rejected', code: 'unauthorized', message: '', protocolVersion: 4 })).toBe(true);
         expect(
-            isTokenRejection({ type: 'rejected', code: 'protocol-mismatch', reason: 'protocol-mismatch', message: '', protocolVersion: 3 })
+            isTokenRejection({ type: 'rejected', code: 'protocol-mismatch', reason: 'protocol-mismatch', message: '', protocolVersion: 4 })
         ).toBe(false);
-        expect(isTokenRejection({ type: 'rejected', code: 'server-error', message: '', protocolVersion: 3 })).toBe(false);
+        expect(isTokenRejection({ type: 'rejected', code: 'server-error', message: '', protocolVersion: 4 })).toBe(false);
     });
 
     it('records socket errors as the connection error and stops on dispose', () => {

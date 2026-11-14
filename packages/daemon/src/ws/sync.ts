@@ -105,6 +105,7 @@ import {
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/derived.js';
+import { isPaneOnScreen } from '../store/tabs.js';
 import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor } from '../store/types.js';
 import {
     isAnsweredShellAction,
@@ -2381,6 +2382,17 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const paneID = typeof rawPane === 'string' && rawPane.length > 0 ? rawPane : null;
 
             this.focusedPaneID = paneID;
+            /*
+             * workspace-feature.md §12.6: a reconnect's replay is this connection's last report
+             * from before it went away, sent before it has the new snapshot. It is recorded for
+             * the suppression math and nothing else: dispatched, it would undo whatever another
+             * client did meanwhile, and a pane in a tab someone has since left would pull every
+             * client back onto that tab. The client re-reports once its snapshot has landed.
+             */
+            if (message['replay'] === true) {
+                this.activeWorkspaceID = workspaceID;
+                return;
+            }
             this.setActiveWorkspace(workspaceID);
 
             const workspace = workspaceByID(store.getState(), workspaceID);
@@ -3730,6 +3742,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (!this.ready || !this.documentVisible) return false;
             if (this.activeWorkspaceID !== workspaceID) return false;
             if (this.focusedPaneID !== paneID) return false;
+            // workspace-feature.md §12: a pane in a background tab is not being looked at, whatever
+            // this window last reported (a tab switch it has not reported yet).
+            const workspace = workspaceByID(options.store.getState(), workspaceID);
+            if (workspace !== null && !isPaneOnScreen(workspace, paneID)) return false;
             // An empty visibility set means the client never reported one; trust focus.
             return this.visiblePaneIDs.size === 0 || this.visiblePaneIDs.has(paneID);
         }

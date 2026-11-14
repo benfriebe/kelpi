@@ -260,6 +260,8 @@ export interface HarnessOptions {
     readonly clearScreen?: PaneHandlerContext['clearScreen'];
     /** The windows' "is the user typing in this pane" seam; absent = the active-workspace stand-in. */
     readonly isPaneAttended?: PaneHandlerContext['isPaneAttended'];
+    /** Settings ▸ Tabs "Panes an agent creates go"; absent = into the agent's own tab. */
+    readonly agentPanePlacement?: 'own-tab' | 'new-tab';
 }
 
 export interface Harness {
@@ -309,7 +311,8 @@ export function harness(options: HarnessOptions = {}): Harness {
         spawn: { helpersDir: '/opt/kelpi/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 },
         ...(options.liveWorkingDirectory !== undefined ? { liveWorkingDirectory: options.liveWorkingDirectory } : {}),
         ...(options.clearScreen !== undefined ? { clearScreen: options.clearScreen } : {}),
-        ...(options.isPaneAttended !== undefined ? { isPaneAttended: options.isPaneAttended } : {})
+        ...(options.isPaneAttended !== undefined ? { isPaneAttended: options.isPaneAttended } : {}),
+        ...(options.agentPanePlacement !== undefined ? { agentPanePlacement: () => options.agentPanePlacement as 'own-tab' | 'new-tab' } : {})
     };
 
     const dispatch = (msg: WireMessage, reply: ReplyHandle | null): void => {

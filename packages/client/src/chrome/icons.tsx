@@ -23,6 +23,10 @@ import type { ReactElement } from 'react';
 export type ChromeIconName =
     | 'search'
     | 'clear'
+    // A plain ×, for closing a workspace tab (`clear` is the search field's circled one).
+    | 'close'
+    // An agent's tab (workspace-feature.md §12): the diamond the pane header's agent pill wears.
+    | 'agent'
     | 'chevron-right'
     | 'chevron-down'
     | 'folder'
@@ -74,6 +78,8 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
             <path d="M7.8 7.8 10.4 10.4" />
         </>
     ),
+    close: <path d="M3.4 3.4l5.2 5.2M8.6 3.4l-5.2 5.2" />,
+    agent: <path d="M6 1.6 10.4 6 6 10.4 1.6 6z" />,
     clear: (
         <>
             <circle cx="6" cy="6" r="4.4" />

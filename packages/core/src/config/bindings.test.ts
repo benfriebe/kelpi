@@ -22,12 +22,12 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 66 bindable actions and the 20 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(66);
-        expect(new Set(KELPI_ACTIONS).size).toBe(66);
+    it('has the 80 bindable actions and the 25 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(80);
+        expect(new Set(KELPI_ACTIONS).size).toBe(80);
         // #175's three text-size actions are NOT among them, deliberately: the menu-bar set is
         // the one that still fires while a chrome text field has the caret.
-        expect(MENU_BAR_ACTIONS.size).toBe(20);
+        expect(MENU_BAR_ACTIONS.size).toBe(25);
         for (const action of ['increase_terminal_font_size', 'decrease_terminal_font_size', 'reset_terminal_font_size'] as const) {
             expect(MENU_BAR_ACTIONS.has(action)).toBe(false);
         }
@@ -35,8 +35,21 @@ describe('the action table', () => {
 });
 
 describe('the default map', () => {
-    it('ships 50 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(50);
+    it('ships 64 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(64);
+    });
+
+    it('puts the workspace tabs on ⌥⌘, clear of the web pane tabs and the workspace numbers', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+t'))).toBe('new_tab');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+w'))).toBe('close_tab');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+]'))).toBe('next_tab');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+['))).toBe('previous_tab');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+shift+super+t'))).toBe('move_pane_to_new_tab');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+1'))).toBe('go_to_tab_1');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('alt+super+9'))).toBe('go_to_tab_9');
+        // Unchanged neighbours.
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+1'))).toBe('switch_to_workspace_1');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('shift+super+t'))).toBe('reopen_closed_pane');
     });
 
     it('binds ⌃Tab and ⌃⇧Tab to the recent-workspace switcher', () => {

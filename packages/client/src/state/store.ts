@@ -511,6 +511,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
         typeof value === 'string' && value.trim() !== '' ? value : fallback;
     const agentChoice = (value: unknown, fallback: 'none' | 'claude' | 'codex'): 'none' | 'claude' | 'codex' =>
         value === 'none' || value === 'claude' || value === 'codex' ? value : fallback;
+    const oneOf = <T extends string>(value: unknown, choices: readonly T[], fallback: T): T =>
+        typeof value === 'string' && (choices as readonly string[]).includes(value) ? (value as T) : fallback;
 
     return {
         keybindLines: array(raw['keybindLines']).filter((line): line is string => typeof line === 'string'),
@@ -621,7 +623,16 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             agentClaudeCommand: nonBlankText(general['agentClaudeCommand'], fallbackGeneral.agentClaudeCommand),
             agentCodexCommand: nonBlankText(general['agentCodexCommand'], fallbackGeneral.agentCodexCommand),
             newWorkspaceAgent: agentChoice(general['newWorkspaceAgent'], fallbackGeneral.newWorkspaceAgent),
-            newWorkspaceSendPrompt: bool(general['newWorkspaceSendPrompt'], fallbackGeneral.newWorkspaceSendPrompt)
+            newWorkspaceSendPrompt: bool(general['newWorkspaceSendPrompt'], fallbackGeneral.newWorkspaceSendPrompt),
+            // workspace-feature.md §12's tab rules, additive like the rest: an older daemon sends
+            // none, and the shipped defaults stand (it has no tabs to open anyway).
+            newTabOpens: oneOf(general['newTabOpens'], ['terminal', 'same', 'agent'] as const, fallbackGeneral.newTabOpens),
+            newTabPosition: oneOf(general['newTabPosition'], ['after-current', 'end'] as const, fallbackGeneral.newTabPosition),
+            agentPanePlacement: oneOf(
+                general['agentPanePlacement'],
+                ['own-tab', 'new-tab'] as const,
+                fallbackGeneral.agentPanePlacement
+            )
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this

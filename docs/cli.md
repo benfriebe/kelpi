@@ -667,9 +667,16 @@ kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>
   **newly created** pane's id.
 
 Server semantics (contract): with `--target`, splits that pane; with only `--workspace`,
-splits that workspace's focused pane; with neither, splits the caller pane. Focus moves only
-with `focus:true` (see above). Reply includes
+splits the focused pane of that workspace's tab on screen; with neither, splits the caller
+pane. Focus moves only with `focus:true` (see above). Reply includes
 `pane_id` (new pane), `workspace_id`, `workspace_name`, `label?`.
+
+Workspace tabs (workspace-feature.md §12): the split happens in the source's own tab. A
+`kelpi pane split` without `--focus` from a pane in a background tab adds its pane to that
+tab and leaves the user on the tab they are looking at; with `--focus` the window shows that
+tab. Under `agent-pane-placement = new-tab` (config-keybindings.md §1.2) a split without
+`--focus` opens its pane as the first pane of a new background tab instead, just after the
+source's tab, or at the end under `new-tab-position = end` (socket-handlers.md §4.1).
 
 #### 9.2.1 Shared pane-mutation printer (`split`/`create`/`name`)
 
@@ -698,8 +705,8 @@ focus either way, since there is no focused pane to keep.
 Server semantics (contract): destination workspace precedence is `--target`'s workspace >
 `--workspace` (wins over the caller's forwarded pane_id) > caller pane's workspace. Into an
 empty workspace, creates the first pane (with the label/path applied); otherwise splits the
-caller's pane (or, with `--workspace` alone, that workspace's focused pane). Reply carries the
-real new pane id.
+caller's pane (or, with `--workspace` alone, that workspace's focused pane), in that pane's
+tab or a new one exactly as `split` does. Reply carries the real new pane id.
 
 ### 9.4 `kelpi pane close`
 
@@ -935,6 +942,11 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   optionally `title`, `git_branch` and `file_path` (the file a markdown pane shows). The CLI
   passes the array through unchanged under `--json` (`packages/cli/src/commands/pane.ts:540`),
   and scripts rely on `file_path`, `workspace_id` and `created_at`, so they are contract.
+- Workspace tabs (workspace-feature.md §12): the daemon lists every tab's panes, tab by tab,
+  so a pane in a background tab is listed (and addressable) like one on screen. Once a
+  workspace has two or more tabs its entries also carry `tab_id`, `tab_number` (1-based, the N
+  of ⌥⌘N) and `is_active_tab`; with one tab, none of the three. `is_focused` is true only for
+  the focused pane of the tab on screen. The table has no tab column; `--json` shows them.
 - `--json`: print the `panes` **array unwrapped**, compact JSON, sorted keys, exit 0.
 - Table rendering (`--no-header` omits the header row):
   - Columns: `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`.
@@ -1646,6 +1658,8 @@ kelpi layout select <name>
   prints outside a pane too.
 - Otherwise `requirePaneID()` runs before dispatch (silent exit 0 outside a pane), even
   before the action is validated.
+- Both lay out the CALLER's tab (workspace-feature.md §12), which need not be the tab on
+  screen.
 - `cycle`: fire-and-forget `{"command":"layout-cycle","pane_id":...}`.
 - `select`: missing name => usage +
   `Valid layouts: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled`,

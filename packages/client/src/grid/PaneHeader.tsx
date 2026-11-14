@@ -685,6 +685,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         height,
         paneWidth,
         renaming,
+        // §12: only while the pane shares its tab, and only where the host can move it.
+        canMoveToNewTab: zoomAvailable && props.onMovePaneToNewTab !== undefined,
         ...(props.headerCommands === undefined ? {} : { commands: props.headerCommands }),
         ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
         ...(props.changes === undefined ? {} : { changes: props.changes }),

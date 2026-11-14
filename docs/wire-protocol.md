@@ -15,7 +15,7 @@ quirk is documented as-is and explained in "Compatibility rationale" at the end.
 ## Plugin envelope and protocol generation
 
 The current control/discovery (process) generation is **2**, and the WebSocket (client-sync)
-generation is **3**. They were one number until generation 3, which moved the WebSocket one alone:
+generation is **4**. They were one number until generation 3, which moved the WebSocket one alone:
 
 - **Process generation** (`PROTOCOL_VERSION`, `packages/protocol/src/index.ts`): what `ping`
   and `/healthz` report as `protocol`, and what names the run-dir files (`daemon-v2.sock`,
@@ -30,6 +30,23 @@ generation is **3**. They were one number until generation 3, which moved the We
     workspace, and the `nest-workspaces` / `set-workspace-children-collapsed` verbs. A nested
     workspace lives only in its parent's `childOrder`, so a generation 2 client would have no
     row for it; it is refused instead.
+  - 4: workspace tabs (workspace-feature.md §12): `tabs` and `activeTabID` on every workspace
+    and on `layout-changed`, and the `workspace-tab-*` / `pane-move-to-*tab` verbs. A
+    background tab's panes live only in its `stash`, so a generation 3 client would draw the
+    tab on screen and have no way to reach the rest; it is refused instead.
+
+Within a generation the client-sync channel grows additively. Workspace tabs (generation 4) put
+`tabs` and `activeTabID` on every workspace of the `snapshot` and on every
+`layout-changed` delta, which carries them beside the tree they partition
+(`packages/protocol/src/ws/messages.ts`, `packages/daemon/src/ws/serialize.ts`); the
+`workspace-upserted` envelope carries neither. `tabs` is the domain shape, `{id, name, stash,
+seen}` per tab in bar order, where `stash` is a background tab's layout tuple (`layout`,
+`focusedPaneID`, `focusHistory`, `zoomedPaneID`, `savedLayout`, `currentLayoutIndex`) and null
+for the tab on screen, whose tuple is the workspace's own fields. A client must read their
+absence, which is all a daemon older than tabs sends, as one tab holding the workspace's
+`layout` (the mirror's `applyDomainEvent`, `packages/daemon/src/store/events.ts`, keeps its
+single tab then). The tab verbs are WS-only commands (socket-handlers.md §4.17), so nothing
+here or on the control socket changed for them.
 
 The socket wire (this document) is unversioned: new fields and verbs are additive, and the CLI
 detects a daemon that predates one from its reply (for nesting, the missing `parent_id` echo
@@ -752,8 +769,11 @@ Reply: `{"ok":true,"behavior":"allow"|"deny"|"abstain","message"?:string,"provid
 #### `pane-split` (R/R)
 
 Split an existing pane. Anchor precedence in the handler: `target` (name-or-UUID) >
-`workspace` (split that workspace's focused/first pane) > caller `pane_id`. Guard: at
-least one of `pane_id` (valid UUID) / `target` / `workspace` present.
+`workspace` (split the focused pane, else the first pane, of that workspace's tab on screen) >
+caller `pane_id`. Guard: at least one of `pane_id` (valid UUID) / `target` / `workspace`
+present. The new pane joins the anchor's own tab, which need not be the tab on screen; a
+background split under `agent-pane-placement = new-tab` opens it as the first pane of a new
+background tab instead (socket-handlers.md §4.1).
 `direction`: `"horizontal"`/`"vertical"` (invalid → absent → handler default).
 `path` = new pane's working directory; `name` = new pane's label.
 `focus` (bool, default false, issue #295): `true` moves focus to the new pane; absent or
@@ -780,8 +800,9 @@ pane is built):
 Create a pane in a workspace (splitting off the focused pane, or laying out the first
 pane when the workspace is empty). Guard identical to `pane-split` (`workspace` alone is
 sufficient). When `workspace` is given without `target`, it wins outright — even over
-the caller's `pane_id`. Same reply shape as `pane-split`, and the same `focus` field with the
-same background default (the first pane of an empty workspace takes its focus regardless).
+the caller's `pane_id`. Same reply shape as `pane-split`, the same tab placement, and the same
+`focus` field with the same background default (the first pane of an empty workspace takes its
+focus regardless).
 
 ```json
 {"command":"pane-create","workspace":"beta","path":"/Users/ben/code","name":"builder"}
@@ -999,8 +1020,9 @@ is typing in), the move follows it even without `focus`, so the keystrokes stay 
 List panes. `pane_id` optional (required only when `scope=="current"`); `workspace`
 (name-or-id filter) and `scope` (`"all"` default, or `"current"`) optional and mutually
 exclusive (`workspace` + `scope:"current"` → error). Unknown workspace → error; unknown
-scope value → `{"ok":false,"error":"unknown scope: <scope>"}`. Panes are listed in
-layout order per workspace, workspaces in state order.
+scope value → `{"ok":false,"error":"unknown scope: <scope>"}`. Panes are listed tab by tab
+per workspace (bar order, each tab in layout order, background tabs included), workspaces in
+state order.
 
 ```json
 {"command":"pane-list","workspace":"main"}
@@ -1014,7 +1036,9 @@ Reply — `panes` array; per-entry always-present keys:
 `label`, `title`, `git_branch`,
 `agent_session_id` (full id), `agent` (`claude|codex`, last-known), `background_tasks`
 (only when > 0), `file_path`, `group_id` + `group_name` (only when the workspace is in
-a group).
+a group), and `tab_id` (string) + `tab_number` (int, 1-based bar position) + `is_active_tab`
+(bool, the tab on screen), all three only when the workspace has two or more tabs.
+`is_focused` is true only for the focused pane of the tab on screen.
 
 ```json
 {"ok":true,"panes":[
@@ -1779,7 +1803,8 @@ default false). Stable sort. Reply shape mirrors `group-reorder`.
 {"command":"layout-select","pane_id":"1B4E…","name":"tiled"}
 ```
 
-`pane_id` required (identifies the workspace via the caller pane). `layout-select`'s
+`pane_id` required (identifies the workspace via the caller pane, and the tab to lay out:
+the caller's own, which need not be the tab on screen). `layout-select`'s
 `name` required non-empty; valid names are the predefined layouts
 (`even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`) —
 validation happens in the handler, silently.
@@ -2381,3 +2406,21 @@ saved state keep working:
     for it after a create should read the create's reply instead. The plugin SDK's `workspaces.create`, `panes.moveToWorkspace`,
     `git.diff` and `openView` helpers send `focus: true` unless the plugin passes
     `focus: false`, as item 17's pane helpers do.
+
+22. **Workspace tabs are additive (workspace-feature.md §12).** No request field is new.
+    `pane-list` lists every tab's panes, tab by tab, and its entries gain `tab_id`,
+    `tab_number` and `is_active_tab` once a workspace has two tabs; `pane-split` /
+    `pane-create` put the new pane in its source's tab (or, under
+    `agent-pane-placement = new-tab`, a new background tab); `layout-cycle` /
+    `layout-select` lay out the caller's tab. Compatibility, in each direction:
+    - **Old CLI or agent, new daemon:** `pane list --json` carries the three keys, which an old
+      reader ignores, and the panes of background tabs, which an agent needs to keep
+      addressing its workers. Its background splits stay in the caller's tab, wherever the
+      user is looking.
+    - **New CLI, old daemon:** no tab keys and one tree per workspace, exactly as before.
+    - **Old window client, new daemon:** the WS generation moved to 4, so a window client that
+      predates tabs (a cached phone PWA bundle, an older remote view) is refused with
+      `protocol-mismatch` and shows the update sentence instead of a grid that hides every
+      background tab; reloading the bundle the daemon serves brings it to generation 4.
+    - **New window client, old daemon:** refused the same way (the daemon speaks 3); a
+      phone or remote view that reaches an older host shows the update sentence for that host.

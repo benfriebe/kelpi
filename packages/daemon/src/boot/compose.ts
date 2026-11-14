@@ -1256,8 +1256,18 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         persistence.saveNow(toSnapshot(store.getState()));
     };
 
-    const unsubscribe = store.subscribe(() => {
+    const unsubscribe = store.subscribe((events) => {
         persist();
+        /*
+         * workspace-feature.md §12.6: the PTY layer's broadcast group follows the derived one on
+         * EVERY dispatch that moves it. Handlers still refresh it themselves, but with tabs a lot of
+         * paths change which shells are on screen (a focus that switches tabs, a pane moved into a
+         * background tab, a shell exiting that empties the tab on screen), and a group left stale
+         * would mirror typing into a pane nobody can see.
+         */
+        for (const event of events) {
+            if (event.kind === 'sync-changed') pty.setSyncGroup(event.workspaceID, new Set(event.syncedPaneIDs));
+        }
     });
 
     const offData = pty.onData((paneID, data) => {
@@ -1341,6 +1351,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         writeInput: (paneID, data) => pty.writeDirect(paneID, data)
     });
     const ctx: PaneHandlerContext = {
+        // workspace-feature.md §12: read per command, so a Settings change governs the next one.
+        agentPanePlacement: () => settings.snapshot.general.agentPanePlacement,
+        newTabPosition: () => settings.snapshot.general.newTabPosition,
         prepareDocumentClose: paneIDs => {
             content.prepareClose(paneIDs);
             // A small csv file saves synchronously and a failure refuses the close; a large one
@@ -2685,6 +2698,19 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // which is why they cannot be composed inside `createWsServer`.
                 panes: createPaneLifecycleChannel({
                     ctx,
+                    // workspace-feature.md §12: what a bare ⌥⌘T opens, and the agent a New
+                    // Agent Tab starts (the New Workspace sheet's, else Claude).
+                    tabs: {
+                        newTabOpens: () => settings.snapshot.general.newTabOpens,
+                        startAgent: (paneID, workspaceID) => {
+                            const chosen = settings.snapshot.general.newWorkspaceAgent;
+                            agentLauncher.start({
+                                paneID,
+                                workspaceID,
+                                request: { kind: chosen === 'none' ? 'claude' : chosen, prompt: null, send: false, promptFile: null }
+                            });
+                        }
+                    },
                     ...(onError !== undefined ? { onError } : {})
                 }),
                 // The workspace inspector's repo registry / association / worktree verbs.

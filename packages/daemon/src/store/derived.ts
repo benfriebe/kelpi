@@ -10,6 +10,7 @@ import { isActiveAgentStatus, summarizeAgentPanes, type WorkspaceAgentSummary } 
 import type { ResolveState } from '@kelpi/core/resolve';
 import { allPaneIDs, type Pane } from '@kelpi/core/layout';
 import { WORKSPACE_COLORS, type WorkspaceColor } from '@kelpi/protocol';
+import { onScreenPaneIDs } from './tabs.js';
 import type { DaemonState, PaneLane, WorkspaceGroup, WorkspaceState } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -225,13 +226,15 @@ export function groupIDForWorkspace(state: DaemonState, workspaceID: string): st
 /**
  * The broadcast group RIGHT NOW (§1.10): shell panes only, minus the excluded set, and only
  * when at least two qualify (a lone terminal must never "sync" to itself). Non-shell panes are
- * excluded even when they host a terminal surface (markdown in $EDITOR mode).
+ * excluded even when they host a terminal surface (markdown in $EDITOR mode). Only the tab on
+ * screen takes part (workspace-feature.md §12): typing never reaches a pane you cannot see.
  */
 export function syncedPaneIDs(workspace: WorkspaceState): string[] {
     if (!workspace.isSyncInputActive) return [];
     const excluded = new Set(workspace.syncInputExcluded);
+    const onScreen = new Set(onScreenPaneIDs(workspace));
     const candidates = workspace.panes
-        .filter((pane) => pane.type === 'shell' && !excluded.has(pane.id))
+        .filter((pane) => pane.type === 'shell' && !excluded.has(pane.id) && onScreen.has(pane.id))
         .map((pane) => pane.id);
     return candidates.length >= 2 ? candidates : [];
 }
@@ -303,7 +306,10 @@ export function chromeStatusSummary(state: DaemonState): ChromeStatusSummary {
     return { running, waiting, muted, inactive };
 }
 
-/** Pane ids in layout order (focus cycling, command palette, predefined rebuilds). */
+/**
+ * Pane ids of the tab ON SCREEN in layout order (focus cycling, command palette, predefined
+ * rebuilds). Every tab's panes, tab by tab, is `workspacePaneOrder` (`./tabs.ts`).
+ */
 export function layoutPaneOrder(workspace: WorkspaceState): string[] {
     return allPaneIDs(workspace.layout);
 }

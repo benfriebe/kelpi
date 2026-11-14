@@ -32,11 +32,19 @@ import type { JsonObject } from '@kelpi/protocol';
 import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../handlers/pane/index.js';
 import { visiblePane, workspaceByID } from '../store/derived.js';
 import type { WorkspaceState } from '../store/types.js';
+import {
+    createWorkspaceTabChannel,
+    isWorkspaceTabCommand,
+    WORKSPACE_TAB_COMMANDS,
+    type WorkspaceTabChannelOptions
+} from './workspace-tabs.js';
 
 export const PANE_LIFECYCLE_COMMANDS = [
     'reopen-closed-pane',
     'create-scratchpad',
-    'reveal-path'
+    'reveal-path',
+    // workspace-feature.md §12: the tab verbs need the same pane context (`./workspace-tabs.ts`).
+    ...WORKSPACE_TAB_COMMANDS
 ] as const;
 export type PaneLifecycleCommand = (typeof PANE_LIFECYCLE_COMMANDS)[number];
 
@@ -53,6 +61,8 @@ export interface PaneLifecycleChannel {
 
 export interface PaneLifecycleChannelOptions {
     readonly ctx: PaneHandlerContext;
+    /** The tab verbs' boot-only seams (`./workspace-tabs.ts`). */
+    readonly tabs?: Omit<WorkspaceTabChannelOptions, 'ctx'> | undefined;
     /** Test seam for the 2 s settle before the resume command is typed. */
     readonly sleep?: ((ms: number) => Promise<void>) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -182,8 +192,11 @@ export function createPaneLifecycleChannel(
         return { ok: true, path, select };
     };
 
+    const tabs = createWorkspaceTabChannel({ ...options.tabs, ctx });
+
     return {
         run(command, payload) {
+            if (isWorkspaceTabCommand(command)) return tabs.run(command, payload);
             if (command === 'reopen-closed-pane') return reopen(payload);
             if (command === 'create-scratchpad') return scratchpad(payload);
             return reveal(payload);

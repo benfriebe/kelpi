@@ -47,6 +47,10 @@ export interface PaletteFeatureActions {
     toggleSyncInput(): boolean;
     newWorkspace(): boolean;
     setWorkspaceMuted(workspaceID: string, muted: boolean): boolean;
+    // workspace-feature.md §12.
+    newTab(kind?: 'terminal' | 'same' | 'agent' | 'web' | 'scratchpad'): boolean;
+    closeActiveTab(): boolean;
+    moveFocusedPaneToNewTab(): boolean;
 }
 
 export interface PaletteFeatureHost {
@@ -267,6 +271,17 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 hint('toggle_sync_input'), () => act.toggleSyncInput()),
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
+            // workspace-feature.md §12: the workspace's own tabs.
+            commandEntry('cmd:new-tab', 'rectangle.stack', 'New Tab', 'a new tab in this workspace', hint('new_tab'),
+                () => act.newTab()),
+            commandEntry('cmd:new-agent-tab', 'rectangle.stack', 'New Agent Tab', 'a tab that starts an agent', undefined,
+                () => act.newTab('agent')),
+            commandEntry('cmd:new-web-tab', 'rectangle.stack', 'New Web Tab', 'a tab with a blank web pane', undefined,
+                () => act.newTab('web')),
+            commandEntry('cmd:close-tab', 'rectangle.stack', 'Close Tab', 'close the tab on screen and its panes', hint('close_tab'),
+                () => act.closeActiveTab()),
+            commandEntry('cmd:move-pane-to-new-tab', 'rectangle.stack', 'Move Pane to New Tab', 'take the focused pane out into a tab',
+                hint('move_pane_to_new_tab'), () => act.moveFocusedPaneToNewTab()),
             ...muteEntries,
             ...oldHostEntries,
             ...arrangementEntries(host.arrangement, hint),

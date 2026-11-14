@@ -1,0 +1,341 @@
+/**
+ * The window's workspace-tab verbs (workspace-feature.md §12): new, select, rename, reorder,
+ * close, move a pane into or out of a tab, split a tab into tabs, merge, and move a tab to
+ * another workspace.
+ *
+ * WS-only like `reopen-closed-pane`, and on the same channel (`ws/panes.ts`) for the same
+ * reason: they are not only store dispatches. A new tab mints ids its reply carries and may
+ * need a PTY; a close ends the PTYs of every pane it took with it, as `pane-close` does; and
+ * moving a tab to another workspace changes which workspace's sync group its shells are in.
+ *
+ * Replies are `{ok: true, …}` or `{ok: false, error}` with the error in words a person can act
+ * on, like every other GUI verb.
+ */
+
+import { newUUID } from '@kelpi/core/codec';
+import { dropZoneForWireEdge } from '@kelpi/core/layout';
+import { DROP_ZONES, type DropZone as WireDropZone, type JsonObject } from '@kelpi/protocol';
+
+import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../handlers/pane/index.js';
+import {
+    activeTabIDOf,
+    tabByID,
+    tabIndex,
+    tabOfPane,
+    tabPaneIDs,
+    visiblePane,
+    workspaceByID,
+    workspaceContainingVisiblePane,
+    workspaceTabs,
+    type DomainAction,
+    type WorkspaceState
+} from '../store/index.js';
+
+export const WORKSPACE_TAB_COMMANDS = [
+    'workspace-tab-new',
+    'workspace-tab-select',
+    'workspace-tab-rename',
+    'workspace-tab-move',
+    'workspace-tab-close',
+    'workspace-tab-close-others',
+    'workspace-tab-split-panes',
+    'workspace-tab-merge-previous',
+    'workspace-tab-move-to-workspace',
+    'pane-move-to-new-tab',
+    'pane-move-to-tab'
+] as const;
+export type WorkspaceTabCommand = (typeof WORKSPACE_TAB_COMMANDS)[number];
+
+export function isWorkspaceTabCommand(command: string): command is WorkspaceTabCommand {
+    return (WORKSPACE_TAB_COMMANDS as readonly string[]).includes(command);
+}
+
+/** What a new tab opens: Settings ▸ Workspaces "A new tab opens", or the + menu's choice. */
+export const NEW_TAB_KINDS = ['terminal', 'same', 'agent', 'web', 'scratchpad'] as const;
+export type NewTabKind = (typeof NEW_TAB_KINDS)[number];
+
+function failure(error: string): JsonObject {
+    return { ok: false, error };
+}
+
+function text(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function integer(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+export interface WorkspaceTabChannelOptions {
+    readonly ctx: PaneHandlerContext;
+    /** Settings ▸ Workspaces "A new tab opens", for a `workspace-tab-new` naming no kind. */
+    readonly newTabOpens?: (() => 'terminal' | 'same' | 'agent') | undefined;
+    /** Start the configured agent in a new tab's freshly spawned terminal. Absent = no agent tabs. */
+    readonly startAgent?: ((paneID: string, workspaceID: string) => void) | undefined;
+}
+
+export interface WorkspaceTabChannel {
+    run(command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject;
+}
+
+export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): WorkspaceTabChannel {
+    const { ctx } = options;
+    const now = (): number => (ctx.clock ?? Date.now)();
+    const mintPane = (): string => (ctx.mintPaneID ?? newUUID)();
+    const mintTab = (): string => (ctx.mintTabID ?? newUUID)();
+    const state = () => ctx.store.getState();
+
+    const workspaceFor = (payload: Record<string, unknown>): WorkspaceState | null => {
+        const id = text(payload['workspace_id']);
+        return id === undefined ? null : workspaceByID(state(), id);
+    };
+
+    /** Every pane id the workspace holds, both lanes: what a close compares before and after. */
+    const allPaneIDs = (workspace: WorkspaceState | null): Set<string> =>
+        new Set(workspace === null ? [] : [...workspace.panes, ...workspace.parkedPanes].map((pane) => pane.id));
+
+    /**
+     * Dispatch a close and end the PTY (and terminal state) of every pane it removed, as
+     * `pane-close` does for one. Document panes save first, and a save that fails refuses the
+     * whole close (the error, else null), exactly as it refuses a pane's.
+     */
+    const closeAndReap = (workspaceID: string, closing: readonly string[], action: DomainAction): string | null => {
+        try {
+            ctx.prepareDocumentClose?.(closing);
+        } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+        }
+        const before = allPaneIDs(workspaceByID(state(), workspaceID));
+        ctx.store.dispatch(action);
+        const after = allPaneIDs(workspaceByID(state(), workspaceID));
+        for (const paneID of before) {
+            if (after.has(paneID)) continue;
+            ctx.pty.kill(paneID);
+            ctx.term.dispose(paneID);
+        }
+        refreshSyncGroup(ctx, workspaceID);
+        return null;
+    };
+
+    /** Where a new tab goes: Settings ▸ Workspaces "New tabs go", unless the caller says. */
+    const newTabIndex = (workspace: WorkspaceState, payload: Record<string, unknown>): number => {
+        const asked = integer(payload['index']);
+        if (asked !== undefined) return asked;
+        if ((ctx.newTabPosition?.() ?? 'after-current') === 'end') return workspaceTabs(workspace).length;
+        return tabIndex(workspace, activeTabIDOf(workspace)) + 1;
+    };
+
+    /** "A terminal in the workspace folder": its repository's worktree, else where the tab on screen is. */
+    const workspaceFolder = (workspace: WorkspaceState): string | null => {
+        const repo = workspace.repoAssociations[0]?.worktreePath;
+        if (repo !== undefined && repo !== '') return repo;
+        const focused = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
+        return focused?.workingDirectory ?? null;
+    };
+
+    const newTab = (payload: Record<string, unknown>): JsonObject => {
+        const workspace = workspaceFor(payload);
+        if (workspace === null) return failure('workspace-tab-new requires a known workspace_id');
+        const requested = text(payload['kind']) ?? options.newTabOpens?.() ?? 'terminal';
+        if (!(NEW_TAB_KINDS as readonly string[]).includes(requested)) {
+            return failure(`unknown tab kind '${requested}': use ${NEW_TAB_KINDS.join(', ')}`);
+        }
+        if (requested === 'agent' && options.startAgent === undefined) return failure('this daemon cannot start agents');
+        let kind = requested as NewTabKind;
+        const focusedPane = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
+        if (kind === 'same') {
+            // The kinds a tab can be opened as; anything else (a diff, a document, a plugin
+            // view) has no blank form, so it opens a terminal.
+            kind = focusedPane?.type === 'web' ? 'web' : focusedPane?.type === 'scratchpad' ? 'scratchpad' : 'terminal';
+        }
+        const tabID = mintTab();
+        const paneID = mintPane();
+        const at = now();
+        let create: DomainAction;
+        if (kind === 'web') {
+            create = { type: 'open-web-pane', workspaceID: workspace.id, paneID, tabID: mintTab(), url: '', now: at, focus: true };
+        } else if (kind === 'scratchpad') {
+            create = { type: 'create-scratchpad', workspaceID: workspace.id, paneID, now: at };
+        } else {
+            const directory =
+                requested === 'same' && focusedPane?.type === 'shell' ? focusedPane.workingDirectory : workspaceFolder(workspace);
+            create = { type: 'create-pane', workspaceID: workspace.id, paneID, now: at, workingDirectory: directory, focus: true };
+        }
+        const focus = payload['focus'] !== false;
+        ctx.store.dispatch({
+            type: 'create-tab',
+            workspaceID: workspace.id,
+            tabID,
+            index: newTabIndex(workspace, payload),
+            focus,
+            create
+        });
+        const after = workspaceByID(state(), workspace.id);
+        if (after === null || tabByID(after, tabID) === null) return failure('the new tab could not be opened');
+        spawnPaneIfShell(ctx, workspace.id, paneID);
+        if (kind === 'agent') options.startAgent?.(paneID, workspace.id);
+        refreshSyncGroup(ctx, workspace.id);
+        return { ok: true, workspace_id: workspace.id, tab_id: tabID, pane_id: paneID, kind };
+    };
+
+    const tabArgs = (
+        payload: Record<string, unknown>,
+        verb: string
+    ): { readonly workspace: WorkspaceState; readonly tabID: string } | JsonObject => {
+        const workspace = workspaceFor(payload);
+        if (workspace === null) return failure(`${verb} requires a known workspace_id`);
+        const tabID = text(payload['tab_id']);
+        if (tabID === undefined || tabByID(workspace, tabID) === null) return failure(`${verb}: no such tab in '${workspace.name}'`);
+        return { workspace, tabID };
+    };
+
+    const isFailure = (value: unknown): value is JsonObject =>
+        typeof value === 'object' && value !== null && (value as { ok?: unknown }).ok === false;
+
+    const run = (command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject => {
+        switch (command) {
+            case 'workspace-tab-new':
+                return newTab(payload);
+            case 'workspace-tab-select': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                ctx.store.dispatch({ type: 'select-tab', workspaceID: args.workspace.id, tabID: args.tabID });
+                refreshSyncGroup(ctx, args.workspace.id);
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID };
+            }
+            case 'workspace-tab-rename': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                const raw = payload['name'];
+                if (raw !== null && typeof raw !== 'string') return failure('workspace-tab-rename requires a name (or null to clear it)');
+                ctx.store.dispatch({ type: 'rename-tab', workspaceID: args.workspace.id, tabID: args.tabID, name: raw });
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID };
+            }
+            case 'workspace-tab-move': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                const index = integer(payload['index']);
+                if (index === undefined) return failure('workspace-tab-move requires an index');
+                ctx.store.dispatch({ type: 'move-tab', workspaceID: args.workspace.id, tabID: args.tabID, toIndex: index });
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID };
+            }
+            case 'workspace-tab-close': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                if (workspaceTabs(args.workspace).length <= 1) return failure('a workspace keeps at least one tab');
+                const closing = workspaceTabPanes(args.workspace, args.tabID);
+                const refused = closeAndReap(args.workspace.id, closing, { type: 'close-tab', workspaceID: args.workspace.id, tabID: args.tabID });
+                if (refused !== null) return failure(refused);
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID, closed: closing.length };
+            }
+            case 'workspace-tab-close-others': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                const closing = workspaceTabs(args.workspace)
+                    .filter((tab) => tab.id !== args.tabID)
+                    .flatMap((tab) => workspaceTabPanes(args.workspace, tab.id));
+                const refused = closeAndReap(args.workspace.id, closing, { type: 'close-other-tabs', workspaceID: args.workspace.id, tabID: args.tabID });
+                if (refused !== null) return failure(refused);
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID, closed: closing.length };
+            }
+            case 'workspace-tab-split-panes': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                const count = workspaceTabPanes(args.workspace, args.tabID).length;
+                if (count <= 1) return failure('the tab has only one pane');
+                const newTabIDs = Array.from({ length: count - 1 }, () => mintTab());
+                ctx.store.dispatch({ type: 'split-tab-panes', workspaceID: args.workspace.id, tabID: args.tabID, newTabIDs });
+                refreshSyncGroup(ctx, args.workspace.id);
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID, tab_ids: newTabIDs };
+            }
+            case 'workspace-tab-merge-previous': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                if (tabIndex(args.workspace, args.tabID) <= 0) return failure('the first tab has no tab before it to merge into');
+                ctx.store.dispatch({ type: 'merge-tab-into-previous', workspaceID: args.workspace.id, tabID: args.tabID });
+                refreshSyncGroup(ctx, args.workspace.id);
+                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID };
+            }
+            case 'workspace-tab-move-to-workspace': {
+                const args = tabArgs(payload, command);
+                if (isFailure(args)) return args;
+                const toID = text(payload['to_workspace_id']);
+                const target = toID === undefined ? null : workspaceByID(state(), toID);
+                if (target === null) return failure('workspace-tab-move-to-workspace requires a known to_workspace_id');
+                if (target.id === args.workspace.id) return failure('the tab is already in that workspace');
+                ctx.store.dispatch({
+                    type: 'move-tab-to-workspace',
+                    workspaceID: args.workspace.id,
+                    tabID: args.tabID,
+                    toWorkspaceID: target.id,
+                    replacementTabID: mintTab(),
+                    focus: payload['focus'] !== false
+                });
+                const moved = workspaceByID(state(), target.id);
+                if (moved === null || tabByID(moved, args.tabID) === null) return failure('the tab could not be moved');
+                refreshSyncGroup(ctx, args.workspace.id);
+                refreshSyncGroup(ctx, target.id);
+                // The window follows the tab, as it follows a pane moved to a workspace: the reducer
+                // made the target active, and `reveal-pane` is how a window is told to go there.
+                if (payload['focus'] !== false && moved.focusedPaneID !== null) {
+                    ctx.broadcast({ type: 'reveal-pane', workspaceID: target.id, paneID: moved.focusedPaneID });
+                }
+                return { ok: true, workspace_id: target.id, tab_id: args.tabID };
+            }
+            case 'pane-move-to-new-tab': {
+                const paneID = text(payload['pane_id']);
+                const workspace = paneID === undefined ? null : workspaceContainingVisiblePane(state(), paneID);
+                if (paneID === undefined || workspace === null || tabOfPane(workspace, paneID) === null) {
+                    return failure('pane-move-to-new-tab requires a pane in a tab');
+                }
+                const tabID = mintTab();
+                const index = integer(payload['index']);
+                ctx.store.dispatch({
+                    type: 'move-pane-to-new-tab',
+                    workspaceID: workspace.id,
+                    paneID,
+                    tabID,
+                    ...(index === undefined ? {} : { index }),
+                    focus: payload['focus'] !== false
+                });
+                refreshSyncGroup(ctx, workspace.id);
+                const after = workspaceByID(state(), workspace.id);
+                const landed = after === null ? null : tabOfPane(after, paneID);
+                return { ok: true, workspace_id: workspace.id, pane_id: paneID, tab_id: landed?.id ?? tabID };
+            }
+            case 'pane-move-to-tab': {
+                const paneID = text(payload['pane_id']);
+                const workspace = paneID === undefined ? null : workspaceContainingVisiblePane(state(), paneID);
+                const tabID = text(payload['tab_id']);
+                if (paneID === undefined || workspace === null || tabID === undefined || tabByID(workspace, tabID) === null) {
+                    return failure('pane-move-to-tab requires a pane and a tab of the same workspace');
+                }
+                // The wire's edge names (`kelpi pane move --target`), as `pane-move-adjacent` takes them.
+                const zoneValue = text(payload['zone']);
+                if (zoneValue !== undefined && !(DROP_ZONES as readonly string[]).includes(zoneValue)) {
+                    return failure(`unknown zone '${zoneValue}': use ${DROP_ZONES.join(', ')}`);
+                }
+                const targetPaneID = text(payload['target_pane_id']);
+                ctx.store.dispatch({
+                    type: 'move-pane-to-tab',
+                    workspaceID: workspace.id,
+                    paneID,
+                    tabID,
+                    ...(targetPaneID === undefined ? {} : { targetPaneID }),
+                    ...(zoneValue === undefined ? {} : { zone: dropZoneForWireEdge(zoneValue as WireDropZone) }),
+                    focus: payload['focus'] !== false
+                });
+                refreshSyncGroup(ctx, workspace.id);
+                return { ok: true, workspace_id: workspace.id, pane_id: paneID, tab_id: tabID };
+            }
+        }
+    };
+
+    return { run };
+}
+
+/** A tab's panes, in layout order (none for an unknown tab). */
+function workspaceTabPanes(workspace: WorkspaceState, tabID: string): string[] {
+    const tab = tabByID(workspace, tabID);
+    return tab === null ? [] : tabPaneIDs(workspace, tab);
+}

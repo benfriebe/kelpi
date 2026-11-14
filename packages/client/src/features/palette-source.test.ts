@@ -24,7 +24,8 @@ function fixture() {
         splitFocused: vi.fn(() => true), closeFocused: vi.fn(() => true), reopenClosedPane: vi.fn(() => true),
         createScratchpad: vi.fn(() => true), toggleSearch: vi.fn(() => true), toggleZoomFocused: vi.fn(() => true),
         cycleLayout: vi.fn(() => true), toggleSyncInput: vi.fn(() => true), newWorkspace: vi.fn(() => true),
-        setWorkspaceMuted: vi.fn((_workspaceID: string, _muted: boolean) => true)
+        setWorkspaceMuted: vi.fn((_workspaceID: string, _muted: boolean) => true),
+        newTab: vi.fn(() => true), closeActiveTab: vi.fn(() => true), moveFocusedPaneToNewTab: vi.fn(() => true)
     };
     const host: PaletteFeatureHost = {
         runtime,

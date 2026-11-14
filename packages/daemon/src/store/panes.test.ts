@@ -975,6 +975,24 @@ describe('move-pane-to-workspace', () => {
         expect(ws(h.state(), W1).webPanes[PA]).toBeUndefined();
         expect(ws(h.state(), W2).webPanes[PA]?.tabs[0]?.url).toBe('https://example.com');
     });
+
+    it('takes a --here pane\'s parked source with it, so closing the pane un-parks it there', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'create-workspace', id: W2, paneID: id('dddddddd', 204), name: 'other', color: 'red', now: NOW });
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PB, sourcePaneID: P0, direction: 'horizontal', now: NOW },
+            { type: 'open-markdown-pane', workspaceID: W1, paneID: PA, filePath: '/docs/a.md', reusePaneID: P0, now: NOW },
+            { type: 'move-pane-to-workspace', paneID: PA, toWorkspaceID: W2 }
+        );
+        expect(ws(h.state(), W1).parkedPanes).toEqual([]);
+        expect(ws(h.state(), W2).parkedPanes.map((pane) => pane.id)).toEqual([P0]);
+
+        h.dispatch({ type: 'close-pane', workspaceID: W2, paneID: PA });
+        const target = ws(h.state(), W2);
+        expect(target.parkedPanes).toEqual([]);
+        expect(allPaneIDs(target.layout)).toContain(P0);
+        expect(target.panes.map((pane) => pane.id)).toContain(P0);
+    });
 });
 
 /**

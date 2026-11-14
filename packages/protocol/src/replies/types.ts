@@ -89,6 +89,14 @@ export interface PaneListEntry {
     /** `group_id` and `group_name` are both present or both absent (top-level workspace). */
     readonly group_id?: string;
     readonly group_name?: string;
+    /**
+     * workspace-feature.md §12: the workspace tab holding the pane, its 1-based position in
+     * the tab bar (what ⌥⌘1-9 count) and whether it is the tab on screen. Absent from a
+     * daemon older than tabs.
+     */
+    readonly tab_id?: string;
+    readonly tab_number?: number;
+    readonly is_active_tab?: boolean;
 }
 
 export interface PaneListReply extends ReplySuccess {

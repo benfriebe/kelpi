@@ -1,13 +1,15 @@
 /**
  * `pane-list`: a pure read (socket-handlers.md §4.12).
  *
- * Panes are enumerated in LAYOUT order (the tree's leaf order), never state order, and ids
- * with no backing visible pane are skipped; parked panes never appear because they are not in
- * the layout. Optional keys follow the builders in @kelpi/protocol: `background_tasks` only when
+ * Panes are enumerated in LAYOUT order (the tree's leaf order), never state order, tab by tab
+ * (workspace-feature.md §12: a background tab's panes are as live and addressable as the ones
+ * on screen, so an agent must still see them), and ids with no backing visible pane are
+ * skipped; parked panes never appear because they are not in any layout. Optional keys follow the builders in @kelpi/protocol: `background_tasks` only when
  * positive, `group_id`/`group_name` both-or-neither, empty strings omitted entirely.
  */
 
 import { allPaneIDs } from '@kelpi/core/layout';
+import { activeTabIDOf, tabLayout, workspaceTabs } from '../../store/tabs.js';
 import { buildPaneListEntry, type PaneListEntry } from '@kelpi/protocol';
 
 import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
@@ -76,7 +78,18 @@ function entriesForWorkspace(
     const isActiveWorkspace = state.lastActiveWorkspaceID === workspace.id;
 
     const entries: PaneListEntry[] = [];
-    for (const paneID of allPaneIDs(workspace.layout)) {
+    const activeTabID = activeTabIDOf(workspace);
+    const tabs = workspaceTabs(workspace);
+    const placed = tabs.flatMap((tab, index) => {
+        const tuple = tabLayout(workspace, tab);
+        // The tab's own zoom applies as it does on screen: a zoomed tab lists its zoomed pane.
+        return allPaneIDs(tuple.layout).map((paneID) => ({
+            paneID,
+            focusedPaneID: tuple.focusedPaneID,
+            tab: { id: tab.id, number: index + 1, active: tab.id === activeTabID }
+        }));
+    });
+    for (const { paneID, focusedPaneID, tab } of placed) {
         const pane = visiblePane(workspace, paneID);
         if (pane === null) continue; // a layout id with no backing pane is skipped
         entries.push(
@@ -87,7 +100,8 @@ function entriesForWorkspace(
                 workspace_name: workspace.name,
                 working_directory: pane.workingDirectory,
                 status: pane.status,
-                is_focused: workspace.focusedPaneID === pane.id,
+                // The user's focus is in the tab on screen; a background tab only remembers one.
+                is_focused: focusedPaneID === pane.id && tab.active,
                 is_active_workspace: isActiveWorkspace,
                 created_at: wireTimestamp(pane.createdAt),
                 last_activity_at: wireTimestamp(pane.lastActivityAt),
@@ -98,7 +112,9 @@ function entriesForWorkspace(
                 agent: pane.agentKind ?? undefined,
                 background_tasks: pane.backgroundTaskCount,
                 file_path: pane.filePath ?? undefined,
-                group: group === null ? undefined : { id: group.id, name: group.name }
+                group: group === null ? undefined : { id: group.id, name: group.name },
+                // Only worth a field once there is a choice of tab.
+                tab: tabs.length > 1 ? tab : undefined
             })
         );
     }

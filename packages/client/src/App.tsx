@@ -7,6 +7,10 @@ import { toggleDocumentRenderer } from './plugins/pane-renderers';
 import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
 import { bindToolbarFeature, createToolbarActions } from './features/toolbar';
+import { createWorkspaceTabActions } from './features/workspace-tabs-actions';
+import { onScreenPanes, tabsAgentSummary, workspaceTabViews, type WorkspaceTabView } from './chrome/workspace-tabs';
+import { TabCloseGate } from './chrome/TabCloseGate';
+import type { WorkspaceTabBarProps } from './chrome/WorkspaceTabBar';
 import { bindStatusbarFeature, statusbarModel, useStatusbarActions } from './features/statusbar';
 import { usePluginChrome } from './plugins/use-chrome';
 import { createPaletteFeatureSource, type PaletteFeatureHost } from './features/palette-source';
@@ -83,7 +87,11 @@ import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObjec
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
+    activeTabIDOf,
+    onScreenPaneIDs,
+    sidebarWorkspaceOrder,
     syncedPaneIDs,
+    workspaceTabs,
     type Pane,
     type WorkspaceState
 } from '@kelpi/daemon/store';
@@ -169,6 +177,7 @@ import {
     useHoverKey,
     useModalPresence,
     withAlpha,
+    tabNumberHandlers,
     workspaceSwitchHandlers,
     type ChromeAppearance,
     type FaviconController,
@@ -181,9 +190,14 @@ import {
     COMMAND_PALETTE_COMMAND,
     DECREASE_TEXT_SIZE_COMMAND,
     DESELECT_ALL_WORKSPACES_COMMAND,
+    CLOSE_TAB_COMMAND,
     INCREASE_TEXT_SIZE_COMMAND,
+    MOVE_PANE_TO_NEW_TAB_COMMAND,
     NEW_GROUP_COMMAND,
+    NEW_TAB_COMMAND,
     NEW_WEB_PANE_COMMAND,
+    NEXT_TAB_COMMAND,
+    PREVIOUS_TAB_COMMAND,
     RECOVER_INTERFACE_COMMAND,
     RESET_TEXT_SIZE_COMMAND,
     RESET_WINDOW_ARRANGEMENT_COMMAND,
@@ -302,7 +316,10 @@ import {
     parseRevealMessage,
     parseViewFocusMessage,
     readShellWindowID,
+    readFullScreen,
     readTrafficLightInset,
+    WINDOW_FULLSCREEN_OFF_COMMAND,
+    WINDOW_FULLSCREEN_ON_COMMAND,
     readWindowTransparent,
     revealAppliesHere,
     viewFocusAppliesHere,
@@ -709,6 +726,16 @@ function Shell(props: AppProps): ReactElement {
     /** Right-click on a pane header: where the menu opened and which pane it acts on. */
     const [paneMenu, setPaneMenu] = useState<{ paneID: string; x: number; y: number } | null>(null);
     /**
+     * The close-tab gate (workspace-feature.md §12.5): closing tabs with agents in them asks
+     * first, under `confirm-workspace-delete` like the workspace gate below. Null otherwise.
+     */
+    const [tabCloseGate, setTabCloseGate] = useState<{
+        subject: string;
+        tabCount: number;
+        agents: WorkspaceAgentSummary;
+        close: () => boolean;
+    } | null>(null);
+    /**
      * The ⌘W-on-the-last-pane gate (TERM-077 / WS-109). Closing the last pane deletes the
      * workspace. An alert is shown when the workspace has agent panes (including inactive
      * sessions) and `confirm-workspace-delete` is on — so this is null in every other
@@ -862,7 +889,14 @@ function Shell(props: AppProps): ReactElement {
      * `windowTransparent`, it is something only the party that CREATED the window can know. 0 in
      * a browser tab, and on any platform whose frame has no such buttons.
      */
-    const trafficLightInset = useMemo(() => readTrafficLightInset(), []);
+    const shellTrafficLightInset = useMemo(() => readTrafficLightInset(), []);
+    /*
+     * shell-ui.md §3.3: a fullscreen window has no traffic lights, so the bar stops keeping their
+     * gutter clear and its leading controls move to the edge. The shell says so on the URL for a
+     * load made fullscreen, and with a relayed command on every change after that.
+     */
+    const [fullScreen, setFullScreen] = useState(() => readFullScreen());
+    const trafficLightInset = fullScreen ? 0 : shellTrafficLightInset;
     /**
      * The same value, reachable from `act` without putting it in that memo's dependency list.
      * It cannot change without a reload, so a ref is the honest expression of that.
@@ -1039,6 +1073,14 @@ function Shell(props: AppProps): ReactElement {
 
     const panes = workspace?.panes ?? EMPTY_PANES;
     const paneByID = useMemo(() => new Map(panes.map((pane) => [pane.id, pane])), [panes]);
+    /*
+     * workspace-feature.md §12: the grid draws the tab ON SCREEN. The workspace's lane holds
+     * every tab's panes, and the grid mounts (hidden) any pane it is handed that the layout does
+     * not place, which is right for a zoom but would keep every background tab's terminals
+     * mounted at no size. A background tab's panes are unmounted instead, exactly as another
+     * workspace's are, and come back with the tab.
+     */
+    const gridPanes = workspace === null ? EMPTY_PANES : onScreenPanes(workspace);
     const paneOrder = useMemo(() => (workspace === null ? EMPTY_IDS : layoutPaneOrder(workspace)), [workspace]);
     const synced = useMemo(() => (workspace === null ? EMPTY_IDS : syncedPaneIDs(workspace)), [workspace]);
     /*
@@ -1842,6 +1884,25 @@ function Shell(props: AppProps): ReactElement {
         return {
             ...createInspectorActions({ commands, activeWorkspace, focusedPaneID: focused, run, refresh: inspectorData.refresh }),
             ...createToolbarActions({ commands, activeWorkspaceID, focusedPaneID: focused, run, setInspectorVisible }),
+            // workspace-feature.md §12: the tab bar, ⌥⌘T and friends, the menus and the palette.
+            ...createWorkspaceTabActions({
+                commands,
+                activeWorkspace,
+                focusedPaneID: focused,
+                run,
+                confirmClose: (workspace, tabIDs, close) => {
+                    const agents = tabsAgentSummary(workspace, tabIDs);
+                    if (agents.total === 0 || !store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) return close();
+                    const only = tabIDs.length === 1 ? workspaceTabViews(workspace).find((tab) => tab.id === tabIDs[0]) : undefined;
+                    setTabCloseGate({
+                        subject: only === undefined ? `${String(tabIDs.length)} tabs` : `“${only.title}”`,
+                        tabCount: tabIDs.length,
+                        agents,
+                        close
+                    });
+                    return true;
+                }
+            }),
             ...workspacesActions,
             focusPane(paneID: string | null): boolean {
                 const id = activeWorkspaceID();
@@ -2825,16 +2886,23 @@ function Shell(props: AppProps): ReactElement {
      * through its own armed claim (issue #35).
      */
     const workspaceID = workspace?.id ?? null;
+    /*
+     * workspace-feature.md §12: a tab switch is the same jump inside a workspace. The daemon's
+     * focus already moved with the tab, but this window's report (which notification suppression
+     * reads) and the caret have to follow it to the new tab's focused pane, or ⌥⌘] would leave
+     * the keyboard in a pane that is no longer on screen.
+     */
+    const focusKey = workspace === null ? null : `${workspace.id}#${activeTabIDOf(workspace)}`;
     const workspaceFocusRef = useRef<string | null>(null);
     useEffect(() => {
-        if (workspaceID === null || workspaceFocusRef.current === workspaceID) return;
-        workspaceFocusRef.current = workspaceID;
+        if (focusKey === null || workspaceFocusRef.current === focusKey) return;
+        workspaceFocusRef.current = focusKey;
         const current = selectActiveWorkspace(store.getState());
         if (current === null) return;
         runtime.focusPane(current.id, current.focusedPaneID);
         if (current.focusedPaneID === null) return;
         return handCaretToPaneWhenReady(current.focusedPaneID);
-    }, [workspaceID, runtime, store]);
+    }, [focusKey, runtime, store]);
 
     /**
      * The engines want concrete colors, so the palette is read off the DOM — but the answer is
@@ -3442,6 +3510,14 @@ function Shell(props: AppProps): ReactElement {
             toggle_status_bar: () => windowArrangement.toggleBand('statusbar'),
             toggle_bottom_panel: () => windowArrangement.toggleBand('panel.bottom'),
             new_workspace: () => act.newWorkspace(),
+            // workspace-feature.md §12: the workspace's own tabs. Each falls through when it has
+            // nothing to do (one tab to close or cycle, a pane already alone in its tab).
+            new_tab: () => act.newTab(),
+            close_tab: () => act.closeActiveTab(),
+            next_tab: () => act.selectTabStep(1),
+            previous_tab: () => act.selectTabStep(-1),
+            move_pane_to_new_tab: () => act.moveFocusedPaneToNewTab(),
+            ...tabNumberHandlers((number) => act.selectTabNumber(number)),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
             next_recent_workspace: ({ event }) => stepRecent(1, event),
@@ -3705,6 +3781,11 @@ function Shell(props: AppProps): ReactElement {
             const windowID = message['windowID'];
             if (typeof windowID === 'string' && windowID !== shellWindowID) return;
             const command = message['command'];
+            // shell-ui.md §3.3: window state, not a gesture, so no modal stands in its way.
+            if (command === WINDOW_FULLSCREEN_ON_COMMAND || command === WINDOW_FULLSCREEN_OFF_COMMAND) {
+                setFullScreen(command === WINDOW_FULLSCREEN_ON_COMMAND);
+                return;
+            }
             // Native menu gestures obey the same prompt ownership as in-window shortcuts.
             if (surface.hasActiveModal() && command !== RECOVER_INTERFACE_COMMAND && !(typeof command === 'string' && command.startsWith('web-chord:'))) return;
             if (command === 'help') setHelpOpen(true);
@@ -3727,6 +3808,12 @@ function Shell(props: AppProps): ReactElement {
             // §APP-018: File ▸ New Workspace. It opens the SHEET, exactly as ⌘N does inside the
             // page — the main process never creates a workspace of its own.
             else if (command === 'new-workspace') actRef.current.newWorkspace();
+            // workspace-feature.md §12: the tab rows, onto their chords' handlers.
+            else if (command === NEW_TAB_COMMAND) actRef.current.newTab();
+            else if (command === CLOSE_TAB_COMMAND) actRef.current.closeActiveTab();
+            else if (command === NEXT_TAB_COMMAND) actRef.current.selectTabStep(1);
+            else if (command === PREVIOUS_TAB_COMMAND) actRef.current.selectTabStep(-1);
+            else if (command === MOVE_PANE_TO_NEW_TAB_COMMAND) actRef.current.moveFocusedPaneToNewTab();
             /*
              * §WS-151: the rest of the shipped app's File group. Each row lands on the SAME
              * `act.*` its keybinding does — ⌘⇧G, ⌘⇧O, ⌘P and ⌘1…⌘9 — so a menu click and a
@@ -4088,9 +4175,23 @@ function Shell(props: AppProps): ReactElement {
             );
         }
 
+        /*
+         * workspace-feature.md §12: Move to New Tab, next to Move to Workspace. Only offered while
+         * the pane shares its tab (alone, it already is a tab of its own).
+         */
+        const sharesTab = workspace !== null && onScreenPaneIDs(workspace).length > 1;
+        items.push(
+            { id: 'sep-move-tab', label: '', kind: 'separator' },
+            {
+                id: 'move-to-new-tab',
+                label: 'Move to New Tab',
+                disabled: !sharesTab,
+                onSelect: () => act.movePaneToNewTab(paneID)
+            }
+        );
+
         if (others.length > 0) {
             items.push(
-                { id: 'sep-move', label: '', kind: 'separator' },
                 {
                     id: 'move-to-workspace',
                     label: 'Move to Workspace',
@@ -4807,6 +4908,107 @@ function Shell(props: AppProps): ReactElement {
         shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
     });
     const chromeModel = chromeSource.snapshot();
+    /*
+     * workspace-feature.md §12 / shell-ui.md §3.3: the active workspace's tabs in the title bar.
+     * The leading section takes the sidebar's width while the sidebar is open on the left, so the
+     * separator ending it continues the sidebar's edge and the first tab starts where the first
+     * pane does; any other arrangement leaves it as wide as its controls.
+     */
+    const tabViews = useMemo(() => (workspace === null ? null : workspaceTabViews(workspace)), [workspace]);
+    const tabBar: WorkspaceTabBarProps | undefined =
+        // A remote daemon's workspace fills the pane area: its tabs are that daemon's, which this
+        // bar does not drive yet, so the bar shows the identity it always has there.
+        workspace === null || tabViews === null || remoteSelection !== null
+            ? undefined
+            : {
+                  tabs: tabViews,
+                  onSelect: (tabID) => {
+                      act.selectTab(tabID);
+                  },
+                  onClose: (tabID) => {
+                      act.closeTab(tabID);
+                  },
+                  onRename: (tabID, name) => {
+                      act.renameTab(tabID, name);
+                  },
+                  onMove: (tabID, index) => {
+                      act.moveTab(tabID, index);
+                  },
+                  onNewTab: () => {
+                      act.newTab();
+                  },
+                  onMoveToWorkspace: (tabID, workspaceID) => {
+                      const local = store.getState().daemon.state.workspaces.some((candidate) => candidate.id === workspaceID);
+                      if (local && workspaceID !== workspace.id) act.moveTabToWorkspace(tabID, workspaceID);
+                  },
+                  onReleaseCaret: () => {
+                      handBackPaneCaret(selectFocusedPaneID(store.getState()));
+                  },
+                  newTabMenuItems: [
+                      { id: 'new-terminal-tab', label: 'New Terminal Tab', onSelect: () => act.newTab('terminal') },
+                      { id: 'new-agent-tab', label: 'New Agent Tab', onSelect: () => act.newTab('agent') },
+                      { id: 'new-web-tab', label: 'New Web Tab', onSelect: () => act.newTab('web') },
+                      { id: 'new-scratchpad-tab', label: 'New Scratchpad Tab', onSelect: () => act.newTab('scratchpad') },
+                      { id: 'separator:new-tab', label: '', kind: 'separator' },
+                      {
+                          id: 'move-focused-pane-to-new-tab',
+                          label: 'Move Focused Pane to New Tab',
+                          disabled: onScreenPaneIDs(workspace).length <= 1,
+                          onSelect: () => act.moveFocusedPaneToNewTab()
+                      }
+                  ],
+                  tabMenuItems: (tab: WorkspaceTabView) => {
+                      const state = store.getState().daemon.state;
+                      const others = sidebarWorkspaceOrder(state)
+                          .filter((id) => id !== workspace.id)
+                          .map((id) => state.workspaces.find((candidate) => candidate.id === id))
+                          .filter((candidate): candidate is WorkspaceState => candidate !== undefined);
+                      const only = workspaceTabs(workspace).length <= 1;
+                      return [
+                          { id: 'new-tab-right', label: 'New Tab to the Right', onSelect: () => act.newTab(undefined, tab.index + 1) },
+                          { id: 'separator:tab-arrange', label: '', kind: 'separator' },
+                          {
+                              id: 'split-tab-panes',
+                              label: 'Give Each Pane Its Own Tab',
+                              disabled: tab.paneCount <= 1,
+                              onSelect: () => act.splitTabPanes(tab.id)
+                          },
+                          {
+                              id: 'merge-tab-previous',
+                              label: 'Merge Into Previous Tab',
+                              disabled: tab.index === 0,
+                              onSelect: () => act.mergeTabIntoPrevious(tab.id)
+                          },
+                          {
+                              id: 'move-tab-to-workspace',
+                              label: 'Move Tab to Workspace',
+                              disabled: others.length === 0,
+                              submenu: others.map((target) => ({
+                                  id: `move-tab-to:${target.id}`,
+                                  label: target.name,
+                                  onSelect: () => act.moveTabToWorkspace(tab.id, target.id)
+                              }))
+                          },
+                          { id: 'separator:tab-close', label: '', kind: 'separator' },
+                          { id: 'close-tab', label: 'Close Tab', disabled: only, onSelect: () => act.closeTab(tab.id) },
+                          { id: 'close-other-tabs', label: 'Close Other Tabs', disabled: only, onSelect: () => act.closeOtherTabs(tab.id) }
+                      ];
+                  }
+              };
+    // The panel on the left is the sidebar, or the inspector when they are swapped; its slot's
+    // width is animated, so the lead takes the same width on the same curve. The lead's
+    // separator is its own last pixel, so it continues the edge line where that panel draws it:
+    // the inspector's border is its last pixel too, but the sidebar's line is the resizer's,
+    // one pixel past the slot (`SidebarResizer`), so the lead is one pixel wider there.
+    const leftSlot = sidebarsSwapped
+        ? inspectorMounted && workspace !== null
+            ? { width: inspectorSlide.slot.width, animated: true }
+            : null
+        : sidebarMounted
+          ? { width: sidebarSlide.slot.width + 1, animated: !sidebarResizing }
+          : null;
+    const tabLeadWidth = leftSlot === null ? undefined : leftSlot.width;
+    const tabLeadAnimated = leftSlot?.animated === true;
     const pluginChrome = usePluginChrome(runtime, chromeSource);
     const executeChrome = (id: string, target: { workspaceID?: string; paneID?: string } = workspace ? { workspaceID: workspace.id } : {}): void => {
         const failed = (error: unknown): void => notifyFailure('Window chrome', error instanceof Error ? error.message : String(error));
@@ -4839,7 +5041,7 @@ function Shell(props: AppProps): ReactElement {
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
                     // #283: Add Repository ▸ Choose…, desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }) }),
-                bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null },
+                bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null, tabs: tabBar, leadWidth: tabLeadWidth, leadAnimated: tabLeadAnimated },
                     contributions: contributionItems('workspace.header'), execute: executeChrome }),
                 bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
                     contributionsKey: JSON.stringify(pluginCommands.items('statusbar')), selectPane: (workspaceID, paneID) => executeChrome('kelpi.pane.focus', { workspaceID, paneID }) })
@@ -4928,7 +5130,10 @@ function Shell(props: AppProps): ReactElement {
                         createPane: act.createPane,
                         toggleSyncInput: act.toggleSyncInput,
                         openPalette: () => { surface.palette.open({ id: 'native:phone-menu', kind: 'native', displayName: 'Command Palette' }); },
-                        openSettings: () => openSettings()
+                        openSettings: () => openSettings(),
+                        selectTab: (tabID) => {
+                            act.selectTab(tabID);
+                        }
                     }}
                     palette={palette}
                     createRenderer={createRenderer}
@@ -5099,7 +5304,7 @@ function Shell(props: AppProps): ReactElement {
                         focusFollowsMouse={settings.general.focusFollowsMouse}
                         focusFollowsMouseDelayMs={settings.general.focusFollowsMouseDelay}
                         layout={workspace?.layout ?? EMPTY_LAYOUT}
-                        panes={panes}
+                        panes={gridPanes}
                         focusedPaneID={focusedPaneID}
                         zoomedPaneID={workspace?.zoomedPaneID ?? null}
                         syncActive={workspace?.isSyncInputActive ?? false}
@@ -5191,6 +5396,14 @@ function Shell(props: AppProps): ReactElement {
                          */
                         dwellEnabled={isAppActive(ui)}
                         onMovePane={act.movePaneAdjacent}
+                        onMovePaneToNewTab={(paneID) => {
+                            act.movePaneToNewTab(paneID);
+                        }}
+                        // workspace-feature.md §12: a pane dropped on the title bar's tabs.
+                        onMovePaneToTab={(paneID, target) => {
+                            if (target.kind === 'tab') act.movePaneToTab(paneID, target.tabID);
+                            else act.movePaneToNewTab(paneID, target.index);
+                        }}
                         onCreatePane={act.createPane}
                         onSetRatio={(splitPath, ratio, commit) => {
                             // A divider whose two children are BOTH splits has no pane whose
@@ -5462,6 +5675,22 @@ function Shell(props: AppProps): ReactElement {
                     items={paneMenuItems}
                     label="Pane"
                     onClose={() => setPaneMenu(null)}
+                />
+            )}
+
+            {tabCloseGate === null ? null : (
+                <TabCloseGate
+                    subject={tabCloseGate.subject}
+                    tabCount={tabCloseGate.tabCount}
+                    agents={tabCloseGate.agents}
+                    onCancel={() => setTabCloseGate(null)}
+                    onConfirm={() => {
+                        tabCloseGate.close();
+                        setTabCloseGate(null);
+                    }}
+                    onSuppress={() => {
+                        settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
+                    }}
                 />
             )}
 

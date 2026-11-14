@@ -7,9 +7,11 @@ import {
     encodeChildOrderJSON,
     encodeLabelsJSON,
     encodeWebTabsJSON,
+    encodeWorkspaceTabsJSON,
     parseChildOrderJSON,
     parseLabelsJSON,
-    parseWebTabsJSON
+    parseWebTabsJSON,
+    parseWorkspaceTabsJSON
 } from './json-columns.js';
 
 const A = '11111111-2222-3333-4444-555555555555';
@@ -73,5 +75,35 @@ describe('webTabsJSON', () => {
         expect(decodeWebTabsJSON('[{"id":"nope","url":"u","title":"t"}]')).toEqual([]);
         expect(decodeWebTabsJSON(null)).toEqual([]);
         expect(decodeWebTabsJSON('')).toEqual([]);
+    });
+});
+
+describe('workspace.tabsJSON (workspace-feature.md §12)', () => {
+    const TAB = 'b5eddb88-1b61-412d-8d02-e62026261a9e';
+    const PANE = 'c003c0e3-27d5-4f86-a99d-845f64e629a2';
+
+    it('round-trips a tab, ids uppercased, a blank name read as none and `seen` defaulting to true', () => {
+        const text = encodeWorkspaceTabsJSON([
+            { id: TAB, name: 'main', layout: { kind: 'leaf', paneID: PANE }, focusedPaneID: PANE, seen: false }
+        ]);
+        expect(parseWorkspaceTabsJSON(text)).toEqual([
+            { id: TAB.toUpperCase(), name: 'main', layout: { kind: 'leaf', paneID: PANE.toUpperCase() }, focusedPaneID: PANE.toUpperCase(), seen: false }
+        ]);
+        const bare = JSON.stringify([{ id: TAB, name: '', layout: { empty: {} }, focusedPaneID: null }]);
+        expect(parseWorkspaceTabsJSON(bare)).toEqual([
+            { id: TAB.toUpperCase(), name: null, layout: { kind: 'empty' }, focusedPaneID: null, seen: true }
+        ]);
+    });
+
+    it('skips an entry that does not decode, keeping the others', () => {
+        const good = { id: TAB, name: null, layout: { leaf: { _0: PANE } }, focusedPaneID: PANE, seen: true };
+        const text = JSON.stringify([{ id: 'not-a-uuid', layout: { empty: {} } }, { ...good, name: 4 }, good]);
+        expect(parseWorkspaceTabsJSON(text)?.map((tab) => tab.id)).toEqual([TAB.toUpperCase()]);
+    });
+
+    it('reads an absent column, or one that is not an array, as no tabs at all', () => {
+        expect(parseWorkspaceTabsJSON(null)).toBeNull();
+        expect(parseWorkspaceTabsJSON('{"id":1}')).toBeNull();
+        expect(parseWorkspaceTabsJSON('nope')).toBeNull();
     });
 });

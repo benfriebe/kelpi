@@ -10,7 +10,9 @@
  *   workspace-upserted → workspace meta (name/slug/color/icon/profile/muted/status/labels/
  *                        repoAssociations/recentlyClosed/webPanes/search/timestamps/
  *                        childOrder/childrenCollapsed/pullRequests)
- *   layout-changed     → layout + zoomedPaneID + savedLayout + currentLayoutIndex
+ *   layout-changed     → layout + zoomedPaneID + savedLayout + currentLayoutIndex + the
+ *                        workspace's tabs and activeTabID (§12: the tabs partition the panes
+ *                        between layout trees, so they travel with the tree on screen)
  *   focus-changed      → focusedPaneID + focusHistory
  *   sync-changed       → isSyncInputActive + syncInputExcluded (+ derived syncedPaneIDs)
  *   pane-upserted/-removed → the two pane lanes and their order
@@ -23,6 +25,7 @@
 
 import type { Pane } from '@kelpi/core/layout';
 import { syncedPaneIDs } from './derived.js';
+import { activeTabIDOf, onScreenPaneIDs, workspaceTabs } from './tabs.js';
 import type {
     DaemonState,
     DomainEvent,
@@ -92,7 +95,9 @@ function layoutChanged(before: WorkspaceState, after: WorkspaceState): boolean {
         before.layout !== after.layout ||
         before.zoomedPaneID !== after.zoomedPaneID ||
         before.savedLayout !== after.savedLayout ||
-        before.currentLayoutIndex !== after.currentLayoutIndex
+        before.currentLayoutIndex !== after.currentLayoutIndex ||
+        before.tabs !== after.tabs ||
+        before.activeTabID !== after.activeTabID
     );
 }
 
@@ -102,8 +107,10 @@ function focusChanged(before: WorkspaceState, after: WorkspaceState): boolean {
     );
 }
 
+/** The shells on screen: the sync group never reaches into a background tab (§12). */
 function shellPaneIDs(workspace: WorkspaceState): string[] {
-    return workspace.panes.filter((pane) => pane.type === 'shell').map((pane) => pane.id);
+    const onScreen = new Set(onScreenPaneIDs(workspace));
+    return workspace.panes.filter((pane) => pane.type === 'shell' && onScreen.has(pane.id)).map((pane) => pane.id);
 }
 
 function syncChanged(before: WorkspaceState, after: WorkspaceState): boolean {
@@ -122,7 +129,9 @@ function layoutEvent(workspace: WorkspaceState): DomainEvent {
         layout: workspace.layout,
         zoomedPaneID: workspace.zoomedPaneID,
         savedLayout: workspace.savedLayout,
-        currentLayoutIndex: workspace.currentLayoutIndex
+        currentLayoutIndex: workspace.currentLayoutIndex,
+        tabs: workspaceTabs(workspace),
+        activeTabID: activeTabIDOf(workspace)
     };
 }
 
@@ -368,6 +377,8 @@ function skeletonWorkspace(envelope: WorkspaceEnvelope): WorkspaceState {
         ...envelope,
         panes: [],
         parkedPanes: [],
+        tabs: [{ id: envelope.id, name: null, stash: null, seen: true }],
+        activeTabID: envelope.id,
         layout: { kind: 'empty' },
         focusedPaneID: null,
         focusHistory: [],
@@ -458,7 +469,10 @@ export function applyDomainEvent(state: DaemonState, event: DomainEvent): Daemon
                 layout: event.layout,
                 zoomedPaneID: event.zoomedPaneID,
                 savedLayout: event.savedLayout,
-                currentLayoutIndex: event.currentLayoutIndex
+                currentLayoutIndex: event.currentLayoutIndex,
+                // A daemon older than tabs sends neither: the mirror keeps its single tab.
+                ...(event.tabs === undefined || event.tabs.length === 0 ? {} : { tabs: event.tabs }),
+                ...(event.activeTabID === undefined ? {} : { activeTabID: event.activeTabID })
             }));
         case 'focus-changed':
             return withWorkspace(state, event.workspaceID, (workspace) => ({

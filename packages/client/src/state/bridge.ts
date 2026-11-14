@@ -15,6 +15,7 @@
  * ordering the port requires, and is what assembly should call.
  */
 
+import { onScreenPaneIDs } from '@kelpi/daemon/store';
 import type { WsRejectedMessage } from '@kelpi/protocol';
 
 import { forgetStoredToken, type StorageLike } from '../app/config';
@@ -360,7 +361,8 @@ export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRunt
 
     const visiblePanesFor = (workspaceID: string): readonly string[] => {
         const workspace = store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID);
-        return workspace?.panes.map((pane) => pane.id) ?? [];
+        // workspace-feature.md §12: the tab on screen, not every tab's panes in the lane.
+        return workspace === undefined ? [] : onScreenPaneIDs(workspace);
     };
 
     const runtime: KelpiRuntime = {

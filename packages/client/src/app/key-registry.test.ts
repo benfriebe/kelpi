@@ -61,6 +61,10 @@ function wiredActions(): string[] {
         if (/^ {12}\.\.\.workspaceSwitchHandlers\(/.test(line)) {
             for (let index = 1; index <= 9; index += 1) wired.push(`switch_to_workspace_${String(index)}`);
         }
+        // …and so are the nine `go_to_tab_N` (workspace-feature.md §12).
+        if (/^ {12}\.\.\.tabNumberHandlers\(/.test(line)) {
+            for (let index = 1; index <= 9; index += 1) wired.push(`go_to_tab_${String(index)}`);
+        }
     }
     return wired;
 }
@@ -98,6 +102,6 @@ describe('App.tsx key-action registry', () => {
         // Without this, a reformat that broke the regex would make every assertion above pass
         // vacuously — the failure mode the smoke-contract test guards the same way.
         expect(wiredActions()).toHaveLength(KELPI_ACTIONS.length);
-        expect(KELPI_ACTIONS).toHaveLength(66);
+        expect(KELPI_ACTIONS).toHaveLength(80);
     });
 });

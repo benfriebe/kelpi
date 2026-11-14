@@ -99,6 +99,9 @@ import { PhoneNeedsYouSheet } from './PhoneNeedsYouSheet';
 import { PhoneNewWorkspaceSheet } from './PhoneNewWorkspaceSheet';
 import { PhoneNotificationsSheet } from './PhoneNotificationsSheet';
 import { PhonePaneHeader, PhonePaneStrip } from './PhonePaneChrome';
+import { PhoneTabChips } from './PhoneTabChips';
+import { onScreenPanes, workspaceTabViews } from '../chrome/workspace-tabs';
+import { wirePayload } from '../connection/commands';
 import { PhonePicker } from './PhonePicker';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
@@ -122,6 +125,8 @@ export interface PhoneShellActions {
     toggleSyncInput(): void;
     openPalette(): void;
     openSettings(): void;
+    /** workspace-feature.md §12: show a tab of the workspace on screen (the origin's). */
+    selectTab(tabID: string): void;
 }
 
 /** The desktop grid's props that are NOT the workspace itself: assembly's bindings pass through. */
@@ -369,7 +374,8 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 focusPane: actions.focusPane,
                 createPane: actions.createPane,
                 closePane: actions.closePane,
-                renamePane: actions.renamePane
+                renamePane: actions.renamePane,
+                selectTab: actions.selectTab
             };
         }
         const runtime = remoteHost.runtime;
@@ -386,6 +392,11 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             },
             renamePane: (paneID: string, name: string): void => {
                 void runtime.commands.renamePane({ paneID, name });
+            },
+            // §12: a remote daemon's tabs, through that daemon's own verb.
+            selectTab: (tabID: string): void => {
+                if (workspaceID === null) return;
+                void runtime.commands.raw(wirePayload('workspace-tab-select', { workspace_id: workspaceID, tab_id: tabID }));
             }
         };
     }, [remoteHost, remoteWorkspaceID, actions]);
@@ -972,7 +983,8 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             <PaneGrid
                 {...props.grid}
                 layout={props.workspace.layout}
-                panes={props.workspace.panes}
+                // §12: the tab on screen; the lane also holds every background tab's panes.
+                panes={onScreenPanes(props.workspace)}
                 focusedPaneID={props.focusedPaneID}
                 zoomedPaneID={props.workspace.zoomedPaneID ?? null}
                 syncActive={props.workspace.isSyncInputActive}
@@ -1033,6 +1045,10 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     onMenu={() => setSheet('menu')}
                     onHome={() => goHome(onScreenHost?.key ?? ORIGIN_HOST_KEY)}
                 />
+            )}
+
+            {atLanding || workspace === null ? null : (
+                <PhoneTabChips tabs={workspaceTabViews(workspace)} onSelect={verbs.selectTab} />
             )}
 
             <div ref={contentRef} data-testid="phone-content" className="relative min-h-0 flex-1">

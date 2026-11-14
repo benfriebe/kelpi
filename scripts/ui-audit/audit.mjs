@@ -10742,7 +10742,7 @@ function buildFlows(ctx) {
                     activation.send(
                         JSON.stringify({
                             type: 'hello',
-                            protocolVersion: 3,
+                            protocolVersion: 4,
                             token,
                             client: { kind: 'browser', name: 'audit-activation-reporter' }
                         })
@@ -11157,7 +11157,7 @@ function buildFlows(ctx) {
                             activation.send(
                                 JSON.stringify({
                                     type: 'hello',
-                                    protocolVersion: 3,
+                                    protocolVersion: 4,
                                     token,
                                     client: { kind: 'browser', name: 'audit-routing-activation' }
                                 })
@@ -15934,7 +15934,7 @@ function buildFlows(ctx) {
                         observer.send(
                             JSON.stringify({
                                 type: 'hello',
-                                protocolVersion: 3,
+                                protocolVersion: 4,
                                 token,
                                 client: { kind: 'browser', name: 'audit-notification-observer' }
                             })
@@ -28805,7 +28805,7 @@ function buildFlows(ctx) {
                 relay.send(
                     JSON.stringify({
                         type: 'hello',
-                        protocolVersion: 3,
+                        protocolVersion: 4,
                         token,
                         client: { kind: 'browser', name: 'audit-menu-relay' }
                     })
@@ -35782,7 +35782,7 @@ function buildFlows(ctx) {
                             menuSocket.send(
                                 JSON.stringify({
                                     type: 'hello',
-                                    protocolVersion: 3,
+                                    protocolVersion: 4,
                                     token,
                                     client: { kind: 'browser', name: 'audit-menu-driver' }
                                 })

@@ -68,6 +68,7 @@ import { onActivationPress } from '../app/activation-click';
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { focusPaneSurface, mayClaimPaneCaret } from '../app/pane-focus';
 import { registerGestureReset } from '../chrome/gesture-reset';
+import { setTabDropState, tabDropState, tabDropTargetAt } from '../chrome/tab-drop';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import {
     PaneChromePresenterSlot,
@@ -668,7 +669,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     const endPaneDrag = useCallback((event?: PointerEvent): void => {
         const gesture = moveRef.current;
-        const target = event?.type === 'pointercancel' ? null : dropTargetRef.current;
+        const cancelled = event?.type === 'pointercancel';
+        const target = cancelled ? null : dropTargetRef.current;
+        // §12: a release over the title bar's tabs, read before the shared state is cleared.
+        const tabTarget = cancelled ? null : tabDropState().target;
         moveRef.current = null;
         dropTargetRef.current = null;
         detachListeners();
@@ -676,7 +680,13 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         setPaneDragArmed(false);
         setDraggingPaneID(null);
         setDropTarget(null);
-        if (gesture === null || !gesture.active || target === null) return;
+        setTabDropState({ dragging: false, target: null });
+        if (gesture === null || !gesture.active) return;
+        if (tabTarget !== null) {
+            latest.current.onMovePaneToTab?.(gesture.paneID, tabTarget);
+            return;
+        }
+        if (target === null) return;
         if (target.paneID === gesture.paneID) return;
         latest.current.onMovePane?.(gesture.paneID, target.paneID, target.zone);
     }, [detachListeners]);
@@ -691,6 +701,19 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                 if (Math.hypot(dx, dy) < PANE_MOVE_DRAG_THRESHOLD) return;
                 gesture.active = true;
                 setDraggingPaneID(gesture.paneID);
+            }
+            /*
+             * workspace-feature.md §12: over the title bar's tabs the bar is the target (into a
+             * tab, between two, or the new-tab slot the bar draws while a pane is in flight), and
+             * the grid shows no drop zone of its own.
+             */
+            const tabTarget =
+                latest.current.onMovePaneToTab === undefined ? null : tabDropTargetAt(event.clientX, event.clientY);
+            setTabDropState({ dragging: latest.current.onMovePaneToTab !== undefined, target: tabTarget });
+            if (tabTarget !== null) {
+                dropTargetRef.current = null;
+                setDropTarget(null);
+                return;
             }
             const point = toLocal(event.clientX, event.clientY);
             const targetID = paneAtPoint(framesRef.current, point, gesture.paneID);
@@ -740,7 +763,11 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
      * because they switched Space is a far worse outcome than making them drag again.
      */
     const resetGestures = useCallback((): void => {
-        if (moveRef.current !== null) dropTargetRef.current = null;
+        if (moveRef.current !== null) {
+            dropTargetRef.current = null;
+            // A tab under the pointer is no more a drop than a pane is (§12).
+            setTabDropState({ dragging: false, target: null });
+        }
         endPaneDrag();
         endDividerDrag();
     }, [endPaneDrag, endDividerDrag]);
@@ -1354,6 +1381,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             onSetFontSize={props.onSetFontSize}
                             onRestartAgent={props.onRestartAgent}
                             onNewWebPane={props.onNewWebPane}
+                            onMovePaneToNewTab={props.onMovePaneToNewTab}
                             onRunHeaderItem={props.onRunHeaderItem}
                             onPaneContextMenu={props.onPaneContextMenu}
                         />

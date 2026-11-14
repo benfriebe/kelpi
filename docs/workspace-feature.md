@@ -1977,3 +1977,158 @@ during a rate-limit pause, which holds until it ends.
 PRs on an upstream repository when `origin` is a fork; GitLab and Bitbucket; checks and
 review state; the phone shell's rows; the inspector for a remote daemon's workspace (the
 inspector is the primary daemon's only).
+
+---
+
+## 12. Workspace tabs
+
+Every workspace has tabs, shown in the title bar (shell-ui.md 3.3), and every tab has its own
+layout tree, so splits work inside every tab. There is nothing to turn on: a new workspace
+starts with one tab, and a workspace saved before tabs existed opens as one tab holding the
+layout it had. Store: `packages/daemon/src/store/tabs.ts` (reads and edits) and
+`store/reducers/tabs.ts` (the tab reducers and the routing below).
+
+### 12.1 Model
+
+- `WorkspaceState.tabs`: the tabs in bar order, never empty. `activeTabID`: the tab on
+  screen, always one of them.
+- A tab (`WorkspaceTab`) is `{ id, name, stash, seen }`:
+  - `name`: null means named after its focused pane, as the bar shows it;
+  - `stash`: null exactly for the tab on screen. A background tab keeps its layout tuple
+    there (`TabLayoutStash`: `layout`, `focusedPaneID`, `focusHistory`, `zoomedPaneID`,
+    `savedLayout`, `currentLayoutIndex`);
+  - `seen`: false for a tab opened in the background and not yet shown (an agent's tab).
+- The tab on screen has no tree of its own: its tuple IS the workspace's `layout`,
+  `focusedPaneID`, `focusHistory`, `zoomedPaneID`, `savedLayout` and `currentLayoutIndex`,
+  which every reducer in section 7 reads and writes. So a reducer that knows nothing about tabs
+  edits the tab on screen.
+- Every pane stays in the workspace's `panes` lane whichever tab shows it. A tab is a view onto
+  some of the lane's panes; which tab holds a pane is read off the trees (`tabOfPane`).
+- A workspace's first tab takes the workspace's own id (`initialTab`), so a workspace built
+  anywhere gets the same first tab without minting one. Tab ids are unique within a workspace.
+
+### 12.2 Showing a tab
+
+`showTab` swaps the outgoing tab's tuple into its stash and the incoming tab's out of it. A
+visit marks the tab seen, and closes a find bar whose pane the new tab does not hold (the
+search fields live on the workspace, 7.14). Unknown ids and the tab already on screen change
+nothing.
+
+### 12.3 Pane actions on a background tab
+
+A pane action that names a pane in a background tab runs in that tab: the tab is shown, the
+action runs, and the tab that was on screen comes back (`routeThroughTabs`). The panes named:
+
+| Action | Pane | Leaves that tab on screen |
+|---|---|---|
+| `split-pane`, `split-pane-at-path` | `sourcePaneID` | unless `focus: false` |
+| `close-pane`, `park-pane`, `resize-pane`, `move-pane-direction` | `paneID` | never |
+| `unpark-pane` | `replacePaneID` | never |
+| `move-pane-adjacent` (same tab) | `paneID` | unless `focus: false` |
+| `open-markdown-pane`, `open-diff-pane`, `open-web-pane` | `reusePaneID`, else `sourcePaneID` | unless `focus: false` |
+| `create-plugin-pane` | `sourcePaneID` | unless `focus: false` |
+| `focus-pane` | `paneID` | always (even when the pane is already that tab's focus) |
+| `cycle-layout`, `select-layout` | `paneID` (the CLI's caller) | never |
+| `pane-process-terminated` | `paneID` | never |
+| `move-pane-to-workspace` | `paneID` (source side) | never |
+
+So an agent splitting its own pane in a background tab splits it there, without moving the
+user; only an action that asks for focus takes the user to the pane. A `move-pane-adjacent`
+whose two panes are in different tabs becomes a `move-pane-to-tab`. An action that changes
+only pane records there (an external editor exiting in a preview, say) leaves the tabs exactly
+as they were, so it raises no `layout-changed` (`putBackTab`).
+
+### 12.4 Invariants
+
+Restored after every dispatch, on every workspace the dispatch touched (`normalizeTabs`):
+
+- at least one tab, and exactly the `activeTabID` tab has no stash. An active id that names a
+  tab still holding a stash defers to the tab without one (the live tuple is that tab's); when
+  every tab has a stash, the active tab's tree comes on screen with whatever only the live tree
+  held split in beside it, so neither tree is lost;
+- a background tab holds only panes the lane still has (a pane that went another way is
+  pruned from its tree, which ends that tab's zoom);
+- a background tab with no panes left is gone;
+- an empty tab on screen gives way to its right-hand neighbour, else its left, unless it is
+  the only tab. An empty workspace still has its one tab, as it always had its empty layout.
+
+### 12.5 Tab actions
+
+| Action | Effect |
+|---|---|
+| `create-tab` | Inserts a tab at `index` (absent: after the tab on screen), shows it and runs `create` in it: the action that makes its first pane (`create-pane`, `open-web-pane`, `create-scratchpad`, `open-markdown-pane`, `create-plugin-pane`). A content create's `sourcePaneID` and `reusePaneID` are dropped, since they name a pane in another tab and the new pane is the tab's only one (a `split-pane` keeps its source, and so makes nothing). `focus: false` leaves it in the background, unseen. A `create` that makes nothing leaves no tab. |
+| `select-tab` | Shows the tab (12.2). |
+| `rename-tab` | Sets the name, trimmed; blank or null clears it. |
+| `move-tab` | Reorders; `toIndex` counts the other tabs (post-removal), clamped. |
+| `move-pane-to-new-tab` | Takes the pane out of its tab into a new tab at `index` (absent: just after its tab), shown unless `focus: false`. A pane alone in its tab moves that tab to `index` instead. |
+| `move-pane-to-tab` | Puts the pane into another tab beside `targetPaneID` (on `zone`, else to its right), else to the right of that tab's focused pane when no target is named or it is not in that tab; shows that tab unless `focus: false`. |
+| `split-tab-panes` | Gives every pane but the first (layout order) a tab of its own, after it, with the caller's minted ids. |
+| `merge-tab-into-previous` | Joins the tab's tree to the previous tab's, side by side at 0.5; the tab goes. If it was on screen, the previous tab is shown (marked seen, not a visit, so a find bar on a merged pane stays open) with the merged tab's focused pane focused. |
+| `move-tab-to-workspace` | Moves the tab, its panes (lane records, web sidecars, and the `--here` sources they park, whole chains of them, with theirs) and its tree to the other workspace, appended, shown there unless `focus: false` (which also leaves `lastActiveWorkspaceID`). A workspace's only tab moves too, leaving the empty tab `replacementTabID` names; without one it is a no-op. |
+| `close-tab` | Closes every pane in the tab through `closePaneInWorkspace` (7.7, so each lands in the reopen stack), panes a `--here` close un-parks included. A workspace's only tab never closes. |
+| `close-other-tabs` | `close-tab` on every other tab; the named tab is shown. |
+
+`move-pane-to-workspace` (socket-handlers.md §4.11) carries a pane's parked `--here` sources
+the same way (`movingCargo`), so closing the pane in its new workspace un-parks its source there.
+
+The WS verbs that raise them (socket-handlers.md, `packages/daemon/src/ws/workspace-tabs.ts`)
+mint the ids, end the PTYs of every pane a close removed (as `pane-close` does), and refuse a
+close when a document pane's save fails.
+
+A window asks before it closes tabs with agents in them (`chrome/TabCloseGate.tsx`): when the
+tabs' panes, and the shells parked behind them, hold any agent session (running, waiting or
+inactive, as the workspace gate counts them) and `confirm-workspace-delete` is on, Close Tab, ×,
+middle-click, ⌥⌘W and Close Other Tabs raise an alert whose default is Cancel. Its "Don't ask
+again" turns that setting off, for workspaces and tabs alike. The WS verbs themselves never ask.
+
+### 12.6 What only the tab on screen does
+
+- **Layouts and zoom.** `cycle-layout`, `select-layout` and `toggle-zoom` need two or more
+  panes ON SCREEN (they counted the lane before tabs).
+- **Focus.** A fallback focus (`popFocusFromHistory`, `focusCreatedPane`'s background rule)
+  only ever lands on a pane in the tab on screen.
+- **Sync input.** The broadcast group (1.10) is the on-screen tab's shells; switching tabs
+  changes it. The PTY layer's group follows every `sync-changed` event (`boot/compose.ts`), so
+  every path that changes which tab is on screen moves it, not only the handlers that refresh it.
+- **Notification suppression.** A pane in a background tab is never attended, whatever a window
+  last reported (`ws/sync.ts` `attends`); a window reports focus again on every tab switch and
+  reports only the tab on screen's panes as visible.
+- **Reconnect.** A reconnecting client re-sends its last `focus-report` before it has the new
+  snapshot, marked `replay: true`. The daemon records it as that connection's focus and
+  dispatches nothing: a live report follows its pane into its tab (12.3), and a stale one would
+  pull every client back onto a tab someone has since left. The client reports again once its
+  snapshot lands.
+- **Reads.** `layoutPaneOrder` is the on-screen tab's; `workspacePaneOrder` is every tab's,
+  tab by tab. `pane-list` lists every tab's panes in that order, with `tab_id`, `tab_number`
+  and `is_active_tab` once there are two tabs, and `is_focused` only for the user's focus in
+  the tab on screen. Status counts, the sidebar's agent dot and the workspace delete gate
+  count every tab's panes.
+- **Agents' panes.** A background `pane-split` / `pane-create` goes into the agent's own tab
+  (the routing above); with `agent-pane-placement = new-tab` it opens as the first pane of a
+  new background tab after the agent's (`create-tab`).
+
+### 12.7 Events and persistence
+
+- The tabs travel in `layout-changed` with the tree they partition (`tabs`, `activeTabID`;
+  wire-protocol.md). A mirror of a daemon older than tabs gets neither, and shows one tab.
+- Saved in `workspace.tabsJSON` (every tab: id, name, un-zoomed tree, focused pane, seen) and
+  `workspace.activeTabID`, migration `v28_workspace_tabs` (persistence.md). `layoutJSON` and
+  `focusedPaneID` are still the tab on screen's, so an older daemon opens the database and
+  sees what was on screen; its next save writes the two columns NULL.
+- Restore (`store/snapshot.ts` `restoreTabs`): no usable `tabsJSON` is one tab holding
+  `layoutJSON`; the on-screen tab's tree is `layoutJSON` whatever its entry says; a pane belongs
+  to one tab (the tab on screen claims first, then the rest in order); a pane the workspace no
+  longer has leaves every tree; a pane in no tree at all (an older daemon keeps every pane but
+  only the tree on screen, and a `tabsJSON` entry that does not decode is skipped) goes into one
+  unvisited recovered tab at the end, or into an empty tab on screen. The recovered tab's id is a
+  UUID derived from the workspace's, so the next boot reads it back as itself.
+
+### 12.8 Not covered
+
+Duplicate Tab (the design's tab menu row); a remote daemon's tabs on the desktop (its
+workspace fills the pane area with its tab on screen and the title bar keeps the identity);
+spring-loading (holding a dragged pane over a tab to open it); `kelpi tab` CLI verbs. A
+"same kind" terminal tab opens in the focused shell's stored directory (what OSC 7 last
+reported) rather than asking the OS first as a split does (`liveWorkingDirectory`), because the
+tab verbs answer synchronously; with a shell that reports no OSC 7 it can open where the shell
+started.

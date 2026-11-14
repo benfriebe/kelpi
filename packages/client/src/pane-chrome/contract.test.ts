@@ -58,6 +58,7 @@ describe('the pane chrome vocabulary', () => {
             'header-row',
             'renderer',
             'wrap',
+            'new-tab',
             'split-right',
             'split-down',
             'new-web',

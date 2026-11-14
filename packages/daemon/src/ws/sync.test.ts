@@ -288,6 +288,32 @@ describe('reports', () => {
         expect(session.focusedPaneID).toBe(f.paneID);
     });
 
+    it('records a replayed focus report without moving anyone (workspace-feature.md §12.6)', () => {
+        const f = fixture();
+        const { session } = f.connect();
+        session.handleMessage(hello());
+        // A second tab, on screen: the first tab's pane is in the background now.
+        f.store.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: '0000000F-0000-0000-0000-000000000001',
+            create: { type: 'create-pane', workspaceID: W1, paneID: PANE_B, now: NOW }
+        });
+        const before = f.store.state().workspaces[0];
+        expect(before?.activeTabID).toBe('0000000F-0000-0000-0000-000000000001');
+
+        session.handleMessage(JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID, replay: true }));
+
+        expect(f.store.state().workspaces[0]).toBe(before);
+        expect(session.focusedPaneID).toBe(f.paneID);
+        expect(session.activeWorkspaceID).toBe(W1);
+
+        // The same report live follows the pane into its tab, as a click in the palette does.
+        session.handleMessage(JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID }));
+        expect(f.store.state().workspaces[0]?.focusedPaneID).toBe(f.paneID);
+        expect(f.store.state().workspaces[0]?.activeTabID).toBe(W1);
+    });
+
     it('accepts a null focus report (nothing focused)', () => {
         const f = fixture();
         const { session } = f.connect();

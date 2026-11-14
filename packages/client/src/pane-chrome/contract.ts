@@ -294,6 +294,8 @@ export const PANE_CHROME_ACTION_IDS = [
     'renderer',
     // A scratchpad's wrap toggle.
     'wrap',
+    // workspace-feature.md §12: take the pane out into a tab of its own (while it shares one).
+    'new-tab',
     'split-right',
     'split-down',
     'new-web',

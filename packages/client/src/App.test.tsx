@@ -10,7 +10,7 @@
 
 import { decodePluginManifest, type JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, within, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
@@ -180,7 +180,7 @@ describe('connection states', () => {
                 code: 'unauthorized',
                 reason: 'bad-token',
                 message: "invalid or missing daemon token - open the client via 'kelpid url'",
-                protocolVersion: 3
+                protocolVersion: 4
             });
             h.socket().serverClose(4003, 'bad-token');
         });
@@ -206,8 +206,10 @@ describe('connection states', () => {
 
         const banner = screen.getByTestId('connection-banner');
         expect(banner.dataset['status']).toBe('reconnecting');
-        // The workspace is still rendered: the mirror was true as of the drop.
-        expect(screen.getByTestId('top-bar-identity').textContent).toContain('dev');
+        // The workspace is still rendered: the mirror was true as of the drop (its tabs, and
+        // its row in the sidebar).
+        expect(screen.getByTestId('workspace-tabs')).toBeTruthy();
+        expect(screen.getAllByTestId('workspace-row')[0]?.textContent).toContain('dev');
     });
 });
 
@@ -215,8 +217,11 @@ describe('snapshot → chrome', () => {
     it('paints the sidebar, top bar, grid and footer from the daemon state', () => {
         setup();
 
-        expect(screen.getByTestId('top-bar-identity').textContent).toContain('dev');
+        // workspace-feature.md §12: the title bar draws the workspace's one tab; its name is the
+        // sidebar's to show.
+        expect(within(screen.getByTestId('workspace-tabs')).getAllByRole('tab')).toHaveLength(1);
         expect(screen.getAllByTestId('workspace-row')).toHaveLength(1);
+        expect(screen.getAllByTestId('workspace-row')[0]?.textContent).toContain('dev');
         expect(screen.getByTestId('pane-grid')).toBeTruthy();
         expect(screen.getByTestId(`pane-${PANE_A}`)).toBeTruthy();
         expect(screen.getByTestId('status-footer')).toBeTruthy();
@@ -677,7 +682,7 @@ describe('deltas advance the mirror', () => {
             });
         });
 
-        expect(screen.getByTestId('top-bar-identity').textContent).toContain('renamed');
+        expect(screen.getAllByTestId('workspace-row')[0]?.textContent).toContain('renamed');
         expect(h.runtime.store.getState().daemon.seq).toBe(1);
     });
 });

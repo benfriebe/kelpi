@@ -2160,7 +2160,9 @@ export class CommandClient {
             });
         }
         if (focus !== null) {
-            this.connection.send({ type: 'focus-report', workspaceID: focus.workspaceID, paneID: focus.paneID });
+            // `replay`: the daemon records it for this connection but moves nobody's focus, since
+            // the report predates this connection's snapshot (workspace-feature.md §12.6).
+            this.connection.send({ type: 'focus-report', workspaceID: focus.workspaceID, paneID: focus.paneID, replay: true });
         }
     }
 }

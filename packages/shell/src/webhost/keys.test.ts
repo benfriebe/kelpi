@@ -184,8 +184,11 @@ describe('keyboard layouts (#245)', () => {
         expect(forwardedChord(input('Equal', { key: '=' }), DEFAULTS)?.code).toBe('Equal');
         expect(forwardedChord(input('BracketRight', { key: ']' }), DEFAULTS)?.code).toBe('BracketRight');
         expect(forwardedChord(input('BracketLeft', { key: 'ü' }), DEFAULTS)?.code).toBe('BracketLeft');
-        // ⌥⌘ on the German `+` key is `alt+meta+BracketRight`, which nothing claims.
-        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), DEFAULTS)).toBeNull();
+        // ⌥⌘ on the German `+` key is `alt+meta+BracketRight`: a physical-key chord, and since
+        // workspace tabs (workspace-feature.md §12) it is next_tab's, forwarded as itself.
+        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), DEFAULTS)?.code).toBe('BracketRight');
+        // Unbinding it hands the key back to the page.
+        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), claimedChordsForLines(['alt+super+]=unbind']))).toBeNull();
     });
 });
 
@@ -247,6 +250,21 @@ describe('the set follows the config file', () => {
             'alt+meta+ArrowLeft', // focus_previous_pane
             'alt+meta+ArrowRight', // focus_next_pane
             'alt+meta+ArrowUp', // previous_workspace
+            // workspace-feature.md §12: the workspace's own tabs, all on ⌥⌘ so a page keeps ⌘T.
+            'alt+meta+BracketLeft', // previous_tab
+            'alt+meta+BracketRight', // next_tab
+            'alt+meta+Digit1',
+            'alt+meta+Digit2',
+            'alt+meta+Digit3',
+            'alt+meta+Digit4',
+            'alt+meta+Digit5',
+            'alt+meta+Digit6',
+            'alt+meta+Digit7',
+            'alt+meta+Digit8',
+            'alt+meta+Digit9', // go_to_tab_1…9
+            'alt+meta+KeyT', // new_tab
+            'alt+meta+KeyW', // close_tab
+            'alt+shift+meta+KeyT', // move_pane_to_new_tab
             'ctrl+Tab', // next_recent_workspace (a page's own ⌃Tab tab switching gives way)
             'ctrl+meta+Enter', // toggle_zen_mode (a page that binds ⌃⌘↩ gives it up to Zen Mode)
             'ctrl+shift+ArrowDown', // move_pane_down

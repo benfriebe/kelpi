@@ -99,6 +99,7 @@ import {
     createSpringDriver,
     type SpringDriver
 } from './spring';
+import { useTabDragWorkspace } from './tab-drop';
 import {
     SIDEBAR_TINT_VARS,
     resolveLabelStyle,
@@ -1041,6 +1042,8 @@ interface WorkspaceRowProps {
  */
 export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
     const { workspace } = props;
+    // A title-bar tab dragged over this row moves here on release (workspace-feature.md §12).
+    const tabDropHere = useTabDragWorkspace() === workspace.id;
     // Feeds the avatar's status dot ONLY (§AGNT-103) — the row's git branch and pane count went
     // with §H5's invented metadata line, because `WorkspaceRowView.swift` renders neither.
     const own = agentCounts([workspace]);
@@ -1078,7 +1081,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
         ? tokens.selectionFill
         : props.active
           ? activeFill
-          : props.nestDropPreview === true
+          : props.nestDropPreview === true || tabDropHere
             ? withAlpha(tokens.accent, 0.18)
             : 'transparent';
     const backgroundImage =
@@ -1225,6 +1228,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
             data-selected={props.selected ? 'true' : 'false'}
             data-nest-preview={props.nestPreview === true ? 'true' : undefined}
             data-drop-preview={props.nestDropPreview === true ? 'true' : undefined}
+            data-tab-drop-target={tabDropHere ? 'true' : undefined}
             data-children={childCount > 0 ? String(childCount) : undefined}
             data-children-collapsed={childCount > 0 ? (childrenHidden ? 'true' : 'false') : undefined}
             /* The vacated slot, legible from outside the component — an audit can ask "is the
@@ -1439,6 +1443,18 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     style={{ color: tokens.textTertiary }}
                 >
                     <ChromeIcon name="bell-slash" size={11} />
+                </span>
+            ) : null}
+            {/* workspace-feature.md §12: the tab count, once there is more than one tab. */}
+            {(workspace.tabs?.length ?? 1) > 1 ? (
+                <span
+                    data-testid={`workspace-tab-count-${workspace.id}`}
+                    title={`${String(workspace.tabs?.length ?? 1)} tabs`}
+                    className="flex shrink-0 items-center gap-[3px] font-mono text-[10px]"
+                    style={{ color: tokens.textTertiary }}
+                >
+                    <ChromeIcon name="stack" size={10} />
+                    {workspace.tabs?.length ?? 1}
                 </span>
             ) : null}
             {props.badgeIndex >= 0 && props.badgeIndex < 9 ? (

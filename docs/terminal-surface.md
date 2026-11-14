@@ -672,7 +672,9 @@ ownership effect reports at once (`packages/client/src/plugins/terminal.ts`;
   (`setActiveWorkspace`, which may dispatch `set-active-workspace`), and dispatches
   `focus-pane` unless the workspace already has that pane focused. The last report from any
   client wins, with no active-workspace guard, so focused-pane-dependent CLI commands keep
-  their semantics whichever window the user is in.
+  their semantics whichever window the user is in. The exception is a reconnect's replay of the
+  last report (`replay: true`), which only records the connection's focus
+  (workspace-feature.md §12.6).
 - Losing focus: `focus=false`.
 - **Authoritative focus** (`focus-pane` dispatched by the daemon): handler effects (e.g.
   keyboard pane navigation, notification "Open" action, status bar pane selection, a ⌘-click

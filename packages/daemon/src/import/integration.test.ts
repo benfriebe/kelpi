@@ -333,10 +333,12 @@ describe('import → boot', () => {
         const panes = listed['panes'] as Reply[];
         // All six rows are in the store…
         expect(state.workspaces.reduce((total, entry) => total + entry.panes.length, 0)).toBe(6);
-        // …but `pane-list` walks the LAYOUT tree, and the private pane was deliberately left
-        // out of it — the loader never reconciles panes against the tree (§3.1).
-        expect(panes).toHaveLength(5);
-        expect(panes.map((entry) => entry['id'])).not.toContain(PANE_PRIVATE);
+        // …and the private pane, deliberately left out of the layout tree, is not lost in the
+        // store: since workspace tabs (workspace-feature.md §12, persistence.md §3.1) the loader
+        // puts a pane no tree holds into a recovered tab, so `pane-list` (which walks every
+        // tab's tree) lists all six, the stray one in its workspace's second tab.
+        expect(panes).toHaveLength(6);
+        expect(panes.find((entry) => entry['id'] === PANE_PRIVATE)).toMatchObject({ tab_number: 2, is_active_tab: false });
         const coordinator = panes.find((entry) => entry['id'] === PANE_A1);
         expect(coordinator).toMatchObject({
             label: 'coordinator',

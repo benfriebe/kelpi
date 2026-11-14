@@ -50,15 +50,18 @@ export {
     encodeChildOrderJSON,
     encodeLabelsJSON,
     encodeWebTabsJSON,
+    encodeWorkspaceTabsJSON,
     parseChildOrderJSON,
     parseLabelsJSON,
     parseStringArray,
     parseUUIDArray,
     parseWebTab,
     parseWebTabArray,
-    parseWebTabsJSON
+    parseWebTabsJSON,
+    parseWorkspaceTabRecord,
+    parseWorkspaceTabsJSON
 } from './json-columns.js';
-export type { WebTab } from './json-columns.js';
+export type { WebTab, WorkspaceTabRecord } from './json-columns.js';
 
 export { formatIconString, iconRefusal, liftLeadingIcon, parseIconString } from './icon.js';
 export type { IconRef } from './icon.js';

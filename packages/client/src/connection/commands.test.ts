@@ -343,7 +343,16 @@ describe('CommandClient reports', () => {
         const socket = h.socket();
         expect(reports(socket, 'visibility-report')).toHaveLength(1);
         expect(reports(socket, 'focus-report')).toHaveLength(1);
-        expect(reports(socket, 'focus-report')[0]).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: PANE });
+        // Marked as a replay: the daemon records it but moves nobody's focus (§12.6).
+        expect(reports(socket, 'focus-report')[0]).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: PANE, replay: true });
+    });
+
+    it('sends a live report after a reconnect unmarked', () => {
+        const h = harness();
+        h.client.reportFocus('W1', PANE);
+        h.redial();
+        h.client.reportFocus('W1', null);
+        expect(reports(h.socket(), 'focus-report').at(-1)).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: null });
     });
 });
 

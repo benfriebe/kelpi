@@ -362,7 +362,12 @@ export function buildSettingsSnapshot(
             agentClaudeCommand: general.agentClaudeCommand,
             agentCodexCommand: general.agentCodexCommand,
             newWorkspaceAgent: general.newWorkspaceAgent,
-            newWorkspaceSendPrompt: general.newWorkspaceSendPrompt
+            newWorkspaceSendPrompt: general.newWorkspaceSendPrompt,
+            // workspace-feature.md §12: read by the daemon when it opens a tab or places an
+            // agent's pane, and rendered by Settings ▸ Workspaces ▸ Tabs.
+            newTabOpens: general.newTabOpens,
+            newTabPosition: general.newTabPosition,
+            agentPanePlacement: general.agentPanePlacement
         },
         appearance: {
             // §APP-014: the theme's own background when the config names none — the "resolved

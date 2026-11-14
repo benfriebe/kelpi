@@ -1,0 +1,153 @@
+/**
+ * The title bar's tabs, as data (workspace-feature.md §12, shell-ui.md §3.3).
+ *
+ * One view per tab of the active workspace: what the tab is called, what kind of pane it is
+ * named after, its busiest status, how many panes it holds and the states the bar draws
+ * (on screen, needs attention, never visited, zoomed). Pure, so the bar, the phone's chip row
+ * and the tests all read the same answers.
+ */
+
+import {
+    activeTabIDOf,
+    onScreenPaneIDs,
+    resolvedActiveTab,
+    tabDisplayLabel,
+    tabLayout,
+    tabPaneIDs,
+    workspaceTabs,
+    type Pane,
+    type WorkspaceState
+} from '@kelpi/daemon/store';
+import { summarizeAgentPanes, type WorkspaceAgentSummary } from '@kelpi/core/agent';
+import { basename, paneDisplayTitle } from '../pane-chrome/model';
+
+export type WorkspaceTabKind = 'terminal' | 'agent' | 'web' | 'document' | 'scratchpad' | 'image';
+export type WorkspaceTabStatus = 'idle' | 'running' | 'waitingForInput';
+
+export interface WorkspaceTabView {
+    readonly id: string;
+    /** 0-based position; ⌥⌘1-9 count from 1. */
+    readonly index: number;
+    readonly title: string;
+    /** True when the user named it; false = named after its focused pane. */
+    readonly named: boolean;
+    readonly kind: WorkspaceTabKind;
+    /** The busiest pane wins: waiting, then running, then idle. */
+    readonly status: WorkspaceTabStatus;
+    readonly paneCount: number;
+    readonly paneIDs: readonly string[];
+    readonly active: boolean;
+    /** A background tab with a pane waiting for input, in a workspace that is not muted. */
+    readonly attention: boolean;
+    /** Opened in the background (an agent's tab) and not yet shown. */
+    readonly unvisited: boolean;
+    readonly zoomed: boolean;
+}
+
+const ON_SCREEN = new WeakMap<WorkspaceState, readonly Pane[]>();
+
+/**
+ * The panes of the tab on screen, for a pane grid: the lane holds every tab's panes, and a grid
+ * mounts (hidden) any pane it is handed that the layout does not place. Cached per workspace
+ * object (the mirror never mutates one), so a grid sees the same array until the workspace moves.
+ */
+export function onScreenPanes(workspace: WorkspaceState): readonly Pane[] {
+    const cached = ON_SCREEN.get(workspace);
+    if (cached !== undefined) return cached;
+    const ids = new Set(onScreenPaneIDs(workspace));
+    const panes = ids.size === workspace.panes.length ? workspace.panes : workspace.panes.filter((pane) => ids.has(pane.id));
+    ON_SCREEN.set(workspace, panes);
+    return panes;
+}
+
+function kindOf(pane: Pane | undefined): WorkspaceTabKind {
+    if (pane === undefined) return 'terminal';
+    switch (pane.type) {
+        case 'shell':
+            return pane.agentKind !== null && pane.agentSessionID !== null ? 'agent' : 'terminal';
+        case 'web':
+            return 'web';
+        case 'scratchpad':
+            return 'scratchpad';
+        case 'image':
+            return 'image';
+        default:
+            return 'document';
+    }
+}
+
+/** What a tab named after `pane` is called: its label, else what its header would say, shortened. */
+export function paneTabTitle(workspace: WorkspaceState, pane: Pane | undefined): string {
+    if (pane === undefined) return 'Tab';
+    if (pane.label !== null && pane.label !== '') return pane.label;
+    if (pane.type === 'shell') {
+        if (pane.agentSessionID !== null && pane.agentKind !== null) return pane.agentKind;
+        const title = pane.title ?? '';
+        // A shell's title is usually its directory or the command it runs; either way the last
+        // path component is the part that tells tabs apart.
+        const fromTitle = basename(title.trim());
+        if (fromTitle !== '') return fromTitle;
+        return basename(pane.workingDirectory) || 'Terminal';
+    }
+    if (pane.type === 'web') {
+        const sidecar = workspace.webPanes[pane.id];
+        const tab = sidecar === undefined ? null : resolvedActiveTab(sidecar);
+        return tab === null ? 'New Tab' : tabDisplayLabel(tab);
+    }
+    return paneDisplayTitle(pane);
+}
+
+function busiest(panes: readonly (Pane | undefined)[]): WorkspaceTabStatus {
+    if (panes.some((pane) => pane?.status === 'waitingForInput')) return 'waitingForInput';
+    if (panes.some((pane) => pane?.status === 'running')) return 'running';
+    return 'idle';
+}
+
+export function workspaceTabViews(workspace: WorkspaceState): WorkspaceTabView[] {
+    const byID = new Map(workspace.panes.map((pane) => [pane.id, pane]));
+    const activeID = activeTabIDOf(workspace);
+    return workspaceTabs(workspace).map((tab, index) => {
+        const tuple = tabLayout(workspace, tab);
+        const paneIDs = tabPaneIDs(workspace, tab);
+        const panes = paneIDs.map((id) => byID.get(id));
+        const focused = byID.get(tuple.focusedPaneID ?? '') ?? panes.find((pane) => pane !== undefined);
+        const status = busiest(panes);
+        const active = tab.id === activeID;
+        return {
+            id: tab.id,
+            index,
+            title: tab.name ?? paneTabTitle(workspace, focused),
+            named: tab.name !== null,
+            kind: kindOf(focused),
+            status,
+            paneCount: paneIDs.length,
+            paneIDs,
+            active,
+            attention: !active && !workspace.muted && status === 'waitingForInput',
+            unvisited: !tab.seen && !active,
+            zoomed: tuple.zoomedPaneID !== null
+        };
+    });
+}
+
+/**
+ * The agents that closing these tabs would close: their panes, and the shells a `--here` open
+ * parked behind them (the close ends those too), for the close-tab gate.
+ */
+export function tabsAgentSummary(workspace: WorkspaceState, tabIDs: readonly string[]): WorkspaceAgentSummary {
+    const wanted = new Set(tabIDs);
+    const ids = new Set(workspaceTabs(workspace).filter((tab) => wanted.has(tab.id)).flatMap((tab) => tabPaneIDs(workspace, tab)));
+    const closing = workspace.panes.filter((pane) => ids.has(pane.id));
+    const parked: Pane[] = [];
+    const follow = (pane: Pane): void => {
+        const sourceID = pane.parkedSourcePaneID ?? null;
+        if (sourceID === null || ids.has(sourceID)) return;
+        const source = workspace.parkedPanes.find((candidate) => candidate.id === sourceID);
+        if (source === undefined) return;
+        ids.add(source.id);
+        parked.push(source);
+        follow(source);
+    };
+    for (const pane of closing) follow(pane);
+    return summarizeAgentPanes([...closing, ...parked]);
+}

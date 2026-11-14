@@ -115,6 +115,7 @@ describe('the section catalog', () => {
         ]);
         expect(settingsGroupsInSection('workspaces').map((group) => group.testID)).toEqual([
             'workspaces-section',
+            'tabs-section',
             'panes-section'
         ]);
         expect(settingsGroupsInSection('plugins')).toEqual([]);
@@ -246,6 +247,9 @@ describe('the field table', () => {
             'delete-branches-toggle',
             'expand-group-on-drop-toggle',
             'confirm-quit-toggle',
+            'new-tab-opens',
+            'new-tab-position',
+            'agent-pane-placement',
             'focus-follows-mouse-toggle',
             'focus-delay-slider',
             'copy-on-select-toggle',

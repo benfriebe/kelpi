@@ -124,6 +124,36 @@ export interface LabelPreset {
     readonly textColor: LabelColor | null;
 }
 
+/**
+ * workspace-feature.md §12: the layout tuple a BACKGROUND tab keeps while another tab is on
+ * screen. The on-screen tab has none: its tuple is the workspace's own `layout`,
+ * `focusedPaneID`, `focusHistory`, `zoomedPaneID`, `savedLayout` and `currentLayoutIndex`,
+ * which every pane and layout reducer already reads and writes.
+ */
+export interface TabLayoutStash {
+    readonly layout: PaneLayout;
+    readonly focusedPaneID: string | null;
+    readonly focusHistory: readonly string[];
+    readonly zoomedPaneID: string | null;
+    readonly savedLayout: PaneLayout | null;
+    readonly currentLayoutIndex: number | null;
+}
+
+/**
+ * §12: one tab of a workspace. Every workspace has at least one, and each tab owns its own
+ * layout tree, so splits work inside every tab. The panes themselves stay in the workspace's
+ * `panes` lane whichever tab shows them: a tab is a view onto some of them, never their owner.
+ */
+export interface WorkspaceTab {
+    readonly id: string;
+    /** null = named after its focused pane, as the tab bar shows it. */
+    readonly name: string | null;
+    /** null exactly for the tab on screen (`activeTabID`); see `TabLayoutStash`. */
+    readonly stash: TabLayoutStash | null;
+    /** False until the tab is first shown: an agent's background tab starts unvisited. */
+    readonly seen: boolean;
+}
+
 /** Per-workspace state (§1.9). Fields flagged TRANSIENT never reach `PersistedSnapshot`. */
 export interface WorkspaceState {
     readonly id: string;
@@ -145,6 +175,11 @@ export interface WorkspaceState {
     readonly panes: readonly Pane[];
     /** TRANSIENT: off-layout panes whose PTYs stay alive (`kelpi open --here` sources). */
     readonly parkedPanes: readonly Pane[];
+    /** §12: the tabs, in tab-bar order. Never empty. */
+    readonly tabs: readonly WorkspaceTab[];
+    /** §12: the tab on screen, whose tree is `layout`. Always one of `tabs`. */
+    readonly activeTabID: string;
+    /** The ON-SCREEN tab's tree; background tabs keep theirs in `WorkspaceTab.stash`. */
     readonly layout: PaneLayout;
     readonly focusedPaneID: string | null;
     /** TRANSIENT: most-recent last, max 8, deduped. */
@@ -497,6 +532,8 @@ export type DomainAction =
            * is what every internal dispatcher has always meant; only the wire handlers pass false.
            */
           readonly focus?: boolean | undefined;
+          /** A split placed in a tab of its own keeps its source's size, as a split does. */
+          readonly terminalFontSize?: number | null | undefined;
       }
     | {
           readonly type: 'split-pane';
@@ -774,12 +811,90 @@ export type DomainAction =
           readonly on: boolean;
       }
 
+    // ── workspace tabs (workspace-feature.md §12) ──────────────────────────
+    | {
+          /**
+           * Add a tab at `index` (absent = just after the tab on screen) and run `create` inside
+           * it: the action that makes its first pane (`create-pane`, `open-web-pane`,
+           * `create-scratchpad`, `open-markdown-pane`, `create-plugin-pane`). Each of those
+           * puts its pane at the root of an empty tree. `focus: false` leaves the new tab in the
+           * background, unvisited; absent shows it. A `create` that makes nothing leaves no tab.
+           */
+          readonly type: 'create-tab';
+          readonly workspaceID: string;
+          readonly tabID: string;
+          readonly index?: number | undefined;
+          readonly name?: string | null | undefined;
+          readonly focus?: boolean | undefined;
+          readonly create: DomainAction;
+      }
+    | { readonly type: 'select-tab'; readonly workspaceID: string; readonly tabID: string }
+    | { readonly type: 'rename-tab'; readonly workspaceID: string; readonly tabID: string; readonly name: string | null }
+    | { readonly type: 'move-tab'; readonly workspaceID: string; readonly tabID: string; readonly toIndex: number }
+    /**
+     * Take `paneID` out of its tab into a new tab of its own at `index` (absent = just after
+     * its tab). A pane that is already alone in its tab moves its tab there instead.
+     */
+    | {
+          readonly type: 'move-pane-to-new-tab';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly tabID: string;
+          readonly index?: number | undefined;
+          readonly focus?: boolean | undefined;
+      }
+    /**
+     * Put `paneID` into another tab of the same workspace, beside `targetPaneID` on `zone`
+     * (absent: to the right of that tab's focused pane). Shows the destination tab unless
+     * `focus` is false.
+     */
+    | {
+          readonly type: 'move-pane-to-tab';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly tabID: string;
+          readonly targetPaneID?: string | undefined;
+          readonly zone?: DropZone | undefined;
+          readonly focus?: boolean | undefined;
+      }
+    /** Every pane but the first (in layout order) gets a tab of its own, minted by the caller. */
+    | {
+          readonly type: 'split-tab-panes';
+          readonly workspaceID: string;
+          readonly tabID: string;
+          readonly newTabIDs: readonly string[];
+      }
+    /** The tab's tree joins the previous tab's, side by side; the tab itself goes. */
+    | { readonly type: 'merge-tab-into-previous'; readonly workspaceID: string; readonly tabID: string }
+    /**
+     * Move a whole tab, panes and all, to another workspace (appended, and shown there unless
+     * `focus` is false). A workspace's only tab can move too: `replacementTabID` names the
+     * empty tab it leaves behind, so it is required then (and the move is a no-op without it).
+     */
+    | {
+          readonly type: 'move-tab-to-workspace';
+          readonly workspaceID: string;
+          readonly tabID: string;
+          readonly toWorkspaceID: string;
+          readonly replacementTabID?: string | undefined;
+          readonly focus?: boolean | undefined;
+      }
+    /**
+     * Close every pane in the tab, and with them the tab. A workspace's only tab never closes
+     * this way. The caller ends the closed panes' PTYs, as for `close-pane`.
+     */
+    | { readonly type: 'close-tab'; readonly workspaceID: string; readonly tabID: string }
+    /** `close-tab` for every tab but `tabID`, which is left on screen. */
+    | { readonly type: 'close-other-tabs'; readonly workspaceID: string; readonly tabID: string }
+
     // ── layout / focus / zoom ──────────────────────────────────────────────
-    | { readonly type: 'cycle-layout'; readonly workspaceID: string }
+    /** `paneID`: lay out that pane's tab (the CLI names its caller); absent = the tab on screen. */
+    | { readonly type: 'cycle-layout'; readonly workspaceID: string; readonly paneID?: string | undefined }
     | {
           readonly type: 'select-layout';
           readonly workspaceID: string;
           readonly kind: PredefinedLayoutKind;
+          readonly paneID?: string | undefined;
       }
     | { readonly type: 'toggle-zoom'; readonly workspaceID: string }
     | { readonly type: 'focus-pane'; readonly workspaceID: string; readonly paneID: string | null }
@@ -863,6 +978,8 @@ export type WorkspaceEnvelope = Omit<
     WorkspaceState,
     | 'panes'
     | 'parkedPanes'
+    | 'tabs'
+    | 'activeTabID'
     | 'layout'
     | 'zoomedPaneID'
     | 'savedLayout'
@@ -894,6 +1011,12 @@ export type DomainEvent =
           readonly zoomedPaneID: string | null;
           readonly savedLayout: PaneLayout | null;
           readonly currentLayoutIndex: number | null;
+          /**
+           * §12: the tabs travel with the layout they partition. Optional on the wire only: a
+           * daemon older than tabs never sends them, and a mirror of one keeps a single tab.
+           */
+          readonly tabs?: readonly WorkspaceTab[] | undefined;
+          readonly activeTabID?: string | undefined;
       }
     | {
           readonly kind: 'focus-changed';
@@ -971,6 +1094,9 @@ export interface NewWorkspaceFields {
     readonly panes?: readonly Pane[] | undefined;
     readonly layout?: PaneLayout | undefined;
     readonly focusedPaneID?: string | null | undefined;
+    /** §12: absent = one tab, on screen, named after its focused pane (id = the workspace's). */
+    readonly tabs?: readonly WorkspaceTab[] | undefined;
+    readonly activeTabID?: string | undefined;
     readonly repoAssociations?: readonly RepoAssociation[] | undefined;
     readonly webPanes?: Readonly<Record<string, WebPaneState>> | undefined;
     readonly lastAccessedAt?: number | undefined;
@@ -978,8 +1104,17 @@ export interface NewWorkspaceFields {
     readonly childrenCollapsed?: boolean | undefined;
 }
 
+/**
+ * §12: the one tab a workspace starts with. Its id is the workspace's own, so a workspace
+ * built anywhere (a reducer, a restore, a test) gets the same first tab without minting one.
+ */
+export function initialTab(workspaceID: string): WorkspaceTab {
+    return { id: workspaceID, name: null, stash: null, seen: true };
+}
+
 /** Build a workspace with every transient field at its default (§1.9 / §2). */
 export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
+    const tabs = fields.tabs !== undefined && fields.tabs.length > 0 ? fields.tabs : [initialTab(fields.id)];
     return {
         id: fields.id,
         name: fields.name,
@@ -991,6 +1126,11 @@ export function makeWorkspaceState(fields: NewWorkspaceFields): WorkspaceState {
         status: fields.status ?? 'idle',
         panes: fields.panes ?? [],
         parkedPanes: [],
+        tabs,
+        activeTabID:
+            fields.activeTabID !== undefined && tabs.some((tab) => tab.id === fields.activeTabID)
+                ? fields.activeTabID
+                : (tabs.find((tab) => tab.stash === null) ?? (tabs[0] as WorkspaceTab)).id,
         layout: fields.layout ?? { kind: 'empty' },
         focusedPaneID: fields.focusedPaneID ?? null,
         focusHistory: [],

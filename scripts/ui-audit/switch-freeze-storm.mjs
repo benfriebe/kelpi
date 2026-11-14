@@ -787,7 +787,7 @@ async function measureReplays(sandbox, paneIDs, { cols, rows }) {
     const FRAME = { input: 0x02, ack: 0x03, replay: 0x05 };
     const HEADER_BYTES = 17;
     const PROTOCOL_VERSION = 2;
-    const WS_PROTOCOL_VERSION = 3; // the WebSocket hello's version (packages/protocol ws/messages.ts)
+    const WS_PROTOCOL_VERSION = 4; // the WebSocket hello's version (packages/protocol ws/messages.ts)
     const token = fs.readFileSync(path.join(sandbox.runDir, `daemon-v${String(PROTOCOL_VERSION)}.token`), 'utf8').trim();
     const uuidFromBytes = (bytes, offset = 0) => {
         const HEX = '0123456789ABCDEF';

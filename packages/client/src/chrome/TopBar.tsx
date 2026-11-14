@@ -15,7 +15,7 @@
 
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@kelpi/core/layout';
 import type { PredefinedLayoutKind, WorkspaceColor } from '@kelpi/daemon/store';
-import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 
 import type { ConnectionStatus } from '../connection';
 import {
@@ -30,9 +30,12 @@ import { useDismissable } from './dismissable';
 import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
 import { useOverlayPresence } from './modal-presence';
+import { SIDEBAR_SLIDE_EASING, SIDEBAR_SLIDE_MS } from './sidebar-reveal';
+import { useTabDrop } from './tab-drop';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import type { ChromePane } from './types';
+import { WorkspaceTabBar, type WorkspaceTabBarProps } from './WorkspaceTabBar';
 
 export interface TopBarProps {
     readonly contributions?: ReactNode;
@@ -95,7 +98,28 @@ export interface TopBarProps {
      * a native one above it", so it is not set where it would be a lie.
      */
     readonly dragRegion?: boolean | undefined;
+    /**
+     * workspace-feature.md §12 / §3.3: the active workspace's tabs. Present, the bar draws them
+     * in place of the centred identity (the sidebar already says which workspace this is): the
+     * leading controls end in a full-height separator, the tabs start just after it, + and its
+     * menu follow the last tab, and at least `TAB_BAR_DRAG_GAP_PX` of empty bar comes before the
+     * trailing controls, so the window can always be grabbed. Absent (no workspace) keeps the
+     * identity, which then says "Kelpi".
+     */
+    readonly tabs?: WorkspaceTabBarProps | undefined;
+    /**
+     * The width the leading section takes at least, so its separator continues the edge of the
+     * panel on the left (the sidebar, or the inspector when they are swapped) and the first tab
+     * starts where the first pane does. It is that panel's slot width, and with `leadAnimated`
+     * it moves on the slot's own curve, so the separator slides with the panel's edge. Absent:
+     * just as wide as its controls.
+     */
+    readonly leadWidth?: number | undefined;
+    readonly leadAnimated?: boolean | undefined;
 }
+
+/** §3.3: empty bar the tabs never take, before the trailing controls (the window's handle). */
+export const TAB_BAR_DRAG_GAP_PX = 56;
 
 const CONNECTION_LABEL: Readonly<Record<ConnectionStatus, string>> = {
     idle: 'offline',
@@ -273,6 +297,19 @@ export function TopBar(props: TopBarProps): ReactElement {
     useSyncExternalStore(subscribeClip, terminalPanesVersion, terminalPanesVersion);
     const clipped = mirroring ? mirroredPaneClip() : null;
     const hasWorkspace = props.workspaceName !== null;
+    /*
+     * §3.3: while a pane or a tab is being dragged the bar is not the window's drag handle, so
+     * the whole bar can take the drop (and the OS never sees the release as a title-bar drag).
+     */
+    const paneDrop = useTabDrop();
+    const [tabDragging, setTabDragging] = useState(false);
+    const tabsShown = props.tabs !== undefined;
+    // The bar can go mid-drag (a remote workspace selected); its unmount reports the end, but a
+    // flag left set would keep the window's handle off once the tabs come back.
+    useEffect(() => {
+        if (!tabsShown) setTabDragging(false);
+    }, [tabsShown]);
+    const handleOff = paneDrop.dragging || (tabsShown && tabDragging);
     const paneCount = props.panes.length;
     const syncable = (props.syncedPaneCount ?? 0) >= 2;
     const overflowItems = props.overflowItems ?? [];
@@ -305,7 +342,8 @@ export function TopBar(props: TopBarProps): ReactElement {
             /* §APP-046: the audit reads both of these off the DOM — the gutter it must find the
                first control beyond, and whether this strip claims the drag region. */
             data-traffic-light-inset={String(trafficLightInset)}
-            data-titlebar-drag={props.dragRegion === true ? 'true' : undefined}
+            data-titlebar-drag={props.dragRegion === true ? (handleOff ? 'false' : 'true') : undefined}
+            data-workspace-tabs={tabsShown ? 'true' : undefined}
             className="relative flex h-8 shrink-0 items-center border-b pr-3"
             style={{
                 background: tokens.footerBackground,
@@ -313,8 +351,10 @@ export function TopBar(props: TopBarProps): ReactElement {
                 color: tokens.textPrimary,
                 /* The 12px the bar has always had, unless the traffic lights need more. The
                    height is untouched: the strip is drawn INTO the title-bar row, not below a
-                   second one, which is the half of §APP-046 a taller bar would give away. */
-                paddingLeft: Math.max(12, trafficLightInset)
+                   second one, which is the half of §APP-046 a taller bar would give away. With
+                   tabs the leading section carries the inset itself, so its separator can sit
+                   exactly on the sidebar's edge. */
+                paddingLeft: tabsShown ? 0 : Math.max(12, trafficLightInset)
             }}
         >
             {/*
@@ -323,7 +363,22 @@ export function TopBar(props: TopBarProps): ReactElement {
              * one blob. The per-button inset is `GLYPH_BUTTON_PAD_PX` — the glyph does not move,
              * the target grows 13 → 19 px.
              */}
-            <div ref={leadingRef} className="flex items-center gap-3.5">
+            <div
+                ref={leadingRef}
+                data-testid="top-bar-lead"
+                className={tabsShown ? 'flex h-full shrink-0 items-center gap-3.5 overflow-hidden border-r pr-3' : 'flex items-center gap-3.5'}
+                style={
+                    tabsShown
+                        ? {
+                              borderColor: tokens.divider,
+                              paddingLeft: Math.max(12, trafficLightInset),
+                              boxSizing: 'border-box',
+                              minWidth: props.leadWidth ?? 0,
+                              transition: props.leadAnimated === true ? `min-width ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}` : 'none'
+                          }
+                        : undefined
+                }
+            >
                 {props.onToggleSidebar === undefined ? null : (
                     <button
                         type="button"
@@ -383,7 +438,14 @@ export function TopBar(props: TopBarProps): ReactElement {
                 />
             )}
 
-            <div
+            {props.tabs !== undefined ? (
+                <>
+                    <WorkspaceTabBar {...props.tabs} onDraggingChange={setTabDragging} />
+                    <div aria-hidden data-testid="top-bar-drag-gap" className="h-full shrink-0" style={{ width: TAB_BAR_DRAG_GAP_PX }} />
+                </>
+            ) : null}
+
+            {tabsShown ? null : <div
                 data-testid="top-bar-identity"
                 data-identity-reserve={identityReservePx === null ? undefined : String(identityReservePx)}
                 /* UI-FIDELITY L55: `identityCluster` is `HStack(spacing: 7)` — 7 pt between every
@@ -423,9 +485,9 @@ export function TopBar(props: TopBarProps): ReactElement {
                         </span>
                     </>
                 ) : null}
-            </div>
+            </div>}
 
-            <div ref={trailingRef} className="ml-auto flex items-center gap-2 text-[11px]">
+            <div ref={trailingRef} className="ml-auto flex shrink-0 items-center gap-2 text-[11px]">
                 {props.contributions ? <div className="flex min-w-0 max-w-[180px] items-center overflow-hidden" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} data-testid="workspace-contributions">{props.contributions}</div> : null}
                 <div className="relative flex items-center">
                     <button

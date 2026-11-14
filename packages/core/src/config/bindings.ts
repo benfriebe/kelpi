@@ -44,7 +44,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 50 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 64 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',
@@ -58,6 +58,25 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+7=switch_to_workspace_7',
     'super+8=switch_to_workspace_8',
     'super+9=switch_to_workspace_9',
+    /*
+     * workspace-feature.md §12: the workspace's tabs, all on ⌥⌘ because the plain-⌘ chords are
+     * taken (⌘T / ⇧⌘[ ] are the web pane's own tabs, ⌘1-9 switch workspaces). ⌥⌘ is a
+     * physical-key chord (§7.3), so ⌥⌘[ and ⌥⌘] are the bracket keys on every layout.
+     */
+    'alt+super+t=new_tab',
+    'alt+super+w=close_tab',
+    'alt+super+]=next_tab',
+    'alt+super+[=previous_tab',
+    'alt+shift+super+t=move_pane_to_new_tab',
+    'alt+super+1=go_to_tab_1',
+    'alt+super+2=go_to_tab_2',
+    'alt+super+3=go_to_tab_3',
+    'alt+super+4=go_to_tab_4',
+    'alt+super+5=go_to_tab_5',
+    'alt+super+6=go_to_tab_6',
+    'alt+super+7=go_to_tab_7',
+    'alt+super+8=go_to_tab_8',
+    'alt+super+9=go_to_tab_9',
     'shift+super+s=toggle_sidebar',
     'super+i=toggle_inspector',
     'super+d=split_right',

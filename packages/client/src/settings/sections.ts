@@ -179,6 +179,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDescriptor[] = Object.freeze
                 testID: 'workspaces-section'
             },
             {
+                // workspace-feature.md §12: every workspace has tabs, in the title bar.
+                id: 'tabs-section',
+                sectionID: 'workspaces',
+                title: 'Tabs',
+                hint: 'Every workspace has tabs in the title bar, and you can split inside any of them.',
+                testID: 'tabs-section'
+            },
+            {
                 id: 'panes-section',
                 sectionID: 'workspaces',
                 title: 'Panes',
@@ -446,6 +454,23 @@ const PLACEMENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'end-of-list', label: 'End of list' })
 ]);
 
+/** workspace-feature.md §12's three tab rules, named as Settings ▸ Workspaces ▸ Tabs names them. */
+const NEW_TAB_OPENS_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'terminal', label: 'A terminal in the workspace folder' }),
+    Object.freeze({ value: 'same', label: 'The same kind as the focused pane' }),
+    Object.freeze({ value: 'agent', label: 'An agent' })
+]);
+
+const NEW_TAB_POSITION_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'after-current', label: 'Next to the current tab' }),
+    Object.freeze({ value: 'end', label: 'At the end' })
+]);
+
+const AGENT_PANE_PLACEMENT_CHOICES: readonly SettingsChoice[] = Object.freeze([
+    Object.freeze({ value: 'own-tab', label: 'Into the agent’s own tab' }),
+    Object.freeze({ value: 'new-tab', label: 'Into a new tab each' })
+]);
+
 const OPEN_LINKS_IN_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'browser', label: 'Default browser' }),
     Object.freeze({ value: 'kelpi', label: 'Kelpi web pane' })
@@ -680,7 +705,7 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         sectionID: 'workspaces',
         groupID: 'workspaces-section',
         kind: 'toggle',
-        label: 'Confirm before deleting a workspace with active agents',
+        label: 'Confirm before deleting a workspace or closing a tab with active agents',
         detail: 'Applies to this window and every other client. kelpi workspace delete --force bypasses it regardless.',
         testID: 'confirm-delete-toggle',
         rowTestID: 'confirm-delete-row',
@@ -805,6 +830,48 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         default: true,
         read: (settings) => settings.general.confirmQuitWhenActive,
         encode: BOOLEAN
+    },
+    {
+        id: 'workspaces.newTabOpens',
+        sectionID: 'workspaces',
+        groupID: 'tabs-section',
+        kind: 'select',
+        label: 'A new tab opens',
+        detail: 'For ⌥⌘T and the + button. The menu beside + offers the other kinds. An agent tab starts the agent chosen for new workspaces, or Claude.',
+        testID: 'new-tab-opens',
+        target: { file: 'kelpi', key: 'new-tab-opens' },
+        default: 'terminal',
+        choices: NEW_TAB_OPENS_CHOICES,
+        read: (settings) => settings.general.newTabOpens,
+        encode: (value) => value
+    },
+    {
+        id: 'workspaces.newTabPosition',
+        sectionID: 'workspaces',
+        groupID: 'tabs-section',
+        kind: 'select',
+        label: 'New tabs go',
+        detail: 'Where a new tab appears in the title bar.',
+        testID: 'new-tab-position',
+        target: { file: 'kelpi', key: 'new-tab-position' },
+        default: 'after-current',
+        choices: NEW_TAB_POSITION_CHOICES,
+        read: (settings) => settings.general.newTabPosition,
+        encode: (value) => value
+    },
+    {
+        id: 'workspaces.agentPanePlacement',
+        sectionID: 'workspaces',
+        groupID: 'tabs-section',
+        kind: 'select',
+        label: 'Panes an agent creates go',
+        detail: 'A pane an agent opens with kelpi pane split or kelpi pane create, without --focus. Either way it opens in the background.',
+        testID: 'agent-pane-placement',
+        target: { file: 'kelpi', key: 'agent-pane-placement' },
+        default: 'own-tab',
+        choices: AGENT_PANE_PLACEMENT_CHOICES,
+        read: (settings) => settings.general.agentPanePlacement,
+        encode: (value) => value
     },
     {
         id: 'workspaces.focusFollowsMouse',

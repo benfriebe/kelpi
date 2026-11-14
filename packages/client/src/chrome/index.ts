@@ -380,6 +380,7 @@ export {
     modifiersFromEvent,
     shortcutForAction,
     triggerFromEvent,
+    tabNumberHandlers,
     workspaceSwitchHandlers,
     workspaceSwitchIndex,
     type KeyActionContext,

@@ -20,6 +20,7 @@
 
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseKeybindValue, resolveKeyBindings } from '@kelpi/core/config';
 
 import {
     DEFAULT_KEYBINDINGS,
@@ -259,7 +260,12 @@ describe('the injected script', () => {
     });
 
     it('leaves a German ⌘ on a key the map does not claim by character alone', async () => {
-        toFrame({ kind: 'chords', chords: chordKeysForBindings(DEFAULT_KEYBINDINGS) });
+        // Since workspace tabs (workspace-feature.md §12) `alt+super+]` ships bound to next_tab,
+        // and ⌥ chords match the PHYSICAL key, so the German `+` key IS claimed by default. The
+        // property under test is the character rule, so the chord is unbound here.
+        const override = parseKeybindValue('alt+super+]=unbind');
+        if (override === null) throw new Error('unparseable override');
+        toFrame({ kind: 'chords', chords: chordKeysForBindings(resolveKeyBindings([override])) });
         await settle();
         // ⌘⌥ on the `+` key: ⌥ chooses the character layer, so it is `alt+super+]`, unbound.
         const event = press({ code: 'BracketRight', key: '+', metaKey: true, altKey: true });

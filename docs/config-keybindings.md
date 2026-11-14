@@ -126,6 +126,9 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | `new-workspace-agent` | `none` (default), `claude` or `codex` (lowercased); any other value keeps the prior one. The agent the New Workspace sheet preselects. Client-side: a create starts an agent only when its request names one, so `kelpi workspace create` starts nothing without `--agent`, and the phone shell's New workspace sheet (which has no agent row) ignores it |
 | `new-workspace-send-prompt` | default false; only the literal `true` enables. Whether the sheet's "Send immediately" starts checked: the prompt goes on the launch line and is submitted at once, rather than being pasted into the agent's input for the user to edit and submit |
 | `new-workspace-placement`, `new-group-placement` | `end-of-list` (default) or `near-selection` (lowercased); anything else ignored |
+| `new-tab-opens` | `terminal` (default), `same` or `agent` (lowercased); any other value keeps the prior one. What a new workspace tab opens when the gesture names no kind: ⌥⌘T (`new_tab`), the tab bar's + (shell-ui.md §3.3), File ▸ New Tab and New Tab to the Right. `terminal` is a shell in the workspace's folder (its first repository association's checkout, else the focused pane's directory); `same` is the focused pane's kind (a web pane or a scratchpad as such, anything else a terminal, in the focused shell's directory); `agent` is a terminal in the workspace's folder that starts the agent `new-workspace-agent` names (Claude when it is `none`). Read by the DAEMON when it opens the tab (`workspace-tab-new`, socket-handlers.md §4.17). Settings ▸ Workspaces ▸ Tabs writes it |
+| `new-tab-position` | `after-current` (default) or `end` (lowercased); any other value keeps the prior one. Where a new tab goes when the gesture names no place: just after the tab on screen, or at the end of the bar. Under `agent-pane-placement = new-tab` it places an agent's new tab too: just after the agent's own tab, or at the end. Daemon-side. Settings ▸ Workspaces ▸ Tabs writes it |
+| `agent-pane-placement` | `own-tab` (default) or `new-tab` (lowercased); any other value keeps the prior one. Where a BACKGROUND `pane-split` / `pane-create` (an agent's `kelpi pane split` or `kelpi pane create` without `--focus`) puts its pane: beside its source in the source's own tab, or as the first pane of a new background tab, unvisited (socket-handlers.md §4.1). A focusing create, and the first pane of an empty workspace, ignore it. Daemon-side. Settings ▸ Workspaces ▸ Tabs writes it |
 | chrome and status-bar family | `chrome-appearance`, `chrome-colors`, `sidebar-color-intensity`, `sidebar-avatar-fill`, `sidebar-avatar-stroke`, `sidebar-group-fill`, `sidebar-group-stroke`, `show-system-stats`, `system-stats`, `show-system-stat-graphs`, `sparkline-style`, `sparkline-color`, `sparkline-width`, `search-match-color`, `search-match-text-color`, `search-match-current-color`, `search-match-current-text-color` (parse rules and defaults in `packages/core/src/config/chrome.ts`; shell-ui.md §2, §8.1) |
 
 Example file:
@@ -358,7 +361,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 66 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 80 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -440,6 +443,11 @@ the held Shift choosing the character. The brackets are positional because `[` /
 beside each other (focus previous / next pane) rather than a character. The letters and digits
 are positional because the AZERTY digit row types `&` `é` `"` and must still switch workspaces.
 
+Every ⌥ chord is therefore a physical-key chord, which is what keeps the workspace tab chords of
+section 4 (`alt+super+[` / `alt+super+]`, `alt+super+1`…`9`) on the same keys on every layout:
+on German, ⌥⌘ on the `+` key (`BracketRight`) is `next_tab` and ⌥⌘ on the `ü` key
+(`BracketLeft`) is `previous_tab`.
+
 | layout | key pressed | before #245 | now |
 |---|---|---|---|
 | German | ⌘ on the `+` key (`BracketRight`) | ⌘] focus next pane | ⌘+ increase text size |
@@ -459,7 +467,7 @@ web-page relay, which forwards the TRANSLATED key so the client's code-only repl
 Known limits:
 
 - On German, the `]` position now types text size, so `focus_next_pane` is reachable there
-  through ⌥⌘→ (German `]` is ⌥6, and ⌥⌘6 is `alt+super+6`).
+  through ⌥⌘→ (German `]` is ⌥6, and ⌥⌘6 is `alt+super+6`, which is `go_to_tab_6`).
 - On Dvorak (not "Dvorak - QWERTY ⌘"), the physical `[` and `]` keys type `/` and `=`, so ⌘ on
   them is Help and increase, and the pane-focus brackets are reachable through ⌥⌘← / ⌥⌘→.
 - A physical key whose character translates elsewhere cannot be bound by its position any more,
@@ -611,13 +619,13 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-66 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+80 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
 
 Legend:
-- **Layer**: `menu` = one of the 20 `MENU_BAR_ACTIONS` (section 7.1: carried by the shell's
+- **Layer**: `menu` = one of the 25 `MENU_BAR_ACTIONS` (section 7.1: carried by the shell's
   native menu, and the only actions the client dispatcher fires while a chrome text field has
   focus), `monitor` = dispatched only by the client's keydown interceptor (section 7.2).
 - **Condition** — extra runtime condition in the monitor before the action fires; when the
@@ -667,6 +675,22 @@ Legend:
 | `rename_workspace` | Rename Workspace | ⌘⇧R | monitor (begins inline rename of active workspace) |
 | `new_group` | New Group | ⌘⇧G | menu (creates group with unique placeholder name "New Group"/"New Group 2"/… and enters inline rename) |
 | `switch_to_workspace_1`…`switch_to_workspace_9` | Switch to Workspace N | ⌘1…⌘9 | menu (switches by sidebar index 0–8) |
+
+### Category "Tabs" (visible)
+
+The active workspace's own tabs (workspace-feature.md §12, shell-ui.md §3.3), not a web pane's,
+which are the `web_tab_*` actions and section 7.3's ⌘T / ⌘⇧[ / ⌘⇧]. All of them are on ⌥⌘
+because those chords, and ⌘1…⌘9, were taken; a web page hands them to the window like its
+other claimed chords.
+
+| raw value | display name | default | layer | condition / effect |
+|---|---|---|---|---|
+| `new_tab` | New Tab | ⌥⌘T | menu | opens a tab of the `new-tab-opens` kind where `new-tab-position` puts it (section 1.2), and shows it |
+| `close_tab` | Close Tab | ⌥⌘W | menu | closes the tab on screen and every pane in it (each one reopenable with ⌘⇧T); falls through when it is the workspace's only tab |
+| `next_tab` | Next Tab | ⌥⌘] | menu | shows the next tab, wrapping; falls through when there is one tab |
+| `previous_tab` | Previous Tab | ⌥⌘[ | menu | the previous tab, wrapping; same condition |
+| `move_pane_to_new_tab` | Move Pane to New Tab | ⇧⌥⌘T | menu | takes the focused pane out into a new tab just after its own, and shows it; falls through when the pane is alone in the tab on screen |
+| `go_to_tab_1`…`go_to_tab_9` | Go to Tab N | ⌥⌘1…⌥⌘9 | monitor | shows the Nth tab in bar order; falls through when there is no Nth tab |
 
 ### Category "View" (visible)
 
@@ -769,7 +793,7 @@ Ghostty and iTerm users see.
 ### Category "Web Pane (active when web pane focused)" (HIDDEN from Settings)
 
 These 11 ship unbound and are NOT rendered in the Settings keybindings table (the table
-renders only the six categories above). They exist so a user can bind them in the config
+renders only the nine categories above). They exist so a user can bind them in the config
 file if they want, but the primary delivery mechanism for web-pane shortcuts is the
 hard-coded priority layer (section 7.3). Each is dispatched by the monitor ONLY when the
 focused pane is a web pane; otherwise the trigger falls through to whatever else it means.
@@ -796,9 +820,12 @@ Raw value `unbind`. Not bindable, not listed. Only meaningful as the ACTION side
 ### Menu-bar action set
 
 `MENU_BAR_ACTIONS` (`packages/core/src/config/actions.ts`) is exactly: `new_workspace`,
+`new_tab`, `close_tab`, `next_tab`, `previous_tab`, `move_pane_to_new_tab`,
 `open_file`, `open_web_pane`, `new_group`, `switch_to_workspace_1..9`, `toggle_sidebar`,
 `toggle_inspector`, `command_palette`, `toggle_zen_mode`, `toggle_toolbar`,
-`toggle_status_bar`, `toggle_bottom_panel` (20 actions). The shell's native menu carries their
+`toggle_status_bar`, `toggle_bottom_panel` (25 actions). The five tab actions are File ▸ New
+Tab, Move Pane to New Tab and Close Tab, and View ▸ Show Next Tab and Show Previous Tab
+(section 7.1); `go_to_tab_1..9` stay off the menu. The shell's native menu carries their
 chords; the client dispatcher fires them too (there is no separate OS layer in the client),
 and they are the only actions that fire while a chrome text field has focus (section 7).
 
@@ -826,7 +853,7 @@ One trigger maps to at most one action. One action may own any number of trigger
 (defaults give `focus_next_pane`/`focus_previous_pane` two each, and
 `increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (50 triggers)
+### 5.2 The default map (64 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -834,6 +861,10 @@ modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
 ```
 super+n=new_workspace                super+o=open_file
 shift+super+o=open_web_pane          super+1..super+9=switch_to_workspace_1..9
+alt+super+t=new_tab                  alt+super+w=close_tab
+alt+super+]=next_tab                 alt+super+[=previous_tab
+alt+shift+super+t=move_pane_to_new_tab
+alt+super+1..alt+super+9=go_to_tab_1..9
 shift+super+s=toggle_sidebar         super+i=toggle_inspector
 super+d=split_right                  shift+super+d=split_down
 super+w=close_pane
@@ -855,6 +886,10 @@ super+c=copy                         super+v=paste
 super+backspace=kill_line_backward   super+k=clear_screen
 super+left=move_to_line_start        super+right=move_to_line_end
 ```
+
+The ⌥⌘ lines are physical-key chords (section 3.1: with ⌥ held the typed character never
+decides), so ⌥⌘[ and ⌥⌘] are the two bracket keys on every layout; on a German layout ⌥⌘ on
+the `+` key is `next_tab`.
 
 ### 5.3 Writing keybinding overrides (`writeKeybindings(map)`)
 
@@ -962,7 +997,7 @@ Every keystroke in the main window can be seen by two surfaces; the division of 
 
 - **Layer 1, menu bar**: the Electron shell's native menu items
   (`packages/shell/src/menu.ts`), whose keyboard shortcuts are DERIVED from the binding map.
-  Carries the 16 `MENU_BAR_ACTIONS`. A native accelerator outranks the page, so a real key
+  Carries the 25 `MENU_BAR_ACTIONS`. A native accelerator outranks the page, so a real key
   press on one of these chords reaches the shell first; each row relays to the client
   (`menu-request` → daemon → `menu-command`), which answers through the same `act.*` entry
   point the keybinding and the on-screen button use. A browser tab has no such layer.
@@ -989,10 +1024,11 @@ actions too, section 7.2):
   before issue #324),
   New Web Pane, Command Palette, divider, Switch to Workspace 1–9, divider,
   Select All Workspaces (no binding), Deselect All Workspaces (disabled when no
-  multi-selection).
+  multi-selection), divider, New Tab (⌥⌘T), Move Pane to New Tab (⇧⌥⌘T), divider, Close Tab
+  (⌥⌘W), just above File ▸ Close.
 - **View group**: Toggle Sidebar, Toggle Inspector, Toggle Toolbar, Toggle Status Bar,
-  Toggle Bottom Panel, divider, Toggle Zen Mode (⌃⌘Return), Reset Window Arrangement (no
-  binding; section 7.7).
+  Toggle Bottom Panel, divider, Show Next Tab (⌥⌘]), Show Previous Tab (⌥⌘[), divider,
+  Toggle Zen Mode (⌃⌘Return), Reset Window Arrangement (no binding; section 7.7).
 - **Help**: "Kelpi Help" hard-bound ⌘? (not part of the binding map); opens the client's
   Help overlay through the daemon.
 - App menu: "Check for Updates…" (unbound; #286: the row's label names an update in progress,
@@ -1909,10 +1945,15 @@ registries instead); nothing persists to a per-app preferences store.
    centre of the panel below the heading (the caption and the footer note settle at the
    foot of the tab). Deep-linkable from a web pane's "Manage favourites…" menu.
 8. **Workspaces** (Kelpi-only; `packages/client/src/settings/WorkspacesTab.tsx`): a
-   *Workspaces* section: "Confirm before deleting a workspace with active agents" (the GUI
+   *Workspaces* section: "Confirm before deleting a workspace or closing a tab with active agents" (the GUI
    delete gate; CLI `--force` bypasses regardless), "Expand group when a workspace is
    dropped into it", "Confirm before quitting with active agents" (the ⌘Q dialog; a
-   browser client has no ⌘Q and the row says so); a *Panes* section: focus-follows-mouse
+   browser client has no ⌘Q and the row says so); a *Tabs* section (workspace-feature.md §12;
+   hint "Every workspace has tabs in the title bar, and you can split inside any of them."):
+   "A new tab opens" (A terminal in the workspace folder / The same kind as the focused pane /
+   An agent; `new-tab-opens`), "New tabs go" (Next to the current tab / At the end;
+   `new-tab-position`) and "Panes an agent creates go" (Into the agent's own tab / Into a new
+   tab each; `agent-pane-placement`); a *Panes* section: focus-follows-mouse
    toggle + 0–500/25 delay slider, shown only while the toggle is on (section 10); the
    "Copy on select" toggle (`copy-on-select`, default on); the "Middle-click paste" toggle
    (`middle-click-paste`, default on); the `clipboard-write` toggle (OSC 52; the row states that clipboard reads are refused
@@ -1934,7 +1975,7 @@ registries instead); nothing persists to a per-app preferences store.
   error string of section 8.3, cleared by any later `ok` report); an amber advisory when
   the hotkey shadows an in-app binding (section 8.5).
 - **Action table** (`packages/client/src/settings/KeybindingsTab.tsx`): sections in fixed
-  order `Pane Management, Navigation, Workspaces, View, Files, Search, Clipboard, Terminal`
+  order `Pane Management, Navigation, Workspaces, Tabs, View, Files, Search, Clipboard, Terminal`
   (the web-pane category and `unbind` are excluded). Each row: display name; ALL bound trigger chips
   (configString-sorted), each with an "x" to remove that one trigger (section 5.4); a
   Record button (the inline recorder of section 13.2); a Reset button enabled only when the
@@ -2030,7 +2071,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 66 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 80 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -2091,9 +2132,9 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 67 enum cases total; 66 bindable (excludes `unbind`);
+14. **Count sanity for tests**: 81 enum cases total; 80 bindable (excludes `unbind`);
     19 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
-    the three single-band toggles, 11 `web_*`); the default map has exactly 50 trigger
-    entries (47 distinct actions bound; focus next/prev and `increase_terminal_font_size`
-    own two triggers each). The Settings table shows 55 actions (66 minus the 11 hidden web
+    the three single-band toggles, 11 `web_*`); the default map has exactly 64 trigger
+    entries (61 distinct actions bound; focus next/prev and `increase_terminal_font_size`
+    own two triggers each). The Settings table shows 69 actions (80 minus the 11 hidden web
     actions).

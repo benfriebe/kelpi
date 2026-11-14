@@ -16,6 +16,8 @@ import {
     makeWorkspaceState,
     nextRandomColor,
     resolveStateOf,
+    tabLayout,
+    tabOfPane,
     workspaceByID,
     type DaemonState
 } from '../../store/index.js';
@@ -43,15 +45,19 @@ export const handlePaneResize: CommandHandler<PaneHandlerContext> = (msg, ctx, r
         return;
     }
     const { paneID, pane, workspace } = resolution;
+    // workspace-feature.md §12.3: the pane's OWN tab, which need not be on screen (the reducer
+    // runs the resize there too). The tab on screen's tuple is the workspace's own fields.
+    const tab = tabOfPane(workspace, paneID);
+    const tuple = tab === null ? { layout: workspace.layout, zoomedPaneID: workspace.zoomedPaneID } : tabLayout(workspace, tab);
 
     // While zoomed the live layout is a single leaf and the real tree is parked, so a resize
     // has no split to map onto.
-    if (workspace.zoomedPaneID !== null) {
+    if (tuple.zoomedPaneID !== null) {
         sendError(reply, 'cannot resize while a pane is zoomed — un-zoom first');
         return;
     }
 
-    const enclosing = enclosingSplitPath(workspace.layout, paneID);
+    const enclosing = enclosingSplitPath(tuple.layout, paneID);
     if (enclosing === null) {
         sendError(
             reply,
@@ -66,13 +72,13 @@ export const handlePaneResize: CommandHandler<PaneHandlerContext> = (msg, ctx, r
     } else if (msg.delta !== undefined) {
         // `--grow`/`--shrink` nudge the pane's CURRENT share (default step 0.05, signed by the
         // CLI); an unreadable ratio falls back to an even split.
-        desiredShare = (currentPaneShare(workspace.layout, paneID) ?? 0.5) + msg.delta;
+        desiredShare = (currentPaneShare(tuple.layout, paneID) ?? 0.5) + msg.delta;
     } else {
         sendError(reply, 'pane resize requires --ratio or --grow/--shrink');
         return;
     }
 
-    const result = resizePaneShare(workspace.layout, paneID, desiredShare);
+    const result = resizePaneShare(tuple.layout, paneID, desiredShare);
     /* c8 ignore next 4 -- unreachable: the enclosing-split guard above already ran */
     if (result === null) {
         sendError(

@@ -594,9 +594,20 @@ input {
 [data-titlebar-drag='true'] select,
 [data-titlebar-drag='true'] textarea,
 [data-titlebar-drag='true'] [role='menu'],
-[data-titlebar-drag='true'] [role='menuitem'] {
+[data-titlebar-drag='true'] [role='menuitem'],
+[data-titlebar-drag='true'] [role='tab'] {
   -webkit-app-region: no-drag;
 }
+
+/*
+ * workspace-feature.md §12 / shell-ui.md §3.3: a workspace tab opts out WHOLE, its padding
+ * included (a tab is a `div`, not a button, so the button rule above would only carve out its ×
+ * and leave its edges dragging the window). The tab list itself does not: the gaps between tabs
+ * and the bar's space after + keep dragging, as does the 4px above and below each 24px tab.
+ *
+ * While a pane or a tab is being dragged the bar sets `data-titlebar-drag='false'`, so it is no
+ * drag region at all and the whole bar can take the drop.
+ */
 
 /*
  * UI-FIDELITY H19 — the command palette arrives and leaves.

@@ -29,6 +29,7 @@ import { useEffect, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
 import { wireEdgeForDropZone } from '@kelpi/core/layout';
+import { onScreenPanes } from '../chrome/workspace-tabs';
 
 import { tokens } from '../chrome/tokens';
 import { PaneGrid } from '../grid';
@@ -160,7 +161,8 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             focusFollowsMouse={general.focusFollowsMouse}
             focusFollowsMouseDelayMs={general.focusFollowsMouseDelay}
             layout={workspace.layout}
-            panes={workspace.panes}
+            // workspace-feature.md §12: the remote workspace's tab on screen, as the local grid.
+            panes={onScreenPanes(workspace)}
             focusedPaneID={focusedPaneID}
             zoomedPaneID={workspace.zoomedPaneID ?? null}
             /* Sync input is the remote daemon's own standing state, mirrored like the layout:

@@ -67,8 +67,8 @@ import {
 import { onActivationPress } from '../app/activation-click';
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { focusPaneSurface, mayClaimPaneCaret } from '../app/pane-focus';
-import { registerGestureReset } from '../chrome/gesture-reset';
-import { endTabSpring, setTabDropState, tabDropState, tabDropTargetAt, tabSpring } from '../chrome/tab-drop';
+import { holdEscape, registerGestureReset } from '../chrome/gesture-reset';
+import { setTabDropState, tabDropState, tabDropTargetAt, tabSpring } from '../chrome/tab-drop';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import {
     PaneChromePresenterSlot,
@@ -274,6 +274,8 @@ interface MoveGesture {
     readonly origin: Point;
     readonly releaseCapture: () => void;
     active: boolean;
+    /** Lets go of Escape (`holdEscape`); set once the press becomes a drag. */
+    releaseEscape?: (() => void) | undefined;
 }
 
 /** Keep the gesture attached to its header when the pointer leaves it. */
@@ -669,13 +671,19 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     const endPaneDrag = useCallback((event?: PointerEvent, cancel = false): void => {
         const gesture = moveRef.current;
+        const active = gesture !== null && gesture.active;
         const cancelled = cancel || event?.type === 'pointercancel';
         const target = cancelled ? null : dropTargetRef.current;
-        // §12: a release over the title bar's tabs, read before the shared state is cleared.
-        const tabTarget = cancelled ? null : tabDropState().target;
-        // §12: a tab this drag opened on its way (spring-loading), and whether the release is
-        // over the grid, which is what puts the pane into that tab rather than nowhere.
-        const spring = tabSpring();
+        /*
+         * §12: the title bar's half of the drag, read before it is cleared: a release over its
+         * tabs, and a tab this drag opened on its way (spring-loading). Only a drag of THIS grid
+         * owns them. A press that never became a drag, or a grid with nothing in flight (every
+         * grid hears a gesture reset), must leave another gesture's state alone.
+         */
+        const tabTarget = cancelled || !active ? null : tabDropState().target;
+        const spring = active ? tabSpring() : null;
+        // Whether the release is over the grid, which is what puts the pane into that tab
+        // rather than nowhere.
         const box = containerRef.current?.getBoundingClientRect();
         const overGrid =
             event !== undefined &&
@@ -688,19 +696,20 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         dropTargetRef.current = null;
         detachListeners();
         gesture?.releaseCapture();
+        gesture?.releaseEscape?.();
         setPaneDragArmed(false);
         setDraggingPaneID(null);
         setDropTarget(null);
+        if (gesture === null || !active) return;
+        // Ends the spring with the drag (`tab-drop.ts`); `spring` above is what it was.
         setTabDropState({ dragging: false, target: null });
-        const active = gesture !== null && gesture.active;
         // A drag that opened another tab and ends anywhere but a drop goes back where it started:
         // cancelled, released outside the grid and the bar, or dropped on its own tab's button.
         const lands =
-            active &&
             !cancelled &&
             (tabTarget !== null ? !(tabTarget.kind === 'tab' && tabTarget.tabID === spring?.originTabID) : spring === null || overGrid);
-        endTabSpring(spring !== null && !lands);
-        if (gesture === null || !active || !lands) return;
+        if (spring !== null && !lands) spring.returnHome();
+        if (!lands) return;
         if (tabTarget !== null) {
             latest.current.onMovePaneToTab?.(gesture.paneID, tabTarget);
             return;
@@ -728,6 +737,16 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                 const dy = event.clientY - gesture.origin.y;
                 if (Math.hypot(dx, dy) < PANE_MOVE_DRAG_THRESHOLD) return;
                 gesture.active = true;
+                // Escape cancels a pane in flight, ahead of the window's own Escape binding.
+                gesture.releaseEscape = holdEscape(() => endPaneDrag(undefined, true));
+                /*
+                 * ...which it can only do from this document. A plugin view that took the caret
+                 * (its press focused the pane) would keep every key inside its frame, so the
+                 * keyboard comes back out for the length of the drag.
+                 */
+                const caret = containerRef.current?.ownerDocument.activeElement;
+                if (caret instanceof HTMLIFrameElement && containerRef.current?.contains(caret) === true) caret.blur();
+                latest.current.onPaneDragStart?.(gesture.paneID);
                 setDraggingPaneID(gesture.paneID);
             }
             /*
@@ -738,7 +757,13 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             const tabTarget =
                 latest.current.onMovePaneToTab === undefined ? null : tabDropTargetAt(event.clientX, event.clientY);
             setTabDropState({ dragging: latest.current.onMovePaneToTab !== undefined, target: tabTarget });
-            if (tabTarget !== null) {
+            /*
+             * ...and over the grid of a tab the drag asked the bar to open but the window does
+             * not show yet (a round trip to the daemon), the panes drawn are still the tab the
+             * drag started in: none of them is in the tab a release lands in, so none is a target.
+             */
+            const spring = tabSpring();
+            if (tabTarget !== null || (spring !== null && spring.shown === false)) {
                 dropTargetRef.current = null;
                 setDropTarget(null);
                 return;
@@ -757,13 +782,14 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             dropTargetRef.current = next;
             setDropTarget(next);
         },
-        [toLocal]
+        [toLocal, endPaneDrag]
     );
 
     const startPaneDrag = useCallback(
         (paneID: string, event: ReactPointerEvent<HTMLElement>): void => {
             if (event.button !== 0) return;
             moveRef.current?.releaseCapture();
+            moveRef.current?.releaseEscape?.();
             moveRef.current = {
                 paneID, origin: { x: event.clientX, y: event.clientY }, active: false,
                 releaseCapture: capturePanePointer(event)
@@ -954,7 +980,17 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         () => () => {
             detachRef.current?.();
             detachRef.current = null;
-            moveRef.current?.releaseCapture();
+            /*
+             * A pane in flight when the grid goes (its workspace deleted, a paired daemon's
+             * workspace closed under it) is abandoned, not cancelled: the bar's shared state
+             * ends with it, so the title bar drags the window again and no tab springs, but there
+             * is no tab to go back to in a grid that is gone.
+             */
+            const gesture = moveRef.current;
+            moveRef.current = null;
+            gesture?.releaseCapture();
+            gesture?.releaseEscape?.();
+            if (gesture?.active === true) setTabDropState({ dragging: false, target: null });
             dividerRef.current?.commit.cancel();
             if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current);
             if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current);

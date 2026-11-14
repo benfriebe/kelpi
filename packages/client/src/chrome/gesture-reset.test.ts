@@ -8,7 +8,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    cancelHeldGesture,
     expectOwnFocusHandoff,
+    holdEscape,
     registerGestureReset,
     registeredGestureCount,
     resetGestures,
@@ -156,5 +158,44 @@ describe('gesture reset registry', () => {
         resetGestures('manual');
         // Both ran even though the first removed itself mid-iteration.
         expect(seen).toEqual(['self', 'neighbour']);
+    });
+});
+
+describe('the blur into a child frame', () => {
+    it('ends no gesture when the keyboard went into a frame of this document (a plugin view)', () => {
+        const reset = vi.fn();
+        register(reset);
+        const frame = document.createElement('iframe');
+        document.body.appendChild(frame);
+        try {
+            frame.focus();
+            expect(document.activeElement).toBe(frame);
+            window.dispatchEvent(new Event('blur'));
+            expect(reset).not.toHaveBeenCalled();
+            // The keyboard back in this document: a blur means the window lost it again.
+            frame.blur();
+            window.dispatchEvent(new Event('blur'));
+            expect(reset).toHaveBeenCalledTimes(1);
+        } finally {
+            frame.remove();
+        }
+    });
+});
+
+describe('Escape held by a gesture in flight', () => {
+    it('cancels the latest live gesture, and nothing once they let go', () => {
+        const first = vi.fn();
+        const second = vi.fn();
+        const releaseFirst = holdEscape(first);
+        const releaseSecond = holdEscape(second);
+        expect(cancelHeldGesture()).toBe(true);
+        expect(second).toHaveBeenCalledTimes(1);
+        expect(first).not.toHaveBeenCalled();
+        releaseSecond();
+        releaseSecond();
+        expect(cancelHeldGesture()).toBe(true);
+        expect(first).toHaveBeenCalledTimes(1);
+        releaseFirst();
+        expect(cancelHeldGesture()).toBe(false);
     });
 });

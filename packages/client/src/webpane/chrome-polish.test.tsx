@@ -13,6 +13,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState, type ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { setTabDropState } from '../chrome/tab-drop';
 import type { CommandReply } from '../connection';
 import { WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
@@ -406,6 +407,36 @@ describe('focus handoff (WEB-043)', () => {
         expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([
             { verb: 'focusView', args: [PANE, TAB1] }
         ]);
+    });
+
+    it('waits for the drop while a pane is in flight, so Escape still reaches the drag (§12)', () => {
+        const { commands, sent } = fakeCommands();
+        const pane = (focused: boolean): ReactElement => (
+            <WebPane
+                paneID={PANE}
+                tabs={TABS}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={focused}
+            />
+        );
+        const view = render(pane(false));
+        try {
+            // A drag sprang into this pane's tab: it is focused there, mid-drag.
+            act(() => {
+                setTabDropState({ dragging: true, target: null });
+            });
+            view.rerender(pane(true));
+            expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([]);
+            act(() => {
+                setTabDropState({ dragging: false, target: null });
+            });
+            expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([{ verb: 'focusView', args: [PANE, TAB1] }]);
+        } finally {
+            setTabDropState({ dragging: false, target: null });
+        }
     });
 
     it('never steals the caret out of the URL bar (the NSText exemption)', () => {

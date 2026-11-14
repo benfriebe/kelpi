@@ -22,10 +22,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type PointerEvent as ReactPointerEvent } from 'react';
 
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
-import { registerGestureReset } from './gesture-reset';
+import { holdEscape, registerGestureReset } from './gesture-reset';
 import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon, type ChromeIconName } from './icons';
-import { TAB_SPRING_MS, setTabDragWorkspace, setTabSpring, tabSpring, useTabDrop } from './tab-drop';
+import { TAB_SPRING_MS, markTabSpringShown, setTabDragWorkspace, setTabSpring, tabDropState, tabSpring, useTabDrop } from './tab-drop';
 import { withAlpha } from './theme';
 import { tokens } from './tokens';
 import type { WorkspaceTabKind, WorkspaceTabStatus, WorkspaceTabView } from './workspace-tabs';
@@ -64,7 +64,12 @@ const STATUS_RANK: Readonly<Record<WorkspaceTabStatus, number>> = { idle: 0, run
 
 export interface WorkspaceTabBarProps {
     readonly tabs: readonly WorkspaceTabView[];
-    readonly onSelect: (tabID: string) => void;
+    /**
+     * `force`: ask for the tab even when this window already shows it. A spring's way home is
+     * that: its request for the opened tab may still be on its way, so the window's copy of the
+     * state still shows home while the daemon is about to show the other one.
+     */
+    readonly onSelect: (tabID: string, options?: { readonly force?: boolean }) => void;
     readonly onClose: (tabID: string) => void;
     readonly onRename: (tabID: string, name: string | null) => void;
     /** `toIndex` counts the tabs without the moving one, as the daemon's `move-tab` does. */
@@ -91,6 +96,8 @@ interface TabDrag {
     readonly startY: number;
     readonly element: HTMLElement;
     active: boolean;
+    /** Lets go of Escape (`holdEscape`); set once the press becomes a drag. */
+    releaseEscape?: (() => void) | undefined;
 }
 
 export interface FittedTabs {
@@ -221,6 +228,8 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
         if (springCandidate === null) return undefined;
         const timer = setTimeout(() => {
             setSpringing(null);
+            // No pane in flight any more (its grid went without saying so): nothing to open.
+            if (!tabDropState().dragging) return;
             const current = latest.current;
             const origin = tabSpring()?.originTabID ?? current.tabs.find((tab) => tab.active)?.id;
             if (origin === undefined) return;
@@ -228,7 +237,12 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
             setTabSpring(
                 springCandidate === origin
                     ? null
-                    : { originTabID: origin, tabID: springCandidate, returnHome: () => latest.current.onSelect(origin) }
+                    : {
+                          originTabID: origin,
+                          tabID: springCandidate,
+                          shown: false,
+                          returnHome: () => latest.current.onSelect(origin, { force: true })
+                      }
             );
             current.onSelect(springCandidate);
         }, TAB_SPRING_MS);
@@ -236,6 +250,11 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
             clearTimeout(timer);
         };
     }, [springCandidate]);
+    // The tab a spring asked for is on screen now: the grid may offer its panes as drops.
+    const shownTabID = tabs.find((tab) => tab.active)?.id ?? null;
+    useEffect(() => {
+        if (shownTabID !== null) markTabSpringShown(shownTabID);
+    }, [shownTabID]);
 
     // ⌥⌘ held: every tab shows the number ⌥⌘1-9 would go to.
     useEffect(() => {
@@ -265,6 +284,7 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
         dragRef.current = null;
         detachDrag.current?.();
         detachDrag.current = null;
+        drag?.releaseEscape?.();
         setDragSlot(null);
         setTabDragWorkspace(null);
         if (drag === null || !drag.active) return;
@@ -324,6 +344,8 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                 } catch {
                     // The tab is gone or the pointer is not down: the window listeners still follow it.
                 }
+                // Escape cancels it, ahead of the window's own Escape binding.
+                drag.releaseEscape = holdEscape(() => endDrag(false));
                 latest.current.onDraggingChange?.(true);
             }
             const workspaceID = latest.current.onMoveToWorkspace === undefined ? null : workspaceRowAt(moved.clientX, moved.clientY);

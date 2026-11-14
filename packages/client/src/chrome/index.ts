@@ -54,7 +54,9 @@ export {
     type SidebarResizerProps
 } from './SidebarResizer';
 export {
+    cancelHeldGesture,
     expectOwnFocusHandoff,
+    holdEscape,
     registerGestureReset,
     registeredGestureCount,
     resetGestures,

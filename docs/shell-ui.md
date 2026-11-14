@@ -375,7 +375,12 @@ menu rows, the palette and the tab chords, which pass the window dispatcher even
 chords stand down there. None of them reaches the hidden local workspace. Two differences: a
 tab dragged onto a sidebar row stays put (a row is this daemon's workspace, and a tab cannot
 change machine; Move Tab to Workspace ▸ lists the paired daemon's own workspaces instead), and
-a refused verb shows no toast.
+a refused verb toasts only from the window's own controls: the bar, the tab menu, the native
+menu rows, the palette and the chords report it as a local one does, while a pane dropped from
+the paired daemon's grid (onto a tab, or its header's Move to New Tab) fails quietly, like that
+grid's other commands. A paired daemon always has tabs: its connection is the same handshake as
+this daemon's, and one that predates tabs speaks WS generation 3 and is refused
+(wire-protocol.md, generation 4), so no control here needs to ask.
 
 **Layout:**
 

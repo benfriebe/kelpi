@@ -42,6 +42,9 @@ function sameTarget(a: TabDropTarget | null, b: TabDropTarget | null): boolean {
 export function setTabDropState(next: TabDropState): void {
     if (next.dragging === current.dragging && sameTarget(next.target, current.target)) return;
     current = next.dragging ? next : IDLE;
+    // A spring belongs to the drag that opened it, so it ends with that drag whatever ends it:
+    // a later, unrelated gesture can never land in (or go back from) a tab this one opened.
+    if (!current.dragging) spring = null;
     for (const listener of [...listeners]) listener();
 }
 
@@ -58,6 +61,19 @@ function subscribe(listener: () => void): () => void {
 
 export function useTabDrop(): TabDropState {
     return useSyncExternalStore(subscribe, tabDropState, tabDropState);
+}
+
+function paneInFlight(): boolean {
+    return current.dragging;
+}
+
+/**
+ * True while a pane is being dragged. A view that would take the window's keyboard (a web page,
+ * a plugin frame) waits for the drop instead, so Escape still reaches the drag. A boolean, so a
+ * subscriber re-renders when a drag starts or ends, not at every target it passes.
+ */
+export function usePaneInFlight(): boolean {
+    return useSyncExternalStore(subscribe, paneInFlight, paneInFlight);
 }
 
 /**
@@ -136,16 +152,23 @@ export const TAB_SPRING_MS = 600;
 export interface TabSpring {
     /** The tab the drag started in. */
     readonly originTabID: string;
-    /** The tab the drag opened, on screen now. */
+    /** The tab the drag opened. */
     readonly tabID: string;
+    /**
+     * False from the moment the bar asks for the tab until the window actually shows it (a
+     * round trip to the daemon). Until then the grid still draws the tab the drag started in,
+     * so it offers no drop beside any of those panes. Absent counts as shown.
+     */
+    readonly shown?: boolean | undefined;
     /** Show the tab the drag started in again. */
     readonly returnHome: () => void;
 }
 
 let spring: TabSpring | null = null;
 
+/** Only while a pane is in flight: a spring with no drag running is dropped on the spot. */
 export function setTabSpring(next: TabSpring | null): void {
-    spring = next;
+    spring = next !== null && !current.dragging ? null : next;
 }
 
 export function tabSpring(): TabSpring | null {
@@ -157,4 +180,9 @@ export function endTabSpring(cancelled: boolean): void {
     const ended = spring;
     spring = null;
     if (cancelled && ended !== null) ended.returnHome();
+}
+
+/** The spring's tab is on screen now, so the grid's drop zones are that tab's panes. */
+export function markTabSpringShown(tabID: string): void {
+    if (spring !== null && spring.tabID === tabID && spring.shown === false) spring = { ...spring, shown: true };
 }

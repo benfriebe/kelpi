@@ -86,7 +86,9 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
      * workspace-feature.md §12: a pane dragged onto the title bar's tabs, which are this
      * daemon's while its workspace fills the pane area (`app/remote-tabs.ts`), moves through
      * this daemon's own verbs. The window's toasts are not reachable from here; a refusal shows
-     * as the pane staying where it was, as `movePaneAdjacent` below already does.
+     * as the pane staying where it was, as `movePaneAdjacent` below already does. No capability
+     * check is needed: this connection made the same WS handshake as the window's own, so a
+     * daemon from before tabs (generation 3) was refused before any of this could draw.
      */
     const tabActions = useMemo(
         () =>

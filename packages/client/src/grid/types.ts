@@ -155,6 +155,12 @@ export interface GridLayoutCallbacks {
      */
     readonly onMovePaneToTab?: ((paneID: string, target: TabDropTarget) => void) | undefined;
     /**
+     * A pane press crossed the drag threshold. The window takes its keyboard back from a web
+     * page here, so Escape reaches the drag (a press on a web pane's header has just given the
+     * page the keyboard).
+     */
+    readonly onPaneDragStart?: ((paneID: string) => void) | undefined;
+    /**
      * The focus-dwell timer expired for a pane whose status is non-idle: the daemon-side
      * `clearPaneStatus` mutation happens upstream (agent-lifecycle.md §5.8).
      */

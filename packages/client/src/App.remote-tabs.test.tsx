@@ -15,7 +15,7 @@ import { App } from './App';
 import type { RemoteDaemonEntry } from './app/remote-daemons';
 import { createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
-import { createFakePtyApi, createFakeRendererFactory } from './terminal/testing';
+import { createFakePhoneWindow, createFakePtyApi, createFakeRendererFactory, type FakePhoneWindow } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
@@ -23,12 +23,23 @@ const REMOTE_WS = 'AAAAAAAA-0000-4000-8000-000000000099';
 const REMOTE_P1 = 'DDDDDDDD-0000-4000-8000-000000000091';
 const REMOTE_P2 = 'DDDDDDDD-0000-4000-8000-000000000092';
 const REMOTE_T2 = 'FFFFFFFF-0000-4000-8000-000000000092';
+const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
+const LOCAL_T2 = 'FFFFFFFF-0000-4000-8000-000000000002';
 const NOW = 1_755_500_000_000;
 const PAIRING_URL = 'https://studio.tail.ts.net/?token=kd_secret';
 
-function localState(): JsonObject {
+function localState(twoTabs = false): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: NOW });
+    if (twoTabs) {
+        store.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: LOCAL_T2,
+            focus: false,
+            create: { type: 'create-pane', workspaceID: W1, paneID: PANE_B, now: NOW, workingDirectory: '/Users/test/api' }
+        });
+    }
     return store.getState() as unknown as JsonObject;
 }
 
@@ -86,7 +97,10 @@ interface Harness {
     readonly remoteCommands: () => JsonObject[];
 }
 
-function setup(keybindLines: readonly string[] = []): Harness {
+function setup(
+    keybindLines: readonly string[] = [],
+    options: { readonly formFactorWindow?: FakePhoneWindow; readonly localTwoTabs?: boolean } = {}
+): Harness {
     const sockets = createFakeSocketFactory();
     const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
@@ -103,7 +117,14 @@ function setup(keybindLines: readonly string[] = []): Harness {
         remote = fakeRemoteRuntime(entry.url);
         return remote.runtime;
     };
-    render(<App runtime={runtime} createRenderer={createFakeRendererFactory().factory} remoteRuntimeFactory={factory} />);
+    render(
+        <App
+            runtime={runtime}
+            createRenderer={createFakeRendererFactory().factory}
+            remoteRuntimeFactory={factory}
+            {...(options.formFactorWindow === undefined ? {} : { formFactorWindow: options.formFactorWindow })}
+        />
+    );
     act(() => {
         const socket = sockets.last();
         socket.open();
@@ -119,7 +140,7 @@ function setup(keybindLines: readonly string[] = []): Harness {
                 appearance: { backgroundColor: '#0a0a0c', backgroundOpacity: 1, fontFamily: null, fontSize: null, isDark: true, theme: null }
             }
         });
-        socket.emit({ type: 'snapshot', seq: 0, state: localState() });
+        socket.emit({ type: 'snapshot', seq: 0, state: localState(options.localTwoTabs === true) });
     });
     return {
         socket: () => sockets.last(),
@@ -213,5 +234,41 @@ describe('a paired daemon\'s workspace in the title bar (§12, §1.7)', () => {
             expect(h.remoteCommands()).toContainEqual(expect.objectContaining({ command: 'workspace-tab-new', workspace_id: REMOTE_WS }))
         );
         expect(tabCommands(h.localCommands())).toEqual([]);
+    });
+});
+
+describe('the phone layout and a desktop selection left behind (§12)', () => {
+    it('acts on this window\'s own workspace, not on the paired one the desktop layout had selected', async () => {
+        // An iPad with a mouse: the desktop layout, where a paired daemon's workspace is chosen.
+        const phone = createFakePhoneWindow({ coarse: false });
+        const h = setup(['ctrl+alt+2=go_to_tab_2'], { formFactorWindow: phone, localTwoTabs: true });
+        await selectRemoteWorkspace();
+        await waitFor(() => expect(tabIDs()).toEqual([REMOTE_WS, REMOTE_T2]));
+        // The mouse goes: the phone layout, which answers to its own host, not the desktop's
+        // selection (still set: nothing on the phone has picked a workspace yet).
+        act(() => {
+            phone.setPointer(true);
+        });
+        await screen.findByTestId('phone-shell');
+        act(() => {
+            fireEvent.keyDown(window, { code: 'Digit2', key: '2', ctrlKey: true, altKey: true });
+        });
+        await waitFor(() =>
+            expect(h.localCommands()).toContainEqual(expect.objectContaining({ command: 'workspace-tab-select', workspace_id: W1, tab_id: LOCAL_T2 }))
+        );
+        expect(tabCommands(h.remoteCommands())).toEqual([]);
+
+        // ...and its tab chips, once the local workspace is open, go the same way.
+        act(() => {
+            fireEvent.click(screen.getByTestId(`phone-home-workspace-${W1}`));
+        });
+        const chip = await screen.findByTestId(`phone-tab-chip-${LOCAL_T2}`);
+        act(() => {
+            fireEvent.click(chip);
+        });
+        await waitFor(() =>
+            expect(tabCommands(h.localCommands()).filter((command) => command['tab_id'] === LOCAL_T2)).toHaveLength(2)
+        );
+        expect(tabCommands(h.remoteCommands())).toEqual([]);
     });
 });

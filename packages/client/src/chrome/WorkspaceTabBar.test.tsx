@@ -326,9 +326,10 @@ describe('a pane held over a tab (spring-loading)', () => {
         });
         expect(p.onSelect).toHaveBeenCalledWith('workers');
         expect(tabSpring()).toMatchObject({ originTabID: 'main', tabID: 'workers' });
-        // Going back is showing the tab the drag started in.
+        // Going back is showing the tab the drag started in, asked for even though the window
+        // may not show the opened tab yet (its request can still be on the way).
         tabSpring()?.returnHome();
-        expect(p.onSelect).toHaveBeenLastCalledWith('main');
+        expect(p.onSelect).toHaveBeenLastCalledWith('main', { force: true });
     });
 
     it('starts over when the pointer leaves the tab before the hold is up', () => {

@@ -85,4 +85,26 @@ describe('a pane dropped onto a tab', () => {
         expect(sent[1]).toMatchObject({ command: 'pane-move-to-tab', pane_id: P0, tab_id: T1, target_pane_id: P1, zone: 'left-of' });
         expect(sent[2]).toMatchObject({ command: 'pane-move-to-new-tab', pane_id: P0, index: 2 });
     });
+    it('never names a pane beside which is not in that tab (a grid that still drew another tab)', () => {
+        const h = host();
+        createWorkspaceTabActions(h).movePaneOntoTab(P0, { kind: 'tab', tabID: T1, beside: { paneID: P2, zone: 'right' } });
+        const sent = h.raw.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(sent).toMatchObject({ command: 'pane-move-to-tab', pane_id: P0, tab_id: T1 });
+        expect(sent['target_pane_id']).toBeUndefined();
+        expect(sent['zone']).toBeUndefined();
+    });
+});
+
+describe('selecting a tab', () => {
+    it('asks nothing for the tab on screen, unless forced (a spring going home)', () => {
+        const h = host();
+        const actions = createWorkspaceTabActions(h);
+        // T2 is on screen (the last tab created).
+        expect(actions.selectTab(T2)).toBe(true);
+        expect(h.raw).not.toHaveBeenCalled();
+        actions.selectTab(T2, true);
+        expect(h.raw.mock.calls.map(([payload]) => payload)).toEqual([
+            expect.objectContaining({ command: 'workspace-tab-select', workspace_id: W, tab_id: T2 })
+        ]);
+    });
 });

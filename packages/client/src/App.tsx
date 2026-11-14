@@ -153,6 +153,7 @@ import {
     menuAnchorFromEvent,
     readStoredSidebarWidth,
     resetGestures,
+    cancelHeldGesture,
     storeSidebarWidth,
     actionForTrigger,
     CLIENT_MAC_LIKE,
@@ -1096,6 +1097,9 @@ function Shell(props: AppProps): ReactElement {
      */
     const formFactor = useFormFactor(props.formFactorWindow ?? defaultFormFactorWindow());
     const phoneActive = formFactor === 'phone';
+    /** Read by the tab actions and the key gate, which are built once. */
+    const phoneActiveRef = useRef(phoneActive);
+    phoneActiveRef.current = phoneActive;
     const phoneView = usePhoneView({
         enabled: phoneActive,
         focusedPaneID,
@@ -1884,12 +1888,20 @@ function Shell(props: AppProps): ReactElement {
         };
 
         const workspacesActions = createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle });
-        const tabTarget = (): TabTarget =>
-            tabTargetFor(remoteSelectionRef.current, activeRemoteRef.current, () => ({
-                commands,
-                workspace: activeWorkspace(),
-                focusedPaneID: focused()
-            }));
+        const localTabTarget = (): TabTarget => ({ commands, workspace: activeWorkspace(), focusedPaneID: focused() });
+        /*
+         * The phone layout ignores the DESKTOP remote selection: one left over from the desktop
+         * layout (an iPad that lost its mouse) must not take the local tab chips, palette and
+         * chords to the paired daemon. The phone drives a paired host's tabs through its own host
+         * path (`PhoneShell`), so while it shows one these act on nothing rather than on the
+         * local workspace hidden behind it.
+         */
+        const tabTarget = (): TabTarget => {
+            if (phoneActiveRef.current) {
+                return phoneRemoteSelectedRef.current ? { commands, workspace: null, focusedPaneID: null } : localTabTarget();
+            }
+            return tabTargetFor(remoteSelectionRef.current, activeRemoteRef.current, localTabTarget);
+        };
         return {
             ...createInspectorActions({ commands, activeWorkspace, focusedPaneID: focused, run, refresh: inspectorData.refresh }),
             ...createToolbarActions({ commands, activeWorkspaceID, focusedPaneID: focused, run, setInspectorVisible }),
@@ -3679,16 +3691,21 @@ function Shell(props: AppProps): ReactElement {
             // down — a ⌘D here must not split the hidden local workspace. The remote grid's
             // header buttons carry those gestures; chords fall through to the terminal.
             hasActiveWorkspace: () =>
-                remoteSelectionRef.current === null && selectActiveWorkspace(store.getState()) !== null,
+                // The phone layout answers to its own host, not to the desktop's selection.
+                (phoneActiveRef.current ? !phoneRemoteSelectedRef.current : remoteSelectionRef.current === null) &&
+                selectActiveWorkspace(store.getState()) !== null,
             // ...except the tab chords: the title bar draws that workspace's tabs, and they act
             // on it over its own daemon's connection (workspace-feature.md §12).
             hasTabWorkspace: () => {
+                if (phoneActiveRef.current) return false;
                 const selection = remoteSelectionRef.current;
                 return selection !== null && remoteWorkspaceOf(activeRemoteRef.current, selection.workspaceID) !== null;
             },
             // §7.2 step 2 (SET-186 / APP-109). Returning false leaves Escape to the normal
             // lookup, which is `close_search` by default.
-            onEscape: () => sidebarEscapeRef.current?.() ?? false,
+            // A pane or tab in flight takes Escape first, so the one key cancels the drag and runs
+            // nothing else (`chrome/gesture-reset.ts` ▸ `holdEscape`).
+            onEscape: () => cancelHeldGesture() || (sidebarEscapeRef.current?.() ?? false),
             /*
              * SET-187 — never dispatch an in-app binding that shadows the system-wide hotkey.
              *
@@ -4945,8 +4962,8 @@ function Shell(props: AppProps): ReactElement {
             ? undefined
             : {
                   tabs: tabViews,
-                  onSelect: (tabID) => {
-                      act.selectTab(tabID);
+                  onSelect: (tabID, options) => {
+                      act.selectTab(tabID, options?.force === true);
                   },
                   onClose: (tabID) => {
                       act.closeTab(tabID);
@@ -5435,6 +5452,13 @@ function Shell(props: AppProps): ReactElement {
                         // a tab the drag opened on its way (beside the pane under the release).
                         onMovePaneToTab={(paneID, target) => {
                             act.movePaneOntoTab(paneID, target);
+                        }}
+                        // ...and Escape cancels such a drag: a web page that holds the window's
+                        // keyboard (the press on its header gave it) hands it back for the drag.
+                        onPaneDragStart={() => {
+                            const state = store.getState();
+                            const focusedID = selectFocusedPaneID(state);
+                            if (focusedID !== null && selectPane(state, focusedID)?.type === 'web') void webCommands.blurView(focusedID);
                         }}
                         onCreatePane={act.createPane}
                         onSetRatio={(splitPath, ratio, commit) => {

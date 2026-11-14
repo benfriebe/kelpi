@@ -5,7 +5,7 @@
  * optimistic.
  */
 
-import { activeTabIDOf, onScreenPaneIDs, workspaceTabs, type WorkspaceState } from '@kelpi/daemon/store';
+import { activeTabIDOf, onScreenPaneIDs, tabByID, tabPaneIDs, workspaceTabs, type WorkspaceState } from '@kelpi/daemon/store';
 import { wireEdgeForDropZone, type WireMoveEdge } from '@kelpi/core/layout';
 import type { TabDropTarget } from '../chrome/tab-drop';
 import { wirePayload, type CommandClient, type CommandReply } from '../connection/commands';
@@ -27,7 +27,8 @@ export interface WorkspaceTabActionHost {
 export interface WorkspaceTabActions {
     /** No kind = Settings ▸ Workspaces "A new tab opens" (the daemon decides). */
     newTab(kind?: NewTabKind, index?: number): boolean;
-    selectTab(tabID: string): boolean;
+    /** `force`: ask even when the window already shows that tab (a spring going home). */
+    selectTab(tabID: string, force?: boolean): boolean;
     /** ⌥⌘] / ⌥⌘[: the next or previous tab, wrapping. */
     selectTabStep(delta: 1 | -1): boolean;
     /** ⌥⌘1-9: the Nth tab (1-based); false when there is no such tab. */
@@ -67,10 +68,10 @@ export function createWorkspaceTabActions(host: WorkspaceTabActionHost): Workspa
     const gateClose = (workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean): boolean =>
         host.confirmClose === undefined || tabIDs.length === 0 ? close() : host.confirmClose(workspace, tabIDs, close);
 
-    const select = (workspace: WorkspaceState, tabID: string | null): boolean => {
+    const select = (workspace: WorkspaceState, tabID: string | null, force = false): boolean => {
         if (tabID === null) return false;
         // Selecting the tab already on screen is a no-op, but still the key's (it is handled).
-        if (tabID === activeTabIDOf(workspace)) return true;
+        if (!force && tabID === activeTabIDOf(workspace)) return true;
         return send('Switch tab', 'workspace-tab-select', { workspace_id: workspace.id, tab_id: tabID });
     };
 
@@ -80,8 +81,8 @@ export function createWorkspaceTabActions(host: WorkspaceTabActionHost): Workspa
                 send('New tab', 'workspace-tab-new', { workspace_id: workspace.id, kind, index })
             );
         },
-        selectTab(tabID) {
-            return withWorkspace((workspace) => select(workspace, tabID));
+        selectTab(tabID, force) {
+            return withWorkspace((workspace) => select(workspace, tabID, force === true));
         },
         selectTabStep(delta) {
             return withWorkspace((workspace) => {
@@ -148,7 +149,14 @@ export function createWorkspaceTabActions(host: WorkspaceTabActionHost): Workspa
         },
         movePaneOntoTab(paneID, target) {
             if (target.kind === 'slot') return send('Move to new tab', 'pane-move-to-new-tab', { pane_id: paneID, index: target.index });
-            const beside = target.beside;
+            // Beside a pane only when that pane really is in the tab: a release over a grid that
+            // still drew another tab must not name a pane the daemon would look for in vain.
+            const workspace = host.activeWorkspace();
+            const tab = workspace === null ? null : tabByID(workspace, target.tabID);
+            const beside =
+                target.beside !== undefined && workspace !== null && tab !== null && tabPaneIDs(workspace, tab).includes(target.beside.paneID)
+                    ? target.beside
+                    : undefined;
             return send('Move to tab', 'pane-move-to-tab', {
                 pane_id: paneID,
                 tab_id: target.tabID,

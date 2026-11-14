@@ -2067,13 +2067,36 @@ Restored after every dispatch, on every workspace the dispatch touched (`normali
 | `move-tab-to-workspace` | Moves the tab, its panes (lane records, web sidecars, and the `--here` sources they park, whole chains of them, with theirs) and its tree to the other workspace, appended, shown there unless `focus: false` (which also leaves `lastActiveWorkspaceID`). A workspace's only tab moves too, leaving the empty tab `replacementTabID` names; without one it is a no-op. |
 | `close-tab` | Closes every pane in the tab through `closePaneInWorkspace` (7.7, so each lands in the reopen stack), panes a `--here` close un-parks included. A workspace's only tab never closes. |
 | `close-other-tabs` | `close-tab` on every other tab; the named tab is shown. |
+| `duplicate-tab` | Duplicate Tab: a new tab just after the tab, with its name (an unnamed tab's copy stays unnamed), its un-zoomed tree and split ratios, and a fresh pane of the same kind for every pane in it, the caller minting every id (`paneIDs`, and `webTabIDs` for web panes). The copy's focus is the copy of the tab's focused pane, and it is not zoomed. Shown unless `focus: false` (then background and unseen). Nothing is made unless every pane in the tab has an id that is not taken. |
+
+What a copy of each pane is, in `duplicate-tab`:
+
+- **Shell** (an agent's too): a new shell, started where its source's shell really is
+  (`workingDirectories`, which the handler asks the OS for as a split does; else the stored
+  directory), at its source's terminal font size. No agent is started in it and it has no agent
+  session: the session stays its source's.
+- **Web**: the same page (the source's active web tab) in a browser of its own, one web tab,
+  private when the source is.
+- **Markdown, csv, image and diff**: the same file or diff target (csv keeps its header-row
+  choice, markdown its font size).
+- **Scratchpad**: a copy of its text, and its wrap setting.
+- **Plugin view**: the same view with the same state. A plugin view whose plugin is gone (an
+  unavailable pane) is a terminal in the source's directory.
+
+No copy carries its source's label: labels address panes (`--target`), so two panes must not
+answer to one. Each copy starts with its own status, and the source tab is untouched.
 
 `move-pane-to-workspace` (socket-handlers.md §4.11) carries a pane's parked `--here` sources
 the same way (`movingCargo`), so closing the pane in its new workspace un-parks its source there.
 
 The WS verbs that raise them (socket-handlers.md, `packages/daemon/src/ws/workspace-tabs.ts`)
 mint the ids, end the PTYs of every pane a close removed (as `pane-close` does), and refuse a
-close when a document pane's save fails.
+close when a document pane's save fails. Two of them ask the OS where shells really are before
+they dispatch, so their reply waits on it: `workspace-tab-duplicate` for every shell in the tab,
+and a `workspace-tab-new` of the same kind as a focused shell for that shell (whose new terminal
+opens there, else where OSC 7 last said). Both re-read the workspace once the answer is in, so
+one deleted meanwhile is a refusal rather than a tab in nothing. The shells of a duplicated tab
+are spawned after the one dispatch.
 
 A window asks before it closes tabs with agents in them (`chrome/TabCloseGate.tsx`): when the
 tabs' panes, and the shells parked behind them, hold any agent session (running, waiting or
@@ -2125,10 +2148,6 @@ again" turns that setting off, for workspaces and tabs alike. The WS verbs thems
 
 ### 12.8 Not covered
 
-Duplicate Tab (the design's tab menu row); a remote daemon's tabs on the desktop (its
-workspace fills the pane area with its tab on screen and the title bar keeps the identity);
-spring-loading (holding a dragged pane over a tab to open it); `kelpi tab` CLI verbs. A
-"same kind" terminal tab opens in the focused shell's stored directory (what OSC 7 last
-reported) rather than asking the OS first as a split does (`liveWorkingDirectory`), because the
-tab verbs answer synchronously; with a shell that reports no OSC 7 it can open where the shell
-started.
+A remote daemon's tabs on the desktop (its workspace fills the pane area with its tab on
+screen and the title bar keeps the identity); spring-loading (holding a dragged pane over a
+tab to open it); `kelpi tab` CLI verbs.

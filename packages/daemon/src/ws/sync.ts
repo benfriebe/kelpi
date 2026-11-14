@@ -2957,14 +2957,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
                 return;
             }
-            let reply: JsonObject;
+            let reply: JsonObject | Promise<JsonObject>;
             try {
                 reply = channel.run(command, payload);
             } catch (error) {
                 report(error, `ws-command ${command}`);
                 reply = { ...errorReply('handler failed') };
             }
-            this.send({ type: 'command-reply', id, reply });
+            if (!(reply instanceof Promise)) {
+                this.send({ type: 'command-reply', id, reply });
+                return;
+            }
+            // A new "same kind" tab or a duplicated tab asks the OS where its shells are first.
+            reply.then(
+                (settled) => {
+                    this.send({ type: 'command-reply', id, reply: settled });
+                },
+                (error: unknown) => {
+                    report(error, `ws-command ${command}`);
+                    this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                }
+            );
         }
 
         /**

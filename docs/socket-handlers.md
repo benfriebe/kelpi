@@ -951,7 +951,7 @@ focused pane's own renderer is not on the alternate screen (`client/src/app/clea
 ### 4.17 Workspace tab verbs (WS only)
 
 The window's tab gestures (shell-ui.md §3.3) raise the tab actions of workspace-feature.md
-§12.5 through eleven WS-only `command` frames: no `kelpi` verb sends them, and none is a
+§12.5 through twelve WS-only `command` frames: no `kelpi` verb sends them, and none is a
 control-socket command. They ride the pane lifecycle channel beside `reopen-closed-pane`
 (`packages/daemon/src/ws/panes.ts`; the verbs are `packages/daemon/src/ws/workspace-tabs.ts`)
 because they are more than a dispatch: a new tab mints ids and may need a PTY, a close ends
@@ -971,8 +971,10 @@ leaves the change in the background.
   (config-keybindings.md §1.2). `terminal` and `agent` are a shell in the workspace's folder
   (its first repository association's checkout, else the focused pane's directory), and
   `agent` then starts the agent `new-workspace-agent` names in it (Claude for `none`); `same`
-  is a blank web pane or an empty scratchpad when the focused pane is one, else a terminal in
-  the focused shell's directory; `web` is a blank web pane, `scratchpad` an empty scratchpad.
+  is a blank web pane or an empty scratchpad when the focused pane is one, else a terminal
+  where the focused shell really is (the OS is asked first, as a split asks it, and the reply
+  waits for the answer; with none, the shell's stored directory, which OSC 7 keeps current);
+  `web` is a blank web pane, `scratchpad` an empty scratchpad.
   A shell gets its PTY. Reply `workspace_id`, `tab_id`, `pane_id`, `kind` (as resolved, so never
   `same`). Refusals: `unknown tab kind '<kind>': use terminal, same, agent, web, scratchpad`;
   `this daemon cannot start agents` (an `agent` tab on a daemon composed without the agent
@@ -1007,6 +1009,15 @@ leaves the change in the background.
   too, leaving an empty tab behind. Refusals: `workspace-tab-move-to-workspace requires a known
   to_workspace_id`, `the tab is already in that workspace`, `the tab could not be moved`.
   Reply `workspace_id` (the DESTINATION), `tab_id`.
+- **`workspace-tab-duplicate`** `{workspace_id, tab_id, focus?}`: Duplicate Tab
+  (`duplicate-tab`, workspace-feature.md §12.5): a copy of the tab just after it, with its name,
+  tree and ratios and a fresh pane of the same kind for every pane in it, shown unless
+  `focus: false`. The daemon first asks the OS where each shell in the tab really is, so the
+  reply waits; it then re-reads the tab, mints a pane id for every pane it holds by then (and a
+  web tab id for each web pane), dispatches once and spawns the copies' shells there. A copy
+  never carries its source's label or agent session, and no agent is started. Refusals: the
+  shared ones, and `the tab could not be duplicated`. Reply `workspace_id`, `tab_id` (the NEW
+  tab), `pane_ids` (the copies, in the tab's layout order).
 - **`pane-move-to-new-tab`** `{pane_id, index?, focus?}`: takes the pane out of its tab into a
   new tab at `index`, else just after its tab; a pane alone in its tab moves that tab to
   `index` instead. Refused `pane-move-to-new-tab requires a pane in a tab` (no `pane_id`, or an

@@ -12,7 +12,7 @@
  * the borrowed tab on screen: that is the user, or an agent with `--focus`, going to the pane.
  */
 
-import { allPaneIDs, containsPane, leaf, movingPane, removing, split, splitting } from '@kelpi/core/layout';
+import { allPaneIDs, containsPane, leaf, movingPane, removing, split, splitting, type Pane, type PaneLayout } from '@kelpi/core/layout';
 import { workspaceByID, workspaceContainingPane, workspaceContainingVisiblePane } from '../derived.js';
 import {
     activeTabIDOf,
@@ -33,11 +33,13 @@ import {
     updateTab,
     workspaceTabs
 } from '../tabs.js';
-import type { DaemonState, DomainAction, DropZone, WorkspaceState, WorkspaceTab } from '../types.js';
+import type { DaemonState, DomainAction, DropZone, WebPaneState, WorkspaceState, WorkspaceTab } from '../types.js';
 import {
     clearSearchIfTargets,
+    findVisiblePane,
     focusCreatedPane,
     movingCargo,
+    newPane,
     popFocusFromHistory,
     restoreZoomIfNeeded,
     scrubFocusHistory,
@@ -60,7 +62,8 @@ export type TabAction = Extract<
             | 'merge-tab-into-previous'
             | 'move-tab-to-workspace'
             | 'close-tab'
-            | 'close-other-tabs';
+            | 'close-other-tabs'
+            | 'duplicate-tab';
     }
 >;
 
@@ -345,6 +348,102 @@ function moveTabToWorkspace(
     };
 }
 
+// ---------------------------------------------------------------------------
+// Duplicate Tab
+// ---------------------------------------------------------------------------
+
+/** The same tree with every leaf renamed through `rename` (ratios and directions kept). */
+function renamedLeaves(layout: PaneLayout, rename: ReadonlyMap<string, string>): PaneLayout {
+    switch (layout.kind) {
+        case 'leaf':
+            return leaf(rename.get(layout.paneID) ?? layout.paneID);
+        case 'split':
+            return split(layout.direction, layout.ratio, renamedLeaves(layout.first, rename), renamedLeaves(layout.second, rename));
+        case 'empty':
+            return layout;
+    }
+}
+
+/**
+ * A fresh pane of `source`'s kind: the same directory, file, content, sizes and wrap, but no
+ * label (labels address panes, so a copy must not answer to its source's), no agent session and
+ * a status of its own. A shell starts where its source's shell really is when the caller found
+ * out. A pane that cannot be made again (a plugin view whose plugin is gone) is a terminal in
+ * the source's directory.
+ */
+function copiedPane(source: Pane, id: string, action: Extract<DomainAction, { type: 'duplicate-tab' }>): Pane {
+    if (source.unavailable !== undefined || (source.type === 'plugin' && source.plugin === undefined)) {
+        return newPane({ id, workingDirectory: source.workingDirectory, nowMillis: action.now });
+    }
+    const pane = newPane({
+        id,
+        workingDirectory:
+            source.type === 'shell' ? (action.workingDirectories?.[source.id] ?? source.workingDirectory) : source.workingDirectory,
+        nowMillis: action.now,
+        type: source.type,
+        // A web pane's title is its page's, and the copy opens the same page.
+        title: source.type === 'web' ? source.title : null,
+        filePath: source.filePath,
+        scratchpadContent: source.scratchpadContent,
+        csvHeaderRow: source.csvHeaderRow,
+        terminalFontSize: source.terminalFontSize,
+        scratchpadWrap: source.scratchpadWrap,
+        isEditing: source.type === 'scratchpad'
+    });
+    return {
+        ...pane,
+        ...(source.plugin === undefined ? {} : { plugin: source.plugin }),
+        markdownFontSize: source.markdownFontSize
+    };
+}
+
+/** The copy's browser: its source's page in one web tab, private when the source is. */
+function copiedWebPane(source: WebPaneState | undefined, webTabID: string): WebPaneState {
+    const page = source?.tabs.find((tab) => tab.id === source.activeTabID) ?? source?.tabs[0];
+    return {
+        tabs: [{ id: webTabID, url: page?.url ?? '', title: page?.title ?? '' }],
+        activeTabID: webTabID,
+        isPrivate: source?.isPrivate ?? false
+    };
+}
+
+function duplicateTab(workspace: WorkspaceState, action: Extract<DomainAction, { type: 'duplicate-tab' }>): WorkspaceState {
+    const source = tabByID(workspace, action.tabID);
+    if (source === null || tabByID(workspace, action.newTabID) !== null) return workspace;
+    const tuple = tabLayout(workspace, source);
+    const tree = tuple.savedLayout ?? tuple.layout;
+    const ids = allPaneIDs(tree);
+    if (ids.length === 0) return workspace;
+    const taken = new Set([...workspace.panes, ...workspace.parkedPanes].map((pane) => pane.id));
+    const rename = new Map<string, string>();
+    const copies: Pane[] = [];
+    let webPanes = workspace.webPanes;
+    for (const id of ids) {
+        const copyID = action.paneIDs[id];
+        const pane = findVisiblePane(workspace, id);
+        if (copyID === undefined || taken.has(copyID) || pane === null) return workspace;
+        taken.add(copyID);
+        rename.set(id, copyID);
+        const copy = copiedPane(pane, copyID, action);
+        copies.push(copy);
+        if (copy.type === 'web') {
+            const webTabID = action.webTabIDs[id];
+            if (webTabID === undefined) return workspace;
+            webPanes = { ...webPanes, [copyID]: copiedWebPane(workspace.webPanes[id], webTabID) };
+        }
+    }
+    const focusSource = tuple.focusedPaneID !== null && rename.has(tuple.focusedPaneID) ? tuple.focusedPaneID : (ids[0] as string);
+    const visit = action.focus !== false;
+    const tab = newTab(
+        action.newTabID,
+        source.name,
+        visit,
+        backgroundStash(renamedLeaves(tree, rename), rename.get(focusSource) ?? null)
+    );
+    const next = insertTab({ ...workspace, panes: [...workspace.panes, ...copies], webPanes }, tab, tabIndex(workspace, source.id) + 1);
+    return visit ? showTab(next, tab.id) : next;
+}
+
 function closeTab(workspace: WorkspaceState, tabID: string): WorkspaceState {
     if (workspaceTabs(workspace).length <= 1 || tabByID(workspace, tabID) === null) return workspace;
     return inTab(workspace, tabID, closeEverythingOnScreen);
@@ -392,6 +491,8 @@ export function reduceTabAction(state: DaemonState, action: TabAction, reduceFam
             return updateWorkspace(state, action.workspaceID, (workspace) => closeTab(workspace, action.tabID));
         case 'close-other-tabs':
             return updateWorkspace(state, action.workspaceID, (workspace) => closeOtherTabs(workspace, action.tabID));
+        case 'duplicate-tab':
+            return updateWorkspace(state, action.workspaceID, (workspace) => duplicateTab(workspace, action));
     }
 }
 

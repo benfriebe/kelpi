@@ -117,6 +117,7 @@ const ROUTES = {
     'move-tab-to-workspace': 'tab',
     'close-tab': 'tab',
     'close-other-tabs': 'tab',
+    'duplicate-tab': 'tab',
 
     'cycle-layout': 'layout',
     'select-layout': 'layout',

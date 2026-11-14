@@ -13,7 +13,7 @@ import {
     workspaceTabs
 } from './tabs.js';
 import { harness, HOME, id, NOW, seededState, W1, W2, type Harness } from './testing.js';
-import type { DaemonState, DomainAction, WorkspaceState } from './types.js';
+import type { DaemonState, DomainAction, WorkspaceState, WorkspaceTab } from './types.js';
 import { syncedPaneIDs } from './derived.js';
 
 const P0 = id('dddddddd', 100);
@@ -526,7 +526,157 @@ describe('sync input', () => {
     });
 });
 
+describe('duplicate-tab', () => {
+    const WT1 = id('99999999', 1);
+    const WT2 = id('99999999', 2);
+
+    /** W1's only tab, named "build": shell P0 (labelled, 16 pt) beside web pane P1, at 0.3. */
+    function source(): Harness {
+        const h = harness(seededState());
+        h.dispatch({ type: 'set-pane-label', workspaceID: W1, paneID: P0, label: 'main' });
+        h.dispatch({ type: 'set-terminal-font-size', workspaceID: W1, paneID: P0, size: 16 });
+        h.dispatch({ type: 'open-web-pane', workspaceID: W1, paneID: P1, tabID: WT1, url: 'https://example.com/a', now: NOW, sourcePaneID: P0 });
+        h.dispatch({ type: 'update-split-ratio', workspaceID: W1, splitPath: 'd', ratio: 0.3 });
+        h.dispatch({ type: 'rename-tab', workspaceID: W1, tabID: W1, name: 'build' });
+        return h;
+    }
+
+    function duplicate(extra: Partial<Extract<DomainAction, { type: 'duplicate-tab' }>> = {}): DomainAction {
+        return {
+            type: 'duplicate-tab',
+            workspaceID: W1,
+            tabID: W1,
+            newTabID: T1,
+            paneIDs: { [P0]: P2, [P1]: P3 },
+            webTabIDs: { [P1]: WT2 },
+            now: NOW,
+            ...extra
+        };
+    }
+
+    it('opens a copy just after the tab, with its name, tree, ratios and focus, and shows it', () => {
+        const h = source();
+        const sourceFocus = ws(h).focusedPaneID;
+        h.dispatch(duplicate({ workingDirectories: { [P0]: '/Users/test/live' } }));
+        const workspace = ws(h);
+        expect(workspaceTabs(workspace).map((tab) => [tab.id, tab.name])).toEqual([
+            [W1, 'build'],
+            [T1, 'build']
+        ]);
+        expect(workspace.activeTabID).toBe(T1);
+        expect(workspace.layout).toMatchObject({ kind: 'split', ratio: 0.3 });
+        expect(allPaneIDs(workspace.layout)).toEqual([P2, P3]);
+        expect(workspace.focusedPaneID).toBe(sourceFocus === P0 ? P2 : P3);
+        // The source tab keeps its own panes, untouched.
+        expect(tabPaneIDs(workspace, workspaceTabs(workspace)[0] as WorkspaceTab)).toEqual([P0, P1]);
+    });
+
+    it('makes each copy fresh: a shell where its source really is, at its size, with no label or agent', () => {
+        const h = source();
+        h.dispatch(duplicate({ workingDirectories: { [P0]: '/Users/test/live' } }));
+        const copy = ws(h).panes.find((pane) => pane.id === P2) as Pane;
+        expect(copy).toMatchObject({ type: 'shell', workingDirectory: '/Users/test/live', terminalFontSize: 16, label: null, agentSessionID: null });
+        expect(ws(h).panes.find((pane) => pane.id === P0)?.label).toBe('main');
+    });
+
+    it('opens a web pane\'s copy on the same page in a browser of its own', () => {
+        const h = source();
+        h.dispatch(duplicate());
+        expect(ws(h).panes.find((pane) => pane.id === P3)?.type).toBe('web');
+        expect(ws(h).webPanes[P3]).toEqual({
+            tabs: [{ id: WT2, url: ws(h).webPanes[P1]?.tabs[0]?.url, title: '' }],
+            activeTabID: WT2,
+            isPrivate: false
+        });
+    });
+
+    it('copies a scratchpad\'s text and wrap, and a document\'s file', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'create-scratchpad', workspaceID: W1, paneID: P1, now: NOW });
+        h.dispatch({ type: 'scratchpad-content-changed', workspaceID: W1, paneID: P1, content: 'notes' });
+        h.dispatch({ type: 'set-scratchpad-wrap', workspaceID: W1, paneID: P1, on: true });
+        h.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: P2, filePath: '/Users/test/README.md', now: NOW, sourcePaneID: P1 });
+        h.dispatch(duplicate({ paneIDs: { [P0]: P3, [P1]: id('eeeeeeee', 4), [P2]: id('eeeeeeee', 5) }, webTabIDs: {} }));
+        const panes = ws(h).panes;
+        expect(panes.find((pane) => pane.id === id('eeeeeeee', 4))).toMatchObject({ type: 'scratchpad', scratchpadContent: 'notes', scratchpadWrap: true });
+        expect(panes.find((pane) => pane.id === id('eeeeeeee', 5))).toMatchObject({ type: 'markdown', filePath: '/Users/test/README.md' });
+    });
+
+    it('copies the un-zoomed tree of a zoomed tab, and the copy is not zoomed', () => {
+        const h = source();
+        h.dispatch({ type: 'toggle-zoom', workspaceID: W1 });
+        expect(ws(h).zoomedPaneID).not.toBeNull();
+        h.dispatch(duplicate());
+        expect(allPaneIDs(ws(h).layout)).toEqual([P2, P3]);
+        expect(ws(h).zoomedPaneID).toBeNull();
+    });
+
+    it('opens the copy in the background, unvisited, with focus: false', () => {
+        const h = source();
+        h.dispatch(duplicate({ focus: false }));
+        const workspace = ws(h);
+        expect(workspace.activeTabID).toBe(W1);
+        expect(onScreenPaneIDs(workspace)).toEqual([P0, P1]);
+        const copy = workspace.tabs.find((tab) => tab.id === T1);
+        expect(copy?.seen).toBe(false);
+        expect(allPaneIDs(copy?.stash?.layout ?? { kind: 'empty' })).toEqual([P2, P3]);
+    });
+
+    it('makes a terminal of a pane it cannot make again', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'set-pane-label', workspaceID: W1, paneID: P0, label: null });
+        const state = h.state();
+        const gone: DaemonState = {
+            ...state,
+            workspaces: state.workspaces.map((workspace) => ({
+                ...workspace,
+                panes: workspace.panes.map((pane) => ({ ...pane, type: 'plugin' as const, unavailable: { type: 'plugin', pluginJSON: null } }))
+            }))
+        };
+        const g = harness(gone);
+        g.dispatch(duplicate({ paneIDs: { [P0]: P2 }, webTabIDs: {} }));
+        expect(ws(g).panes.find((pane) => pane.id === P2)).toMatchObject({ type: 'shell', workingDirectory: ws(g).panes[0]?.workingDirectory });
+        expect(ws(g).panes.find((pane) => pane.id === P2)?.unavailable).toBeUndefined();
+    });
+
+    it('makes nothing without an id for every pane, with an id already taken, or for an unknown tab', () => {
+        const h = source();
+        const before = h.state();
+        h.dispatch(duplicate({ paneIDs: { [P0]: P2 } }));
+        h.dispatch(duplicate({ paneIDs: { [P0]: P2, [P1]: P0 } }));
+        h.dispatch(duplicate({ tabID: T3 }));
+        h.dispatch(duplicate({ newTabID: W1 }));
+        expect(h.state()).toBe(before);
+    });
+});
+
 describe('a mirror replaying the events', () => {
+    it('converges through a duplicated tab, shown and in the background', () => {
+        const h = harness(seededState());
+        let mirror: DaemonState = h.state();
+        const steps: DomainAction[] = [
+            { type: 'open-web-pane', workspaceID: W1, paneID: P1, tabID: id('99999999', 1), url: 'https://example.com', now: NOW, sourcePaneID: P0 },
+            { type: 'duplicate-tab', workspaceID: W1, tabID: W1, newTabID: T1, paneIDs: { [P0]: P2, [P1]: P3 }, webTabIDs: { [P1]: id('99999999', 2) }, now: NOW },
+            {
+                type: 'duplicate-tab',
+                workspaceID: W1,
+                tabID: T1,
+                newTabID: T2,
+                paneIDs: { [P2]: id('eeeeeeee', 4), [P3]: id('eeeeeeee', 5) },
+                webTabIDs: { [P3]: id('99999999', 3) },
+                now: NOW,
+                focus: false
+            }
+        ];
+        for (const step of steps) {
+            const before = h.batches.length;
+            h.dispatch(step);
+            for (const batch of h.batches.slice(before)) mirror = applyDomainEvents(mirror, batch);
+            expect(mirror.workspaces).toEqual(h.state().workspaces);
+        }
+        expect(workspaceTabs(ws(h)).map((tab) => tab.id)).toEqual([W1, T1, T2]);
+    });
+
     it('converges through every tab operation', () => {
         const h = harness(seededState());
         let mirror: DaemonState = h.state();

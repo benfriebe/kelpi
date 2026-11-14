@@ -36,6 +36,7 @@ import {
     createWorkspaceTabChannel,
     isWorkspaceTabCommand,
     WORKSPACE_TAB_COMMANDS,
+    type WaitingWorkspaceTabCommand,
     type WorkspaceTabChannelOptions
 } from './workspace-tabs.js';
 
@@ -55,8 +56,15 @@ export function isPaneLifecycleCommand(command: string): command is PaneLifecycl
 /** How long a reopened shell settles before its resume command is typed (§7.9: 2 s). */
 export const REOPEN_RESUME_SETTLE_MS = 2000;
 
+/**
+ * A new "same kind" tab and a duplicated tab can wait on the OS before they answer
+ * (`./workspace-tabs.ts`); every other verb's reply is there when `run` returns.
+ */
+export type ImmediatePaneLifecycleCommand = Exclude<PaneLifecycleCommand, WaitingWorkspaceTabCommand>;
+
 export interface PaneLifecycleChannel {
-    run(command: PaneLifecycleCommand, payload: Record<string, unknown>): JsonObject;
+    run(command: ImmediatePaneLifecycleCommand, payload: Record<string, unknown>): JsonObject;
+    run(command: PaneLifecycleCommand, payload: Record<string, unknown>): JsonObject | Promise<JsonObject>;
 }
 
 export interface PaneLifecycleChannelOptions {
@@ -194,12 +202,12 @@ export function createPaneLifecycleChannel(
 
     const tabs = createWorkspaceTabChannel({ ...options.tabs, ctx });
 
-    return {
-        run(command, payload) {
-            if (isWorkspaceTabCommand(command)) return tabs.run(command, payload);
-            if (command === 'reopen-closed-pane') return reopen(payload);
-            if (command === 'create-scratchpad') return scratchpad(payload);
-            return reveal(payload);
-        }
+    const run = (command: PaneLifecycleCommand, payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
+        if (isWorkspaceTabCommand(command)) return tabs.run(command, payload);
+        if (command === 'reopen-closed-pane') return reopen(payload);
+        if (command === 'create-scratchpad') return scratchpad(payload);
+        return reveal(payload);
     };
+    // One implementation behind both signatures: only the waiting tab verbs return a promise.
+    return { run: run as PaneLifecycleChannel['run'] };
 }

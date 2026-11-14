@@ -1,9 +1,17 @@
 import { leaf } from '@kelpi/core/layout';
+import type { JsonObject } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
+import type { PaneHandlerContext } from '../handlers/pane/index.js';
 import { harness, seedSplit, seedWorkspace, testID, W1, W2, type Harness } from '../handlers/pane/testing.js';
 import { onScreenPaneIDs, tabPaneIDs, workspaceTabs } from '../store/tabs.js';
-import { createWorkspaceTabChannel, isWorkspaceTabCommand, type WorkspaceTabChannelOptions } from './workspace-tabs.js';
+import type { WorkspaceTab } from '../store/types.js';
+import {
+    createWorkspaceTabChannel,
+    isWorkspaceTabCommand,
+    type WorkspaceTabChannelOptions,
+    type WorkspaceTabCommand
+} from './workspace-tabs.js';
 import { isPaneLifecycleCommand } from './panes.js';
 
 const P0 = testID('D', 100);
@@ -16,15 +24,19 @@ interface Fixture {
     readonly h: Harness;
     readonly channel: ReturnType<typeof createWorkspaceTabChannel>;
     readonly agents: { paneID: string; workspaceID: string }[];
+    /** `channel.run` for a verb that answers at once here (no live-directory seam to wait on). */
+    readonly run: (command: WorkspaceTabCommand, payload: Record<string, unknown>) => JsonObject;
 }
 
 function fixture(
     extra: Partial<Omit<WorkspaceTabChannelOptions, 'ctx'>> & {
         readonly position?: 'after-current' | 'end';
         readonly tabs?: readonly string[];
+        /** The OS's answer for where a shell is; absent = no seam, so every verb answers at once. */
+        readonly liveWorkingDirectory?: PaneHandlerContext['liveWorkingDirectory'];
     } = {}
 ): Fixture {
-    const h = harness();
+    const h = harness(extra.liveWorkingDirectory === undefined ? {} : { liveWorkingDirectory: extra.liveWorkingDirectory });
     seedWorkspace(h, { id: W1, name: 'dev', paneID: P0, path: '/tmp/work' });
     const tabIDs = [...(extra.tabs ?? [T1, T2, T3])];
     const agents: { paneID: string; workspaceID: string }[] = [];
@@ -37,7 +49,12 @@ function fixture(
         startAgent: (paneID, workspaceID) => agents.push({ paneID, workspaceID }),
         ...(extra.newTabOpens === undefined ? {} : { newTabOpens: extra.newTabOpens })
     });
-    return { h, channel, agents };
+    const run = (command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject => {
+        const reply = channel.run(command, payload);
+        if (reply instanceof Promise) throw new Error(`${command} waited, with nothing to wait on`);
+        return reply;
+    };
+    return { h, channel, agents, run };
 }
 
 describe('the verbs', () => {
@@ -52,7 +69,7 @@ describe('the verbs', () => {
 describe('workspace-tab-new', () => {
     it('opens a terminal tab in the workspace folder, spawned, and shows it', () => {
         const f = fixture();
-        const reply = f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        const reply = f.run('workspace-tab-new', { workspace_id: W1 });
         expect(reply).toMatchObject({ ok: true, tab_id: T1, kind: 'terminal' });
         const workspace = f.h.workspace(W1);
         expect(workspace.activeTabID).toBe(T1);
@@ -64,23 +81,23 @@ describe('workspace-tab-new', () => {
 
     it('follows "New tabs go: at the end"', () => {
         const f = fixture({ position: 'end' });
-        f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        f.run('workspace-tab-new', { workspace_id: W1 });
         f.channel.run('workspace-tab-select', { workspace_id: W1, tab_id: W1 });
-        f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        f.run('workspace-tab-new', { workspace_id: W1 });
         expect(workspaceTabs(f.h.workspace(W1)).map((tab) => tab.id)).toEqual([W1, T1, T2]);
     });
 
     it('opens what "A new tab opens" says when the caller names no kind', () => {
         const f = fixture({ newTabOpens: () => 'agent' });
-        const reply = f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        const reply = f.run('workspace-tab-new', { workspace_id: W1 });
         expect(reply).toMatchObject({ ok: true, kind: 'agent' });
         expect(f.agents).toEqual([{ paneID: reply['pane_id'], workspaceID: W1 }]);
     });
 
     it('opens a web tab and a scratchpad tab without a PTY', () => {
         const f = fixture();
-        const web = f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'web' });
-        const pad = f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'scratchpad' });
+        const web = f.run('workspace-tab-new', { workspace_id: W1, kind: 'web' });
+        const pad = f.run('workspace-tab-new', { workspace_id: W1, kind: 'scratchpad' });
         const workspace = f.h.workspace(W1);
         expect(workspace.panes.find((pane) => pane.id === web['pane_id'])?.type).toBe('web');
         expect(workspace.panes.find((pane) => pane.id === pad['pane_id'])?.type).toBe('scratchpad');
@@ -89,15 +106,94 @@ describe('workspace-tab-new', () => {
 
     it('refuses an unknown kind and an unknown workspace', () => {
         const f = fixture();
-        expect(f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'diff' })).toMatchObject({ ok: false });
-        expect(f.channel.run('workspace-tab-new', { workspace_id: 'nope' })).toMatchObject({ ok: false });
+        expect(f.run('workspace-tab-new', { workspace_id: W1, kind: 'diff' })).toMatchObject({ ok: false });
+        expect(f.run('workspace-tab-new', { workspace_id: 'nope' })).toMatchObject({ ok: false });
+    });
+});
+
+describe('workspace-tab-new of the same kind as a shell', () => {
+    it('asks where the shell really is first, and opens the terminal there', async () => {
+        const asked: string[] = [];
+        const f = fixture({
+            liveWorkingDirectory: (paneID) => {
+                asked.push(paneID);
+                return Promise.resolve('/tmp/work/deeper');
+            }
+        });
+        const pending = f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'same' });
+        expect(pending).toBeInstanceOf(Promise);
+        const reply = await pending;
+        expect(asked).toEqual([P0]);
+        expect(reply).toMatchObject({ ok: true, kind: 'terminal' });
+        const pane = f.h.workspace(W1).panes.find((candidate) => candidate.id === reply['pane_id']);
+        expect(pane?.workingDirectory).toBe('/tmp/work/deeper');
+        expect(f.h.pty.spawns.find((spawn) => spawn.paneID === reply['pane_id'])?.cwd).toBe('/tmp/work/deeper');
+    });
+
+    it('opens where the shell last said when the OS cannot say', async () => {
+        const f = fixture({ liveWorkingDirectory: () => Promise.reject(new Error('no lsof')) });
+        const reply = await f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'same' });
+        expect(f.h.workspace(W1).panes.find((pane) => pane.id === reply['pane_id'])?.workingDirectory).toBe('/tmp/work');
+    });
+
+    it('opens nothing when the workspace went away while it asked', async () => {
+        const f = fixture({ liveWorkingDirectory: () => Promise.resolve('/tmp/work') });
+        const pending = f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'same' });
+        f.h.store.dispatch({ type: 'delete-workspace', id: W1 });
+        expect(await pending).toMatchObject({ ok: false });
+        expect(f.h.pty.spawns).toEqual([]);
+    });
+
+    it('answers at once for a terminal tab, which never asks', () => {
+        const f = fixture({ liveWorkingDirectory: () => Promise.resolve('/elsewhere') });
+        expect(f.channel.run('workspace-tab-new', { workspace_id: W1, kind: 'terminal' })).not.toBeInstanceOf(Promise);
+    });
+});
+
+describe('workspace-tab-duplicate', () => {
+    it('copies the tab just after it, spawns the copies\' shells where the sources are, and shows it', async () => {
+        const f = fixture({ liveWorkingDirectory: (paneID) => Promise.resolve(paneID === P0 ? '/tmp/work/live' : '/tmp/other') });
+        seedSplit(f.h, { workspaceID: W1, sourcePaneID: P0, paneID: P1, label: 'worker' });
+        const reply = await f.channel.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1 });
+        expect(reply).toMatchObject({ ok: true, workspace_id: W1, tab_id: T1 });
+        const copies = reply['pane_ids'] as string[];
+        expect(copies).toHaveLength(2);
+        const workspace = f.h.workspace(W1);
+        expect(workspaceTabs(workspace).map((tab) => tab.id)).toEqual([W1, T1]);
+        expect(workspace.activeTabID).toBe(T1);
+        expect(onScreenPaneIDs(workspace)).toEqual(copies);
+        expect(workspace.panes.find((pane) => pane.id === copies[0])?.workingDirectory).toBe('/tmp/work/live');
+        expect(workspace.panes.find((pane) => pane.id === copies[1])?.label).toBeNull();
+        expect(f.h.pty.spawns.map((spawn) => spawn.paneID)).toEqual(expect.arrayContaining(copies));
+        expect(f.h.pty.spawns.find((spawn) => spawn.paneID === copies[0])?.cwd).toBe('/tmp/work/live');
+    });
+
+    it('copies into the background with focus: false', () => {
+        const f = fixture();
+        const reply = f.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: W1, focus: false });
+        expect(reply).toMatchObject({ ok: true, tab_id: T1 });
+        const workspace = f.h.workspace(W1);
+        expect(workspace.activeTabID).toBe(W1);
+        expect(onScreenPaneIDs(workspace)).toEqual([P0]);
+        expect(tabPaneIDs(workspace, workspaceTabs(workspace)[1] as WorkspaceTab)).toEqual(reply['pane_ids']);
+    });
+
+    it('refuses an unknown tab or workspace', () => {
+        const f = fixture();
+        expect(f.run('workspace-tab-duplicate', { workspace_id: W1, tab_id: T3 })).toMatchObject({ ok: false });
+        expect(f.run('workspace-tab-duplicate', { workspace_id: 'nope', tab_id: W1 })).toMatchObject({ ok: false });
+        expect(workspaceTabs(f.h.workspace(W1))).toHaveLength(1);
+    });
+
+    it('rides the pane lifecycle channel', () => {
+        expect(isPaneLifecycleCommand('workspace-tab-duplicate')).toBe(true);
     });
 });
 
 describe('workspace-tab-close', () => {
     it('ends the PTY of every pane the tab took', () => {
         const f = fixture();
-        const reply = f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        const reply = f.run('workspace-tab-new', { workspace_id: W1 });
         const paneID = String(reply['pane_id']);
         seedSplit(f.h, { workspaceID: W1, sourcePaneID: paneID, paneID: P1 });
         const closed = f.channel.run('workspace-tab-close', { workspace_id: W1, tab_id: T1 });
@@ -118,7 +214,7 @@ describe('workspace-tab-close', () => {
 
     it('refuses when a document will not save, closing nothing', () => {
         const f = fixture();
-        f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        f.run('workspace-tab-new', { workspace_id: W1 });
         const refusing = createWorkspaceTabChannel({
             ctx: {
                 ...f.h.ctx,
@@ -147,7 +243,7 @@ describe('moving panes and tabs', () => {
 
     it('pane-move-to-tab checks its zone, a wire edge beside the named pane', () => {
         const f = fixture();
-        const opened = f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        const opened = f.run('workspace-tab-new', { workspace_id: W1 });
         const target = String(opened['pane_id']);
         expect(f.channel.run('pane-move-to-tab', { pane_id: P0, tab_id: T1, zone: 'middle' })).toMatchObject({ ok: false });
         expect(
@@ -160,7 +256,7 @@ describe('moving panes and tabs', () => {
     it('workspace-tab-move-to-workspace carries the tab and its panes over', () => {
         const f = fixture();
         seedWorkspace(f.h, { id: W2, name: 'other', paneID: testID('D', 200) });
-        const opened = f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        const opened = f.run('workspace-tab-new', { workspace_id: W1 });
         const reply = f.channel.run('workspace-tab-move-to-workspace', { workspace_id: W1, tab_id: T1, to_workspace_id: W2 });
         expect(reply).toMatchObject({ ok: true, workspace_id: W2, tab_id: T1 });
         expect(f.h.workspace(W2).panes.map((pane) => pane.id)).toContain(opened['pane_id']);
@@ -181,7 +277,7 @@ describe('moving panes and tabs', () => {
 
     it('merge-previous refuses the first tab', () => {
         const f = fixture();
-        f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        f.run('workspace-tab-new', { workspace_id: W1 });
         expect(f.channel.run('workspace-tab-merge-previous', { workspace_id: W1, tab_id: W1 })).toMatchObject({ ok: false });
         expect(f.channel.run('workspace-tab-merge-previous', { workspace_id: W1, tab_id: T1 })).toMatchObject({ ok: true });
         expect(workspaceTabs(f.h.workspace(W1))).toHaveLength(1);
@@ -200,7 +296,7 @@ describe('rename and reorder', () => {
 
     it('move needs an index', () => {
         const f = fixture();
-        f.channel.run('workspace-tab-new', { workspace_id: W1 });
+        f.run('workspace-tab-new', { workspace_id: W1 });
         expect(f.channel.run('workspace-tab-move', { workspace_id: W1, tab_id: T1 })).toMatchObject({ ok: false });
         expect(f.channel.run('workspace-tab-move', { workspace_id: W1, tab_id: T1, index: 0 })).toMatchObject({ ok: true });
         expect(workspaceTabs(f.h.workspace(W1)).map((tab) => tab.id)).toEqual([T1, W1]);

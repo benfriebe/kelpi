@@ -886,6 +886,25 @@ export type DomainAction =
     | { readonly type: 'close-tab'; readonly workspaceID: string; readonly tabID: string }
     /** `close-tab` for every tab but `tabID`, which is left on screen. */
     | { readonly type: 'close-other-tabs'; readonly workspaceID: string; readonly tabID: string }
+    /**
+     * Duplicate Tab: a new tab just after `tabID` with its name, its un-zoomed tree and ratios,
+     * and a fresh pane of the same kind for every pane in it (workspace-feature.md §12.5). The
+     * caller mints every id: `paneIDs` maps each pane in the tab to its copy, and the copy is
+     * made only when every pane has one. A shell copy starts where `workingDirectories` says its
+     * source's shell really is (absent: the stored directory). Shown unless `focus` is false.
+     */
+    | {
+          readonly type: 'duplicate-tab';
+          readonly workspaceID: string;
+          readonly tabID: string;
+          readonly newTabID: string;
+          readonly paneIDs: Readonly<Record<string, string>>;
+          /** A web pane's copy opens its source's page in one web tab with this id. */
+          readonly webTabIDs: Readonly<Record<string, string>>;
+          readonly workingDirectories?: Readonly<Record<string, string>> | undefined;
+          readonly now: number;
+          readonly focus?: boolean | undefined;
+      }
 
     // ── layout / focus / zoom ──────────────────────────────────────────────
     /** `paneID`: lay out that pane's tab (the CLI names its caller); absent = the tab on screen. */

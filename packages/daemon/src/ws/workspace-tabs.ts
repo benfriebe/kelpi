@@ -1,7 +1,7 @@
 /**
  * The window's workspace-tab verbs (workspace-feature.md §12): new, select, rename, reorder,
- * close, move a pane into or out of a tab, split a tab into tabs, merge, and move a tab to
- * another workspace.
+ * close, duplicate, move a pane into or out of a tab, split a tab into tabs, merge, and move a
+ * tab to another workspace.
  *
  * WS-only like `reopen-closed-pane`, and on the same channel (`ws/panes.ts`) for the same
  * reason: they are not only store dispatches. A new tab mints ids its reply carries and may
@@ -9,7 +9,9 @@
  * moving a tab to another workspace changes which workspace's sync group its shells are in.
  *
  * Replies are `{ok: true, …}` or `{ok: false, error}` with the error in words a person can act
- * on, like every other GUI verb.
+ * on, like every other GUI verb. Two verbs can wait before they answer: a new "same kind" tab
+ * and a duplicated tab open their shells where the source shells really are, which means asking
+ * the OS first (`ctx.liveWorkingDirectory`, as a split does). Every other verb answers at once.
  */
 
 import { newUUID } from '@kelpi/core/codec';
@@ -41,10 +43,16 @@ export const WORKSPACE_TAB_COMMANDS = [
     'workspace-tab-split-panes',
     'workspace-tab-merge-previous',
     'workspace-tab-move-to-workspace',
+    'workspace-tab-duplicate',
     'pane-move-to-new-tab',
     'pane-move-to-tab'
 ] as const;
 export type WorkspaceTabCommand = (typeof WORKSPACE_TAB_COMMANDS)[number];
+
+/** The verbs whose reply can wait on the OS (where a shell really is). */
+export type WaitingWorkspaceTabCommand = 'workspace-tab-new' | 'workspace-tab-duplicate';
+/** Every other verb: its reply is there when `run` returns. */
+export type ImmediateWorkspaceTabCommand = Exclude<WorkspaceTabCommand, WaitingWorkspaceTabCommand>;
 
 export function isWorkspaceTabCommand(command: string): command is WorkspaceTabCommand {
     return (WORKSPACE_TAB_COMMANDS as readonly string[]).includes(command);
@@ -75,7 +83,8 @@ export interface WorkspaceTabChannelOptions {
 }
 
 export interface WorkspaceTabChannel {
-    run(command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject;
+    run(command: ImmediateWorkspaceTabCommand, payload: Record<string, unknown>): JsonObject;
+    run(command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject | Promise<JsonObject>;
 }
 
 export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): WorkspaceTabChannel {
@@ -133,7 +142,28 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         return focused?.workingDirectory ?? null;
     };
 
-    const newTab = (payload: Record<string, unknown>): JsonObject => {
+    /**
+     * Where each of these shells really is, for the ones the OS could say (`liveWorkingDirectory`,
+     * the seam a split asks). Null when there is nothing to ask, so the caller can answer at once.
+     */
+    const liveDirectories = (
+        workspace: WorkspaceState,
+        paneIDs: readonly string[]
+    ): Promise<Record<string, string>> | null => {
+        const lookup = ctx.liveWorkingDirectory;
+        const shells = paneIDs.filter((paneID) => visiblePane(workspace, paneID)?.type === 'shell');
+        if (lookup === undefined || shells.length === 0) return null;
+        return Promise.all(shells.map((paneID) => lookup(paneID).catch(() => null))).then((found) => {
+            const directories: Record<string, string> = {};
+            shells.forEach((paneID, index) => {
+                const directory = found[index];
+                if (typeof directory === 'string' && directory !== '') directories[paneID] = directory;
+            });
+            return directories;
+        });
+    };
+
+    const newTab = (payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
         const workspace = workspaceFor(payload);
         if (workspace === null) return failure('workspace-tab-new requires a known workspace_id');
         const requested = text(payload['kind']) ?? options.newTabOpens?.() ?? 'terminal';
@@ -141,7 +171,26 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
             return failure(`unknown tab kind '${requested}': use ${NEW_TAB_KINDS.join(', ')}`);
         }
         if (requested === 'agent' && options.startAgent === undefined) return failure('this daemon cannot start agents');
-        let kind = requested as NewTabKind;
+        const focusedPane = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
+        // "The same kind as the focused pane", for a shell: a terminal where that shell is now,
+        // which only the OS knows (OSC 7 may never have said), so ask before opening it.
+        const asking = requested === 'same' && focusedPane?.type === 'shell' ? liveDirectories(workspace, [focusedPane.id]) : null;
+        if (asking === null || focusedPane === null) return openNewTab(payload, requested as NewTabKind, {});
+        return asking.then((found) => openNewTab(payload, requested as NewTabKind, found));
+    };
+
+    /**
+     * `newTab` once any wait is over: re-read, since the workspace can change or go meanwhile. A
+     * directory found for a shell that is no longer the focused one is not used.
+     */
+    const openNewTab = (
+        payload: Record<string, unknown>,
+        requested: NewTabKind,
+        liveDirectories: Readonly<Record<string, string>>
+    ): JsonObject => {
+        const workspace = workspaceFor(payload);
+        if (workspace === null) return failure('workspace-tab-new requires a known workspace_id');
+        let kind = requested;
         const focusedPane = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
         if (kind === 'same') {
             // The kinds a tab can be opened as; anything else (a diff, a document, a plugin
@@ -158,7 +207,9 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
             create = { type: 'create-scratchpad', workspaceID: workspace.id, paneID, now: at };
         } else {
             const directory =
-                requested === 'same' && focusedPane?.type === 'shell' ? focusedPane.workingDirectory : workspaceFolder(workspace);
+                requested === 'same' && focusedPane?.type === 'shell'
+                    ? (liveDirectories[focusedPane.id] ?? focusedPane.workingDirectory)
+                    : workspaceFolder(workspace);
             create = { type: 'create-pane', workspaceID: workspace.id, paneID, now: at, workingDirectory: directory, focus: true };
         }
         const focus = payload['focus'] !== false;
@@ -192,10 +243,55 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
     const isFailure = (value: unknown): value is JsonObject =>
         typeof value === 'object' && value !== null && (value as { ok?: unknown }).ok === false;
 
-    const run = (command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject => {
+    /**
+     * Duplicate Tab (workspace-feature.md §12.5): ask where the tab's shells really are, then
+     * copy the tab as it is by then, minting an id for every pane in it, in one dispatch.
+     */
+    const duplicate = (payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
+        const args = tabArgs(payload, 'workspace-tab-duplicate');
+        if (isFailure(args)) return args;
+        const asking = liveDirectories(args.workspace, workspaceTabPanes(args.workspace, args.tabID));
+        if (asking === null) return copyTab(payload, {});
+        return asking.then((directories) => copyTab(payload, directories));
+    };
+
+    const copyTab = (payload: Record<string, unknown>, workingDirectories: Readonly<Record<string, string>>): JsonObject => {
+        const args = tabArgs(payload, 'workspace-tab-duplicate');
+        if (isFailure(args)) return args;
+        const workspace = args.workspace;
+        const sources = workspaceTabPanes(workspace, args.tabID);
+        const paneIDs: Record<string, string> = {};
+        const webTabIDs: Record<string, string> = {};
+        for (const sourceID of sources) {
+            paneIDs[sourceID] = mintPane();
+            if (visiblePane(workspace, sourceID)?.type === 'web') webTabIDs[sourceID] = newUUID();
+        }
+        const newTabID = mintTab();
+        ctx.store.dispatch({
+            type: 'duplicate-tab',
+            workspaceID: workspace.id,
+            tabID: args.tabID,
+            newTabID,
+            paneIDs,
+            webTabIDs,
+            workingDirectories,
+            now: now(),
+            focus: payload['focus'] !== false
+        });
+        const after = workspaceByID(state(), workspace.id);
+        if (after === null || tabByID(after, newTabID) === null) return failure('the tab could not be duplicated');
+        const copies = sources.map((sourceID) => paneIDs[sourceID] as string);
+        for (const paneID of copies) spawnPaneIfShell(ctx, workspace.id, paneID);
+        refreshSyncGroup(ctx, workspace.id);
+        return { ok: true, workspace_id: workspace.id, tab_id: newTabID, pane_ids: copies };
+    };
+
+    const run = (command: WorkspaceTabCommand, payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
         switch (command) {
             case 'workspace-tab-new':
                 return newTab(payload);
+            case 'workspace-tab-duplicate':
+                return duplicate(payload);
             case 'workspace-tab-select': {
                 const args = tabArgs(payload, command);
                 if (isFailure(args)) return args;
@@ -331,7 +427,8 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         }
     };
 
-    return { run };
+    // One implementation behind both signatures: only the two waiting verbs ever return a promise.
+    return { run: run as WorkspaceTabChannel['run'] };
 }
 
 /** A tab's panes, in layout order (none for an unknown tab). */

@@ -231,6 +231,24 @@ describe('PaneHeader rendering', () => {
         expect(screen.getByTestId('pane-title-b').textContent).toBe('/tmp');
     });
 
+    it('offers the ports its services listen on, opening the first (docs/running-services.md §7)', () => {
+        const onOpenServicePort = vi.fn();
+        const ports = [3000, 3001].map((port) => ({ port, address: '127.0.0.1', exposed: false, pid: 1, container_port: null }));
+        renderHeader(testPane('a'), { servicePorts: ports, onOpenServicePort });
+        const chip = screen.getByTestId('pane-ports-a');
+        expect(chip.textContent).toBe(':3000 +1 ↗');
+        expect(chip.getAttribute('title')).toBe('Open localhost:3000 in a web pane (:3000 :3001)');
+        fireEvent.click(chip);
+        expect(onOpenServicePort).toHaveBeenCalledWith(ports[0]);
+        cleanup();
+        // Nothing listening, or no way to open it: no chip.
+        renderHeader(testPane('a'), { servicePorts: [], onOpenServicePort });
+        expect(screen.queryByTestId('pane-ports-a')).toBeNull();
+        cleanup();
+        renderHeader(testPane('a'), { servicePorts: ports });
+        expect(screen.queryByTestId('pane-ports-a')).toBeNull();
+    });
+
     it('renders the agent, label, branch, zoom and sync badges', () => {
         renderHeader(
             testPane('a', {

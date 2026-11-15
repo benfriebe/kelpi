@@ -24,6 +24,7 @@
  * The component is props-driven end to end: it never reads the store or sends a command.
  */
 
+import type { RunningServicePort } from '@kelpi/protocol';
 import {
     useCallback,
     useEffect,
@@ -143,6 +144,9 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
     readonly layout: PaneLayout;
     /** Every pane in the workspace — including ones the layout currently hides. */
     readonly panes: readonly PaneModel[];
+    /** The ports each pane's services listen on (docs/running-services.md §7); the header chip. */
+    readonly servicePortsFor?: ((paneID: string) => readonly RunningServicePort[]) | undefined;
+    readonly onOpenServicePort?: ((paneID: string, port: RunningServicePort) => void) | undefined;
     readonly focusedPaneID?: string | null | undefined;
     /** Zoomed pane: fills the grid, everything else hides (shell-ui.md §4.2 item 4). */
     readonly zoomedPaneID?: string | null | undefined;
@@ -1436,6 +1440,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             zoomAvailable={zoomAvailable}
                             syncActive={syncActive}
                             syncExcluded={excluded.has(pane.id)}
+                            servicePorts={props.servicePortsFor?.(pane.id)}
+                            {...(props.onOpenServicePort === undefined
+                                ? {}
+                                : { onOpenServicePort: (port: RunningServicePort) => props.onOpenServicePort?.(pane.id, port) })}
                             homeDirectory={homeDirectory}
                             height={band}
                             // §N26: a hidden pane's band must not park a visible pane's page. The

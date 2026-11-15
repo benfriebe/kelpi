@@ -57,6 +57,9 @@ import {
 } from './WorktreeCleanupList';
 import { NewEntrySheet, type NewWorkspaceAgentChoice } from './NewWorkspaceSheet';
 import { PullRequestGlyph } from './PullRequestGlyph';
+import { RunningServicesGlyph } from './RunningServicesGlyph';
+import { runningFor, runningOfWorkspaces, shortServiceName, type WorkspaceRunning } from './running';
+import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -529,6 +532,9 @@ export function groupGuideColor(color: WorkspaceColor | null, bucket: ChromeBuck
     return color === null ? tokens.divider : withAlpha(workspaceColorHex(color, bucket), 0.55);
 }
 
+/** The most ports the row menu's Services ▸ lists; the Inspector has the rest. */
+const SERVICE_MENU_PORTS = 8;
+
 /** The row menu's Status ▸, in the pane menu's order and words (agent-lifecycle §5.10). */
 const WORKSPACE_STATUS_ITEMS: readonly (readonly [PaneStatus, string])[] = [
     ['idle', 'Idle'],
@@ -566,6 +572,16 @@ export function groupAgentCounts(entry: {
     const all = [...entry.workspaces];
     for (const workspace of entry.workspaces) all.push(...(entry.nested?.get(workspace.id) ?? []));
     return agentCounts(all);
+}
+
+/** Every workspace under a group header, nested ones included (as `groupAgentCounts` counts them). */
+function groupWorkspaceIDs(entry: {
+    readonly workspaces: readonly ChromeWorkspace[];
+    readonly nested?: ReadonlyMap<string, readonly ChromeWorkspace[]> | undefined;
+}): string[] {
+    const ids = entry.workspaces.map((workspace) => workspace.id);
+    for (const workspace of entry.workspaces) ids.push(...(entry.nested?.get(workspace.id) ?? []).map((child) => child.id));
+    return ids;
 }
 
 /** §5.3: waiting wins over running; nothing when neither. */
@@ -923,6 +939,8 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
 
 interface WorkspaceRowProps {
     readonly workspace: ChromeWorkspace;
+    /** Running services this workspace started (docs/running-services.md); the row's plug glyph. */
+    readonly running?: WorkspaceRunning | undefined;
     /** 0 top level; 1 in a group or nested under a top-level parent; 2 nested in a group (§2.9). */
     readonly depth: 0 | 1 | 2;
     /** The group this row is inside, or `null` at top level — §WS-007's guide needs it, and it
@@ -1431,6 +1449,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
              * workspace-feature.md §11: the workspace's PR status, one trailing glyph on the same
              * line (not a metadata line, so §H5 stands). A `shrink-0` sibling like the bell below.
              */}
+            <RunningServicesGlyph workspaceID={workspace.id} running={props.running} />
             <PullRequestGlyph workspaceID={workspace.id} pullRequests={workspace.pullRequests} bucket={props.bucket} />
             {/*
              * Agent-lifecycle §7.6: a muted workspace says so on its row, beside the ⌘N badge, so
@@ -1528,6 +1547,8 @@ interface GroupHeaderRowProps {
      * caller (`groupRepoOf`). Null/absent draws the header exactly as it has always been drawn.
      */
     readonly repo?: GroupHeaderRepo | null | undefined;
+    /** docs/running-services.md §7: what the group's workspaces run, drawn while it is collapsed. */
+    readonly running?: WorkspaceRunning | undefined;
 }
 
 /** What the header's repo indicator names: the repo's display name, and its path for the tooltip. */
@@ -1754,6 +1775,9 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                     </span>
                 )}
             </span>
+            {props.renaming || !props.collapsed ? null : (
+                <RunningServicesGlyph workspaceID={group.id} testID={`group-running-${group.id}`} running={props.running} />
+            )}
             {props.renaming || !hovered || props.onNewWorkspace === undefined ? null : (
                 <button
                     type="button"
@@ -2014,6 +2038,15 @@ export interface SidebarProps extends SidebarCallbacks {
      * Absent = every delete shows the plain confirmation, which is what it did before.
      */
     readonly workspaceAgentSummary?: ((workspaceID: string) => WorkspaceAgentSummary) | undefined;
+    /**
+     * Running services by workspace id (docs/running-services.md §7): each row's plug glyph.
+     * Absent = no scan yet, so no glyphs.
+     */
+    readonly runningServices?: ReadonlyMap<string, WorkspaceRunning> | undefined;
+    /** The row menu's Services ▸ Open localhost:… (a web pane beside the pane that started it). */
+    readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
+    /** The row menu's Services ▸ Show in Inspector: switch to the workspace, open the Inspector. */
+    readonly onShowServices?: ((workspaceID: string) => void) | undefined;
     /** The daemon's `confirm-workspace-delete` setting; default true, as the config's is. */
     readonly confirmDeleteWhenActive?: boolean | undefined;
     /** The alert's suppression button — honoured whichever button ended the dialog. */
@@ -4515,6 +4548,38 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               )
                           } satisfies MenuItemSpec
                       ]),
+                // docs/running-services.md §7: what this workspace is running, one item per port.
+                ...((): MenuItemSpec[] => {
+                    const running = runningFor(props.runningServices, workspaceID);
+                    if (running === undefined || running.services.length === 0) return [];
+                    const opens: MenuItemSpec[] =
+                        props.onOpenServicePort === undefined
+                            ? []
+                            : running.services
+                                  .flatMap((service) => service.ports.map((port) => ({ service, port })))
+                                  .slice(0, SERVICE_MENU_PORTS)
+                                  .map(({ service, port }) => ({
+                                      id: `services:open:${service.id}:${String(port.port)}`,
+                                      label: `Open localhost:${String(port.port)} · ${shortServiceName(service)}`,
+                                      onSelect: () => {
+                                          props.onOpenServicePort?.(service, port);
+                                      }
+                                  }));
+                    const show: MenuItemSpec[] =
+                        props.onShowServices === undefined
+                            ? []
+                            : [
+                                  {
+                                      id: 'services:show',
+                                      label: 'Show in Inspector',
+                                      onSelect: () => {
+                                          props.onShowServices?.(workspaceID);
+                                      }
+                                  }
+                              ];
+                    const items = [...opens, ...(opens.length > 0 && show.length > 0 ? [{ id: 'services:sep', kind: 'separator' } as MenuItemSpec] : []), ...show];
+                    return items.length === 0 ? [] : [{ id: 'services', label: 'Services', submenu: items } satisfies MenuItemSpec];
+                })(),
                 {
                     id: 'move',
                     label: 'Move to Group',
@@ -5022,6 +5087,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         <WorkspaceRow
                             key={row.workspace.id}
                             workspace={row.workspace}
+                            running={runningFor(props.runningServices, row.workspace.id)}
                             depth={0}
                             active={row.workspace.id === props.activeWorkspaceID}
                             selected={selection.has(row.workspace.id)}
@@ -5087,6 +5153,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 group={entry.group}
                                 collapsed={isGroupCollapsed(entry.group, collapse)}
                                 counts={groupAgentCounts(entry)}
+                                running={
+                                    isGroupCollapsed(entry.group, collapse)
+                                        ? runningOfWorkspaces(props.runningServices, groupWorkspaceIDs(entry))
+                                        : undefined
+                                }
                                 bucket={bucket}
                                 renaming={rename?.kind === 'group' && rename.id === entry.group.id}
                                 dropPreview={previewGroupID === entry.group.id}
@@ -5217,6 +5288,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         <WorkspaceRow
                             key={row.key}
                             workspace={workspace}
+                            running={runningFor(props.runningServices, workspace.id)}
                             depth={row.depth}
                             groupID={row.groupID}
                             childCount={row.childCount ?? 0}

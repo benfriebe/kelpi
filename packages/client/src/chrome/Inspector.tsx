@@ -30,13 +30,16 @@
  */
 
 import type { WorkspacePullRequest } from '@kelpi/core/git';
+import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
+import { InspectorServices } from './InspectorServices';
 import { PullRequestLinks } from './PullRequestGlyph';
+import type { WorkspaceRunning } from './running';
 import { useModalPresence } from './modal-presence';
 import { RepoPicker, type RepoPickerEntry } from './RepoPicker';
 import { resolveLabelStyle, withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
@@ -141,6 +144,14 @@ export interface InspectorProps {
      * Absent = the picker offers no scan row, which is what it did before.
      */
     readonly onScanForRepos?: ((path: string) => void) | undefined;
+
+    // ── running services (docs/running-services.md §7) ───────────────────────────
+    readonly running?: WorkspaceRunning | undefined;
+    /** When the daemon took the scan: uptimes are measured against it. */
+    readonly runningScannedAt?: string | null | undefined;
+    /** For `~`-abbreviated folders (the daemon's home). */
+    readonly homeDirectory?: string | undefined;
+    readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
 
     // ── graft (§GIT-046…§GIT-051, §WS-143…§WS-145) ────────────────────────────────
     //
@@ -610,6 +621,21 @@ export function Inspector(props: InspectorProps): ReactElement {
                             </div>
                         ))
                     )}
+                </section>
+
+                <Divider />
+
+                {/* ── services (docs/running-services.md §7) ────────────────────── */}
+                <section className="flex flex-col gap-1.5" data-testid="inspector-services">
+                    <SectionLabel icon="plug" text="Services" />
+                    <InspectorServices
+                        running={props.running}
+                        scannedAt={props.runningScannedAt ?? null}
+                        homeDirectory={props.homeDirectory ?? ''}
+                        bucket={bucket}
+                        onOpenPort={props.onOpenServicePort}
+                        onShowPane={props.onFocusPane}
+                    />
                 </section>
 
                 <Divider />

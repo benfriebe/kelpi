@@ -88,6 +88,7 @@ import {
 import { createGhRunner, createPullRequestGit, createPullRequestPoller } from '../github/index.js';
 import { createAppHandlers, listedWorkspaceIDs, type WorktreeCreator } from '../handlers/app/index.js';
 import { buildScanContext, createHostProbes, createRunningScanner } from '../running/index.js';
+import { createRunningMonitor } from '../running/monitor.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
 // §TERM-046: the OSC 52 clipboard sink — the gate, the log lines and the client broadcast.
@@ -1655,6 +1656,15 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     });
 
+    // The app's Services UI: scan on a cadence while clients are attached (10 s visible, 60 s
+    // hidden, never with none), broadcast when the list changes, replay on attach.
+    const runningMonitor = createRunningMonitor({
+        scanner: runningServices,
+        presence: () => ws?.presence() ?? { clients: 0, anyVisible: false },
+        broadcast: (message) => ws?.broadcast({ ...message }),
+        onError: (error) => report(error, 'running services')
+    });
+
     const appHandlers = createAppHandlers({
         running: runningServices,
         git,
@@ -1669,6 +1679,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // #387: one `agent.event` per hook line, onto the plugin event bus (plugins only).
         emitAgentEvent: (event) => {
             pluginHost?.emitDaemonEvent('agent.event', event as unknown as JsonValue);
+            // An agent finishing a turn has often just started or stopped a server.
+            runningMonitor.poke();
         },
         // #388: the provider is named up front and asked explicitly, so the reply and the log
         // name the one that decided. Only a user-selected provider is ever active.
@@ -2415,6 +2427,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         statsGateTimer = null;
         offStats();
         stats.dispose();
+        runningMonitor.dispose();
         offPluginServices();
         settings.dispose();
         content.dispose();
@@ -2773,6 +2786,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 graftUi: graftCommands,
                 // #372: a draining terminal host is a standing condition, replayed on attach.
                 oldTerminalHosts: oldTerminalHostsEvent,
+                runningServices: () => runningMonitor.current(),
                 // `/pane-assets/…` — sibling files of an open markdown file, so relative
                 // `<img src>` resolves (content-panes.md port note 4), and an image pane's own
                 // file (§12). Gated by the derived

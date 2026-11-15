@@ -31,6 +31,7 @@ import {
     type WsChromeSettings,
     type WsNotificationKind,
     type WsOldTerminalHost,
+    type WsRunningServicesMessage,
     type WsSettingsSnapshot,
     type WsSystemStats,
     type WsTerminalThemeResolution,
@@ -184,7 +185,15 @@ export interface DaemonSlice {
      * some terminals still run on one, and the notice offers to restart them on the current host.
      */
     readonly oldTerminalHosts: readonly WsOldTerminalHost[];
+    /**
+     * Running services (docs/running-services.md): the daemon's last scan of dev servers, ports
+     * and containers, every category. Null until the first `running-services` message.
+     */
+    readonly runningServices: RunningServicesState | null;
 }
+
+/** The `running-services` message, minus its type tag. */
+export type RunningServicesState = Omit<WsRunningServicesMessage, 'type'>;
 
 export interface Toast {
     /** `kelpi-<paneID>` for pane notifications: a re-post REPLACES rather than stacks. */
@@ -341,6 +350,8 @@ export interface KelpiActions {
     setSizeControlOwner(ownerClientID: string | null): void;
     /** `old-terminal-hosts` broadcast (#372). */
     setOldTerminalHosts(hosts: readonly WsOldTerminalHost[]): void;
+    /** `running-services` broadcast. */
+    setRunningServices(running: RunningServicesState): void;
 
     /** `rejection` is the refusal's code; absent keeps the last one (connecting clears it). */
     setConnectionStatus(status: ConnectionStatus, error?: string | null, rejection?: string | null): void;
@@ -415,7 +426,8 @@ function initialDaemonSlice(): DaemonSlice {
         info: null,
         sizeControlOwnerID: null,
         transport: null,
-        oldTerminalHosts: []
+        oldTerminalHosts: [],
+        runningServices: null
     };
 }
 
@@ -921,6 +933,10 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
             const daemon = get().daemon;
             if (daemon.oldTerminalHosts.length === 0 && hosts.length === 0) return;
             set({ daemon: { ...daemon, oldTerminalHosts: hosts } });
+        },
+
+        setRunningServices(running) {
+            set({ daemon: { ...get().daemon, runningServices: running } });
         },
 
         setConnectionStatus(status, error, rejection) {

@@ -239,11 +239,13 @@ export interface PaneChromeSync {
     readonly excluded: boolean;
 }
 
-/** Which of the three user-data badges this header's width can seat (`PaneHeader`'s `badgeFit`). */
+/** Which of the user-data badges this header's width can seat (`PaneHeader`'s `badgeFit`). */
 export interface PaneChromeBadgeFit {
     readonly label: boolean;
     readonly agent: boolean;
     readonly branch: boolean;
+    /** The running-services ports chip (docs/running-services.md §7); the first to go. */
+    readonly ports: boolean;
 }
 
 /**

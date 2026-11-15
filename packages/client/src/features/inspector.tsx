@@ -4,6 +4,8 @@
  * and graft events must remain current while the Inspector is closed.
  */
 
+import { portURL, runningByWorkspace, runningFor } from '../chrome/running';
+import type { RunningServicesState } from '../state/store';
 import type { WorkspaceState } from '@kelpi/daemon/store';
 import { useMemo, type ReactElement, type ReactNode } from 'react';
 
@@ -180,6 +182,8 @@ export interface InspectorViewActions extends InspectorActions {
     setWorkspaceMuted(workspaceID: string, muted: boolean): void;
     focusPane(paneID: string): void;
     closePane(paneID: string): void;
+    /** A service's port, in a web pane beside the given pane (the link menu's "Open in Kelpi"). */
+    openLinkInWebPane(paneID: string, url: string): boolean;
 }
 
 export interface InspectorFeatureViewProps {
@@ -196,6 +200,10 @@ export interface InspectorFeatureViewProps {
      * browser, where the sheet's typed path is the only input and no Choose… button is drawn.
      */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /** The daemon's last running-services scan (docs/running-services.md); null before one. */
+    readonly running?: RunningServicesState | null | undefined;
+    /** The daemon's home, for `~`-abbreviated folders. */
+    readonly homeDirectory?: string | undefined;
 }
 
 /** The existing Inspector remains the pure view; all feature-specific binding lives here. */
@@ -203,6 +211,7 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
     const { model, actions } = props;
     const workspace = model.workspace;
     if (workspace === null) return null;
+    const running = runningFor(runningByWorkspace(props.running?.services ?? []), workspace.id);
     return <Inspector
         side={props.side ?? 'right'}
         viewPicker={props.viewPicker}
@@ -228,6 +237,17 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
         onCreateWorktree={actions.addWorktree}
         onFocusPane={actions.focusPane}
         onClosePane={actions.closePane}
+        running={running}
+        runningScannedAt={props.running?.scannedAt ?? null}
+        homeDirectory={props.homeDirectory ?? ''}
+        onOpenServicePort={(service, port) => {
+            // Beside the pane that started it when that pane is here, else the focused pane.
+            const started = service.pane_id === null
+                ? undefined
+                : workspace.panes.find(pane => pane.id.toUpperCase() === service.pane_id?.toUpperCase())?.id;
+            const anchor = started ?? props.focusedPaneID ?? workspace.panes[0]?.id;
+            if (anchor !== undefined) actions.openLinkInWebPane(anchor, portURL(port));
+        }}
         graftSessions={model.graft.state.sessions}
         graftOrphans={model.graft.state.orphans}
         graftSwapPrompt={model.graft.state.swapPrompt}

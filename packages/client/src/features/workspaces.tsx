@@ -1,4 +1,5 @@
 /** Bundled Workspaces model, view lifecycle and host binding. */
+import { runningByWorkspace } from '../chrome/running';
 import { workspaceAgentSummary, type WorkspaceColor } from '@kelpi/daemon/store';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { RemoteDaemonSections, type RemoteSelection } from '../app/RemoteDaemonSections';
@@ -75,6 +76,8 @@ export function useWorkspacesFeatureModel(state: KelpiState) {
             defaultAgent: state.settings.value.general.newWorkspaceAgent,
             defaultSendPrompt: state.settings.value.general.newWorkspaceSendPrompt,
             canStartAgent: state.settings.agentStart,
+            // docs/running-services.md §7: each row's plug glyph.
+            runningServices: runningByWorkspace(state.daemon.runningServices?.services ?? []),
             workspaceAgentSummary: (workspaceID: string) => {
                 const target = state.daemon.state.workspaces.find(candidate => candidate.id === workspaceID);
                 return target === undefined ? { running: 0, waiting: 0, inactive: 0, total: 0 } : workspaceAgentSummary(target);
@@ -102,6 +105,9 @@ export interface WorkspacesFeatureViewProps {
     readonly reportFailure: (label: string, message: string) => void;
     /** #283's native folder panel (desktop app only): the group repository sheet's Choose Folder…. */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /** docs/running-services.md §7: the row menu's Services ▸ items. */
+    readonly openServicePort?: SidebarProps['onOpenServicePort'];
+    readonly showServices?: SidebarProps['onShowServices'];
 }
 
 /**
@@ -160,6 +166,9 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
             })}
         worktreeCleanup={props.worktreeCleanup}
         workspaceAgentSummary={model.workspaceAgentSummary}
+        runningServices={model.runningServices}
+        onOpenServicePort={props.openServicePort}
+        onShowServices={props.showServices}
         confirmDeleteWhenActive={model.confirmDeleteWhenActive}
         onSuppressDeleteConfirm={props.suppressDeleteConfirm}
         onToggleWorkspaceLabel={actions.toggleWorkspaceLabel}

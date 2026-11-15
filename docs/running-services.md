@@ -4,9 +4,9 @@ This document specifies **running services**: the dev servers, listening process
 containers on the daemon's machine, each attributed to the workspace whose pane started it, with
 the memory it uses and, in later phases, a way to stop it.
 
-Phase 1 (this document's implemented part) is a scanner in the daemon, the `running-list` verb and
-`kelpi ps`. The UI, stopping and resource sampling are designed here and built in later phases
-(§8).
+Phase 1 is a scanner in the daemon, the `running-list` verb and `kelpi ps`. Phase 2 is the app:
+a scan loop that broadcasts the list (§4) and the surfaces that show it (§7). Stopping and
+resource sampling are designed here and built in later phases (§8).
 
 Implementation index:
 
@@ -18,6 +18,11 @@ Implementation index:
 - `packages/daemon/src/running/handlers.ts`: the `running-list` verb
 - `packages/cli/src/commands/ps.ts`: `kelpi ps`
 - `packages/daemon/tests/compat/running.test.ts`: a server in a pane, found by a real daemon
+- `packages/daemon/src/running/monitor.ts`: the scan loop and the `running-services` broadcast
+- `packages/protocol/src/ws/messages.ts`: `WsRunningServicesMessage`
+- `packages/client/src/chrome/running.ts`: the grouping every surface shares (pure)
+- `packages/client/src/chrome/RunningServicesGlyph.tsx`, `InspectorServices.tsx`,
+  `RunningServicesChip.tsx`: the sidebar mark, the Inspector section, the status bar chip
 
 Naming (D1): the UI says **Services**, the user's word. Code, the wire and the CLI say
 `running` (`running-list`, `kelpi ps`, later `kelpi kill`), because "services" already names
@@ -142,13 +147,25 @@ processes".
 reused for 1.5 s, so an agent polling `kelpi ps` costs one set of probes. A full scan took 390 to
 590 ms on the machine above; a reused one is free.
 
-**Cadence, phase 2 (designed):** every 10 s while a window is visible, every 60 s when clients are
-attached but none is visible, off with no clients; plus one scan 1 s after a trigger (a pane's
-command finished, an agent hook fired, a stop completed, the panel opened). About 1.3% of one
-core while visible. The list goes to clients as its own WebSocket message (`running-services`),
-sent on change and replayed on attach like `old-terminal-hosts`, never through the domain store:
-every store dispatch rewrites SQLite. CPU and memory samples (`running-stats`) are sent only while
-a client shows them.
+**Cadence, phase 2:** every 10 s while a window is visible, every 60 s when clients are attached
+but none is visible, off with no clients; plus one scan 1 s after a trigger. About 1.3% of one
+core while visible. The trigger built so far is an agent event (a hook fired, a turn ended); a
+pane's command finishing and a stop completing are to come with phase 3. The loop looks at who is
+attached once a second and scans only when one is due, and never runs two scans at once.
+
+The list goes to clients as its own WebSocket message, never through the domain store (every
+store dispatch rewrites SQLite):
+
+```json
+{ "type": "running-services", "services": [ /* running-list entries, §5 */ ],
+  "scannedAt": "2026-11-15T03:00:00.000Z", "warnings": [] }
+```
+
+It is sent when the list changes and replayed after the snapshot on every attach, like
+`old-terminal-hosts`; before the first scan the replay is an empty list with `scannedAt: null`.
+Memory counts as a change only past a whole MiB, so a server whose resident size wobbles by a few
+pages does not resend the list every 10 s. CPU and memory samples (`running-stats`, phase 4) are
+to be sent only while a client shows them.
 
 ## 5. `running-list` and `kelpi ps`
 
@@ -193,30 +210,67 @@ follow. Workspace delete gains "Also stop N services", ticked only when every se
 from that workspace's panes (D3); `kelpi workspace delete --stop-services` is the CLI's form.
 Paired devices are refused host-wide stops (the owner-only class of `restart-old-terminals`).
 
-## 7. Surfaces (phase 2, designed)
+## 7. Surfaces (phase 2)
 
 Built in, the way pull-request status is (plugins have no slot on a sidebar row or in the
-Inspector):
+Inspector). Every surface reads one grouping (`chrome/running.ts`): a workspace's services are the
+scan's `workspace` category with that owner; an agent's own port is never counted.
+
+Built:
 
 - **Sidebar row:** a plug icon (ChromeIcon 12×12 at stroke 1.2: `M4.6 1.6v2.2M7.4 1.6v2.2`,
-  `M3 3.8h6v2.1a2.4 2.4 0 0 1-2.4 2.4H5.4A2.4 2.4 0 0 1 3 5.9z`, `M6 8.3v2.1`) with a 10px mono
-  count, drawn like the PR glyph; amber when a service is idle for days (D7: up over 3 days and
-  its agent idle that long, or its folder has no workspace). A collapsed group shows its
-  workspaces' total. The row menu gains Services ▸ (Open localhost:…, Show in Inspector, Stop all).
-- **Inspector:** a Services section after Repositories: a row per stack with its ports, starter,
-  uptime, memory and a stop button; members on expand.
-- **Pane header:** a `:3200 ↗` chip on the pane that started a listener; it opens a web pane.
-- **Status bar:** "N services · X GB", opening the bottom panel; amber leftovers.
-- **Bottom panel:** all services by workspace, "Not in a workspace", and a collapsed "Started
-  outside Kelpi" group (D2).
-- **Corner card:** stacks with no workspace at all, with Review and Stop all.
+  `M3 3.8h6v2.1a2.4 2.4 0 0 1-2.4 2.4H5.4A2.4 2.4 0 0 1 3 5.9z`, `M6 8.3v2.1`), drawn like the
+  PR glyph, with a 10px mono count past one; the tooltip lists the count, memory and first ports.
+  A collapsed group shows its workspaces' total, nested ones included.
+- **Row menu:** Services ▸ with Open localhost:PORT · name for each port (the first eight), and
+  Show in Inspector, which switches to the workspace and opens the Inspector.
+- **Inspector:** a Services section after Repositories: "N running · P ports · memory" when there
+  is more than one, then two lines per stack: its name and memory, then who started it, its
+  uptime and its first three ports as links. A row warns when its folder was deleted or belongs
+  to another workspace, and expands to its members (marking one that listens on every
+  interface), its process count and folder, and "Show the pane that started it".
+- **Pane header:** a `:3200 ↗` chip (`+N` for more ports) on the pane that started a listener; it
+  opens the first port in a web pane. It is the first badge the width ladder drops, before the
+  branch, since the Inspector and the status bar list the same ports. The remote workspace view
+  has no chip: its servers run on the remote machine, outside this daemon's scan.
+- **Status bar:** "N services · K leftover" (leftovers in amber). N counts the workspaces'
+  services; neither counts what was started outside Kelpi, and nothing is drawn when both are
+  zero.
+
+Opening a port puts a web pane beside the pane that started the service when that pane still
+exists, otherwise beside the focused pane.
+
+Changed from the design: the status bar chip opens a popover, not the bottom panel. The bottom
+panel band (`panel.bottom`) is visible by default, so a bundled view in it would appear for every
+user whether or not they run anything. The popover (440 px) holds what the panel would have:
+
+- One line per service: the workspace's avatar and name (the sidebar's, so they match at a
+  glance; clicking switches to it), the service with "detached", "Claude" or "Codex" where that
+  says something, its ports as links (two, then `+N`) and its memory. A workspace's later services
+  leave its column blank, so there is no heading per workspace. Uptime is in the name's tooltip.
+  The header carries the total memory.
+- Below a rule, the leftovers, grouped by the worktree they ran in (the scan's `worktree`), so the
+  stacks of one deleted worktree list together under its name with "2 stacks · 28 days". The
+  heading is "Left running after their worktree was deleted" when every group's folder is gone,
+  else "Not in a workspace" with "deleted" on the groups that are.
+- Last, collapsed, "Started outside Kelpi" (D2).
+
+To come:
+
+- **Amber idle marking** on the sidebar mark (D7: up over 3 days and its agent idle that long, or
+  its folder has no workspace), with phase 4's idle data.
+- **Stop:** Services ▸ Stop all, the Inspector row's stop button (phase 3, §6).
+- **Corner card:** stacks with no workspace at all, with Review and Stop all (phase 4).
 - **Phone:** a Services sheet; Stop for the owner; Open is desktop-only (D5), since a phone cannot
-  reach the Mac's `localhost` without a daemon proxy.
+  reach the Mac's `localhost` without a daemon proxy (phase 5).
+- **Pane chrome presenters** (plugin-ui.md) see the ports badge's fit in `size.badges.ports` but
+  not the ports themselves, so a presenter cannot draw the chip yet.
 
 ## 8. Build order
 
 1. **Scanner and `kelpi ps`, read-only.** Done.
-2. **See them:** the surfaces in §7 and the `running-services` broadcast.
+2. **See them:** the surfaces in §7 and the `running-services` broadcast. Done, bar amber idle
+   marking (phase 4).
 3. **Stop them:** §6, `kelpi kill`, the palette command, the workspace-delete checkbox.
 4. **Cost and leftovers:** CPU from CPU-time deltas, container stats, idle marking, the corner card.
 5. **Beyond the desktop:** the phone sheet; services a repo declares with start and stop commands.

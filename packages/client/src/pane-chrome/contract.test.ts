@@ -33,7 +33,7 @@ function descriptor(
         zoom: { zoomed: false, available: false },
         sync: { active: false, excluded: false },
         height: PANE_CHROME_LIMITS.nativeHeight,
-        size: { width: 400, badges: { label: false, agent: false, branch: false }, buttons: 4, folded },
+        size: { width: 400, badges: { label: false, agent: false, branch: false, ports: false }, buttons: 4, folded },
         controls,
         items: [],
         contributions: null,

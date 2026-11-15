@@ -121,6 +121,8 @@ export interface RunningService {
     readonly directoryWorkspaceID: string | null;
     readonly directoryWorkspaceName: string | null;
     readonly directoryMissing: boolean;
+    /** The worktree `directory` sits in, or the deleted folder it was in (`worktreeOf`). */
+    readonly worktree: string | null;
     /** Epoch seconds; null when unknown. */
     readonly startedAt: number | null;
     /** The stack's root process. */

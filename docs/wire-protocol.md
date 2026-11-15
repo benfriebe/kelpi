@@ -2196,7 +2196,7 @@ refusal; it is a `warnings` entry (below).
      "workspace_id":"<uuid>","workspace_name":"notes","pane_id":"<uuid>",
      "attribution":"process-tree","started_by":"pane","agent":null,"foreground":true,
      "directory":"/Users/me/repos/notes","directory_workspace_id":"<uuid>",
-     "directory_workspace_name":"notes","directory_missing":false,
+     "directory_workspace_name":"notes","directory_missing":false,"worktree":null,
      "started_at":"2026-11-15T07:00:00Z","pid":51513,"process_count":3,"rss_bytes":222298112,
      "ports":[{"port":4400,"address":"127.0.0.1","exposed":false,"pid":51530,"container_port":null}],
      "members":[{"name":"node","pid":51530,"container_id":null,"image":null,
@@ -2224,6 +2224,7 @@ UUIDs and times ISO 8601 UTC at whole seconds, as elsewhere.
 | `directory` | string or null | The stack root's working directory (else its first listener's), or the compose project's folder (the most common one among its containers' labels). |
 | `directory_workspace_id`, `directory_workspace_name` | string or null | The workspace whose folder holds `directory`, null when none does. It differs from `workspace_id` when a pane of one workspace started a server in a folder that is not that workspace's own. |
 | `directory_missing` | bool | `directory` no longer exists (a deleted worktree). |
+| `worktree` | string \| null | The worktree `directory` sits in, so leftovers from one worktree list together: the topmost deleted folder when `directory` is gone, else the folder one level under a known repo's worktree base, else the known repo holding it; null outside all of them. |
 | `started_at` | string or null | When the root process started, or when the earliest container was created; null when unknown. |
 | `pid` | int or null | The stack's root process; null for containers. |
 | `process_count` | int | Processes in the stack (the root and all its descendants), or containers in the project. |

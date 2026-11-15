@@ -41,6 +41,8 @@ export interface ScanContext {
     readonly workspaces: readonly WorkspaceFolders[];
     /** Worktree and repo folders: services there with no workspace are listed as unattached. */
     readonly knownFolders: readonly string[];
+    /** The folders each known repo's worktrees are created in: a worktree is one folder below. */
+    readonly worktreeBases?: readonly string[] | undefined;
     /** Kelpi's own processes (the daemon): never services. */
     readonly selfPids: ReadonlySet<number>;
     /** Workspace ids in sidebar order, for sorting. */
@@ -135,6 +137,7 @@ export function createRunningScanner(options: RunningScannerOptions): RunningSca
                 containers: containerRows,
                 workspaces: context.workspaces,
                 knownFolders: context.knownFolders,
+                worktreeBases: context.worktreeBases,
                 pathExists: (path) => probes.pathExists(path)
             },
             context.workspaceOrder

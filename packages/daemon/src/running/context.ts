@@ -20,15 +20,24 @@ export interface ScanContextSources {
     readonly workspaceOrder: readonly string[];
 }
 
-export function buildScanContext(sources: ScanContextSources): ScanContext {
-    const { state, realpath } = sources;
+/**
+ * Every pane's shell pid, visible and parked (a tab's panes all live in `panes`), and its pane.
+ * The scan attributes through them and a stop never signals one, so both read this one walk.
+ */
+export function paneShellPids(state: ScanContextSources['state'], panePid: (paneID: string) => number | undefined): Map<number, PaneShellRef> {
     const paneShells = new Map<number, PaneShellRef>();
     for (const workspace of state.workspaces) {
         for (const pane of [...workspace.panes, ...workspace.parkedPanes]) {
-            const pid = sources.panePid(pane.id);
+            const pid = panePid(pane.id);
             if (pid !== undefined && pid > 0) paneShells.set(pid, { paneID: pane.id, workspaceID: workspace.id });
         }
     }
+    return paneShells;
+}
+
+export function buildScanContext(sources: ScanContextSources): ScanContext {
+    const { state, realpath } = sources;
+    const paneShells = paneShellPids(state, sources.panePid);
     const workspaces: WorkspaceFolders[] = state.workspaces.map((workspace) => ({
         id: workspace.id,
         name: workspace.name,

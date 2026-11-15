@@ -87,7 +87,7 @@ import {
 } from '../graft/index.js';
 import { createGhRunner, createPullRequestGit, createPullRequestPoller } from '../github/index.js';
 import { createAppHandlers, listedWorkspaceIDs, type WorktreeCreator } from '../handlers/app/index.js';
-import { buildScanContext, createHostProbes, createRunningScanner } from '../running/index.js';
+import { buildScanContext, createHostProbes, createRunningScanner, createRunningStopper, dockerPost, dockerSocketPath } from '../running/index.js';
 import { createRunningMonitor } from '../running/monitor.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
@@ -1665,8 +1665,25 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         onError: (error) => report(error, 'running services')
     });
 
+    // docs/running-services.md §6: `running-stop`, `kelpi kill` and the app's Stop buttons. Every
+    // pid is rechecked against a fresh `ps`; Docker's socket is looked up per stop, as per scan.
+    const runningStopper = createRunningStopper({
+        scan: (scanOptions) => runningServices.scan(scanOptions),
+        processTable: () => runningProbes.processTable(),
+        signal: (pid, signal) => {
+            process.kill(pid, signal);
+        },
+        docker: (path, timeoutMs) => {
+            const socket = dockerSocketPath(env, home);
+            return socket === null ? Promise.reject(new Error('no Docker engine')) : dockerPost(socket, path, timeoutMs);
+        },
+        poke: () => runningMonitor.poke()
+    });
+
     const appHandlers = createAppHandlers({
         running: runningServices,
+        runningStop: runningStopper,
+        panePid: (paneID) => pty.pid(paneID),
         git,
         worktrees,
         bundledWorktrees,

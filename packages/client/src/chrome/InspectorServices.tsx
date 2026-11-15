@@ -4,7 +4,9 @@
  * memory, then who started it, how long ago and its ports; a port opens in a web pane, and the
  * row expands to the stack's members and folder.
  *
- * Read-only in phase 2: stopping a service is phase 3.
+ * Stop (§6, phase 3) sits on the row's first line, shown on hover or focus, and asks in the
+ * stop dialog (`StopServicesDialog`), as every other surface does; the dialog says how it went
+ * and offers Force stop. An expanded row's members each have their own Stop.
  */
 
 import { useState, type ReactElement } from 'react';
@@ -18,6 +20,7 @@ import {
     portURL,
     runsElsewhere,
     starterText,
+    stopLabel,
     uptimeText,
     type WorkspaceRunning
 } from './running';
@@ -38,6 +41,38 @@ export interface InspectorServicesProps {
     readonly onOpenPort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     /** Focus the pane that started the service. */
     readonly onShowPane?: ((paneID: string) => void) | undefined;
+    /** docs/running-services.md §6: ask to stop it, or one member (a process id or container id). */
+    readonly onStop?: StopService | undefined;
+}
+
+export type StopService = (service: RunningServiceEntry, member?: { readonly id: string; readonly name: string }) => void;
+
+function StopButton(props: {
+    readonly label: string;
+    readonly onClick: () => void;
+    readonly testID: string;
+    readonly bucket: ChromeBucket;
+}): ReactElement {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            type="button"
+            data-testid={props.testID}
+            aria-label={props.label}
+            title={props.label}
+            // Shown on the row's hover or keyboard focus only, so a list of services stays calm.
+            className="shrink-0 rounded-[3px] p-0.5 opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+            style={{ color: hovered ? workspaceColorHex('red', props.bucket) : tokens.textTertiary }}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={(event) => {
+                event.stopPropagation();
+                props.onClick();
+            }}
+        >
+            <ChromeIcon name="stop" />
+        </button>
+    );
 }
 
 function PortLink(props: { readonly port: RunningServicePort; readonly onOpen?: (() => void) | undefined }): ReactElement {
@@ -64,6 +99,7 @@ function ServiceRow(props: {
     readonly ownsFolders: boolean;
     readonly onOpenPort?: InspectorServicesProps['onOpenPort'];
     readonly onShowPane?: InspectorServicesProps['onShowPane'];
+    readonly onStop?: StopService | undefined;
 }): ReactElement {
     const { service } = props;
     const [open, setOpen] = useState(false);
@@ -80,24 +116,34 @@ function ServiceRow(props: {
         <div
             data-testid={`inspector-service-${service.id}`}
             data-open={open ? 'true' : 'false'}
-            className="-mx-1.5 flex flex-col rounded-[6px] px-1.5 py-1"
+            className="group -mx-1.5 flex flex-col rounded-[6px] px-1.5 py-1"
             style={open ? { background: withAlpha(tokens.textPrimary, 0.04) } : undefined}
         >
-            <button
-                type="button"
-                className="flex min-w-0 items-center gap-1.5 text-left"
-                aria-expanded={open}
-                title={service.command}
-                onClick={() => setOpen((value) => !value)}
-            >
-                <span className="shrink-0" style={{ color: tokens.textTertiary }}>
-                    <ChromeIcon name={service.kind === 'process' ? 'terminal' : 'stack'} />
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{service.name}</span>
-                <span className="shrink-0 font-mono text-[10px]" style={{ color: tokens.textSecondary }}>
-                    {service.rss_bytes === null ? '' : memoryText(service.rss_bytes)}
-                </span>
-            </button>
+            <div className="flex min-w-0 items-center gap-1.5">
+                <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                    aria-expanded={open}
+                    title={service.command}
+                    onClick={() => setOpen((value) => !value)}
+                >
+                    <span className="shrink-0" style={{ color: tokens.textTertiary }}>
+                        <ChromeIcon name={service.kind === 'process' ? 'terminal' : 'stack'} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{service.name}</span>
+                    <span className="shrink-0 font-mono text-[10px]" style={{ color: tokens.textSecondary }}>
+                        {service.rss_bytes === null ? '' : memoryText(service.rss_bytes)}
+                    </span>
+                </button>
+                {props.onStop === undefined ? null : (
+                    <StopButton
+                        label={`${stopLabel(service)} ${service.name}`}
+                        testID="inspector-service-stop"
+                        bucket={props.bucket}
+                        onClick={() => props.onStop?.(service)}
+                    />
+                )}
+            </div>
             <div className="flex min-w-0 items-baseline gap-2 pl-[18px] text-[10.5px]" style={{ color: tokens.textTertiary }}>
                 <span className="min-w-0 truncate">
                     {starterText(service)} · up {uptimeText(service.started_at, props.scannedAt)}
@@ -139,6 +185,17 @@ function ServiceRow(props: {
                             <span className="w-[42px] shrink-0 text-right font-mono text-[10px]" style={{ color: tokens.textTertiary }}>
                                 {member.rss_bytes === null ? '' : memoryText(member.rss_bytes)}
                             </span>
+                            {props.onStop === undefined || service.members.length < 2 ? null : (
+                                <StopButton
+                                    label={`Stop ${member.name}`}
+                                    testID="inspector-member-stop"
+                                    bucket={props.bucket}
+                                    onClick={() => {
+                                        const id = member.container_id ?? (member.pid === null ? null : String(member.pid));
+                                        if (id !== null) props.onStop?.(service, { id, name: member.name });
+                                    }}
+                                />
+                            )}
                         </div>
                     ))}
                     <div className="truncate pt-0.5 text-[10px]" style={{ color: tokens.textTertiary }} title={service.directory ?? service.command}>
@@ -191,6 +248,7 @@ export function InspectorServices(props: InspectorServicesProps): ReactElement {
                     ownsFolders={props.ownsFolders ?? true}
                     onOpenPort={props.onOpenPort}
                     onShowPane={props.onShowPane}
+                    onStop={props.onStop}
                 />
             ))}
         </>

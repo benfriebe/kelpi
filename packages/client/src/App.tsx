@@ -36,7 +36,8 @@ import { remoteWorkspaceOf, tabTargetFor, useRemoteWorkspace, type TabTarget } f
 import { actionsDuringGesture, createRecentSwitcher, heldModifiersFromEvent } from './app/recent-switcher';
 import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
 import { RecentWorkspaceSwitcherHost } from './chrome/RecentWorkspaceSwitcher';
-import { portURL } from './chrome/running';
+import { portURL, runningByWorkspace, runningFor } from './chrome/running';
+import { StopServicesDialog, stopPromptFor, type StopPrompt } from './chrome/StopServicesDialog';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
 import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
@@ -85,7 +86,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, chordKeyIdentity, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type RunningServiceEntry, type RunningServicePort, type WsOldTerminalHost } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type RunningServiceEntry, type RunningServicePort, type RunningStopResult, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -4071,6 +4072,11 @@ function Shell(props: AppProps): ReactElement {
         openSettings,
         // #372: the palette row that brings the old-terminal-host notice back after "Later".
         showOldTerminalHosts,
+        // docs/running-services.md §6: "Stop Service" rows. A closure, since `requestStop` is
+        // declared further down this render and is only read when a row is picked.
+        stopServices: (services) => {
+            requestStop(services);
+        },
         // Desktop only: the phone shell draws no root band, so there is nothing to arrange.
         arrangement: phoneActive ? null : {
             current: () => workbench.arrangement,
@@ -4127,6 +4133,58 @@ function Shell(props: AppProps): ReactElement {
         if (home !== undefined && home.id !== selectActiveWorkspace(current)?.id) activateWorkspaceAndReveal(home.id);
         act.openLinkInWebPane(anchor, portURL(port));
     }, [act, activateWorkspaceAndReveal, store]);
+    /**
+     * docs/running-services.md §6: one stop for every surface. A paired device is refused by the
+     * daemon (owner-only); the toast says so in words. Each refused service is its own toast.
+     */
+    const stopServices = useCallback(async (
+        services: readonly RunningServiceEntry[],
+        options: { readonly force?: boolean; readonly member?: string; readonly confirmed?: boolean } = {}
+    ): Promise<readonly RunningStopResult[] | null> => {
+        const label = services.length === 1 ? `Stop ${services[0]?.name ?? 'service'}` : 'Stop services';
+        try {
+            const reply = await commands.runningStop({
+                ids: services.map(service => service.id),
+                ...(options.member === undefined ? {} : { member: options.member }),
+                ...(options.force === true ? { force: true } : {}),
+                // Every surface that reaches here has asked (the Inspector inline, the dialogs).
+                confirmed: options.confirmed ?? true
+            });
+            if (!isOkReply(reply)) {
+                const error = replyError(reply);
+                notifyFailure(label, /owner-only/.test(error) ? 'only the owner of this Kelpi can stop services' : error);
+                return null;
+            }
+            const results = (reply as unknown as { readonly results?: readonly RunningStopResult[] }).results ?? [];
+            return results;
+        } catch (error) {
+            notifyFailure(label, error instanceof Error ? error.message : String(error));
+            return null;
+        }
+    }, [commands, notifyFailure]);
+    const [stopPrompt, setStopPrompt] = useState<StopPrompt | null>(null);
+    /** Every Stop asks first, in the stop dialog: one service, a member of one, or several. */
+    const requestStop = useCallback((
+        services: readonly RunningServiceEntry[],
+        where?: string,
+        member?: { readonly id: string; readonly name: string }
+    ): void => {
+        if (services.length === 0) return;
+        setStopPrompt(stopPromptFor(services, where, member));
+    }, []);
+    /** The Inspector row's Stop and a member's. */
+    const stopService = useCallback(
+        (service: RunningServiceEntry, member?: { readonly id: string; readonly name: string }) => {
+            requestStop([service], undefined, member);
+        },
+        [requestStop]
+    );
+    const stopWorkspaceServices = useCallback((workspaceID: string): void => {
+        const current = store.getState();
+        const workspace = current.daemon.state.workspaces.find(candidate => candidate.id.toUpperCase() === workspaceID.toUpperCase());
+        const running = runningFor(runningByWorkspace(current.daemon.runningServices?.services ?? []), workspaceID);
+        requestStop(running?.services ?? [], workspace === undefined ? undefined : `in ${workspace.name}`);
+    }, [requestStop, store]);
     /** The pane header chip's port, beside its own pane; stable so `memo(PaneHeader)` holds. */
     const openPanePort = useCallback((paneID: string, port: RunningServicePort): void => {
         act.openLinkInWebPane(paneID, portURL(port));
@@ -5170,13 +5228,14 @@ function Shell(props: AppProps): ReactElement {
                     reportFailure: notifyFailure,
                     openServicePort,
                     showServices: (workspaceID: string) => { selectWorkspaceByWireID(workspaceID); setInspectorVisible(true); },
+                    stopServices: stopWorkspaceServices,
                     // app-state-core.md §5.5: the group repository sheet's Choose Folder…,
                     // desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
-                    running: daemon.runningServices, homeDirectory: daemon.info?.home ?? '', openServicePort,
+                    running: daemon.runningServices, homeDirectory: daemon.info?.home ?? '', openServicePort, stopService,
                     // #283: Add Repository ▸ Choose…, desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }) }),
                 bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null, tabs: tabBar, leadWidth: tabLeadWidth, leadAnimated: tabLeadAnimated },
@@ -5184,7 +5243,7 @@ function Shell(props: AppProps): ReactElement {
                 bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
                     contributionsKey: JSON.stringify(pluginCommands.items('statusbar')), selectPane: (workspaceID, paneID) => executeChrome('kelpi.pane.focus', { workspaceID, paneID }),
                     // docs/running-services.md §7: the footer's services popover.
-                    openServicePort, selectWorkspace: selectWorkspaceByWireID })
+                    openServicePort, selectWorkspace: selectWorkspaceByWireID, stopServices: requestStop })
             ]}>
         <div
             data-testid="kelpi-app"
@@ -5839,6 +5898,19 @@ function Shell(props: AppProps): ReactElement {
                     onSuppress={() => {
                         tabCloseGate.suppress();
                     }}
+                />
+            )}
+
+            {/* docs/running-services.md §6: the row menu's Stop All, the popover's, the palette's. */}
+            {stopPrompt === null ? null : (
+                <StopServicesDialog
+                    prompt={stopPrompt}
+                    bucket={bucket}
+                    onStop={(services, force) => stopServices(services, {
+                        force,
+                        ...(stopPrompt.member === undefined ? {} : { member: stopPrompt.member.id })
+                    })}
+                    onClose={() => setStopPrompt(null)}
                 />
             )}
 

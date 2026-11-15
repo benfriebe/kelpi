@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { flush, harness, id, seeded } from '../handlers/app/testing.js';
 import type { RunningScanner } from './scanner.js';
+import type { RunningStopper, StopCall, StopOutcome, StopRequest } from './stop.js';
 import type { RunningScan, RunningService, RunningServiceCategory } from './types.js';
 
 const W1 = id('aaaaaaaa', 1);
@@ -166,5 +167,107 @@ describe('running-list', () => {
         const h = harness({ initial: seeded(1) });
         const reply = await ask(h, { all: true });
         expect(reply).toMatchObject({ ok: true, services: [], warnings: [] });
+    });
+});
+
+describe('running-stop', () => {
+    function stopper(answer: StopOutcome = { ok: true, results: [] }): RunningStopper & { calls: { request: StopRequest; call: StopCall }[] } {
+        const fake = {
+            calls: [] as { request: StopRequest; call: StopCall }[],
+            stop(request: StopRequest, call: StopCall) {
+                fake.calls.push({ request, call });
+                return Promise.resolve(answer);
+            }
+        };
+        return fake;
+    }
+
+    async function stop(h: ReturnType<typeof harness>, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+        const payloads = h.send({ command: 'running-stop', ...payload });
+        await flush();
+        expect(payloads).toHaveLength(1);
+        return payloads[0] as Record<string, unknown>;
+    }
+
+    it('hands the request to the stopper with the pane shells, and answers in the wire shape', async () => {
+        const fake = stopper({
+            ok: true,
+            results: [
+                {
+                    id: 'process:1:2',
+                    name: 'web',
+                    ports: [3000],
+                    action: 'signal',
+                    signal: 'SIGTERM',
+                    signalled: 2,
+                    skipped: [],
+                    failed: [],
+                    remaining: [],
+                    stopped: true,
+                    restartedBy: null
+                }
+            ]
+        });
+        const h = harness({ initial: seeded(1), runningStop: fake, panePid: (paneID) => (paneID.toUpperCase() === P1 ? 777 : undefined) });
+        const reply = await stop(h, { ids: ['process:1:2'], force: true, wait_ms: 0 });
+        expect(reply).toEqual({
+            ok: true,
+            results: [
+                {
+                    id: 'process:1:2',
+                    name: 'web',
+                    ports: [3000],
+                    action: 'signal',
+                    signal: 'SIGTERM',
+                    signalled: 2,
+                    skipped: [],
+                    failed: [],
+                    remaining: [],
+                    stopped: true,
+                    restarted_by: null
+                }
+            ]
+        });
+        const first = fake.calls[0];
+        expect(first?.request).toMatchObject({ ids: ['process:1:2'], force: true, confirmed: false, waitMs: 0 });
+        expect([...(first?.call.protection.paneShells.keys() ?? [])]).toEqual([777]);
+    });
+
+    it("sends a refused request's code, and the candidates for an ambiguous port", async () => {
+        const fake = stopper({ ok: false, code: 'AMBIGUOUS_PORT', error: '2 services listen on port 3000', candidates: ['a', 'b'] });
+        const h = harness({ initial: seeded(1), runningStop: fake });
+        expect(await stop(h, { port: 3000 })).toEqual({ ok: false, error: '2 services listen on port 3000', code: 'AMBIGUOUS_PORT', candidates: ['a', 'b'] });
+    });
+});
+
+describe('workspace-delete with stop_services', () => {
+    function recording(): RunningStopper & { requests: StopRequest[] } {
+        const fake = {
+            requests: [] as StopRequest[],
+            stop(request: StopRequest) {
+                fake.requests.push(request);
+                return Promise.resolve({ ok: true as const, results: [] });
+            }
+        };
+        return fake;
+    }
+
+    it("stops the deleted workspace's services, not its agent's own port, once the delete stands", async () => {
+        const fake = recording();
+        const h = harness({ initial: seeded(2), running: scanner(), runningStop: fake });
+        const payloads = h.send({ command: 'workspace-delete', name: 'w1', stop_services: true });
+        await flush();
+        expect(payloads[0]).toMatchObject({ ok: true, workspace_name: 'w1', stopping_services: 1 });
+        expect(fake.requests).toEqual([{ ids: ['process:one'], force: false, confirmed: true, waitMs: 0 }]);
+        expect(h.store.getState().workspaces.map((workspace) => workspace.name)).toEqual(['w2']);
+    });
+
+    it('stops nothing when the delete is refused', async () => {
+        const fake = recording();
+        const h = harness({ initial: seeded(1), running: scanner(), runningStop: fake });
+        const payloads = h.send({ command: 'workspace-delete', name: 'w1', stop_services: true });
+        await flush();
+        expect(payloads[0]).toMatchObject({ ok: false, error: 'refusing to delete the last workspace' });
+        expect(fake.requests).toEqual([]);
     });
 });

@@ -37,7 +37,7 @@ import { createPortal } from 'react-dom';
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
-import { InspectorServices } from './InspectorServices';
+import { InspectorServices, type StopService } from './InspectorServices';
 import { PullRequestLinks } from './PullRequestGlyph';
 import type { WorkspaceRunning } from './running';
 import { useModalPresence } from './modal-presence';
@@ -152,6 +152,8 @@ export interface InspectorProps {
     /** For `~`-abbreviated folders (the daemon's home). */
     readonly homeDirectory?: string | undefined;
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
+    /** docs/running-services.md §6: a row's Stop. Absent = no Stop controls. */
+    readonly onStopService?: StopService | undefined;
 
     // ── graft (§GIT-046…§GIT-051, §WS-143…§WS-145) ────────────────────────────────
     //
@@ -635,6 +637,7 @@ export function Inspector(props: InspectorProps): ReactElement {
                         bucket={bucket}
                         ownsFolders={(props.associations?.length ?? 0) > 0}
                         onOpenPort={props.onOpenServicePort}
+                        onStop={props.onStopService}
                         onShowPane={props.onFocusPane}
                     />
                 </section>

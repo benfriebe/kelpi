@@ -108,6 +108,8 @@ export interface WorkspacesFeatureViewProps {
     /** docs/running-services.md §7: the row menu's Services ▸ items. */
     readonly openServicePort?: SidebarProps['onOpenServicePort'];
     readonly showServices?: SidebarProps['onShowServices'];
+    /** docs/running-services.md §6: the row menu's Services ▸ Stop All…. */
+    readonly stopServices?: SidebarProps['onStopServices'];
 }
 
 /**
@@ -162,13 +164,15 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onDeleteWorkspace={(workspaceID, cleanup, options) =>
             actions.deleteWorkspace(workspaceID, {
                 cleanup,
-                ...(options?.cascadeChildren === true ? { cascadeChildren: true } : {})
+                ...(options?.cascadeChildren === true ? { cascadeChildren: true } : {}),
+                ...(options?.stopServices === true ? { stopServices: true } : {})
             })}
         worktreeCleanup={props.worktreeCleanup}
         workspaceAgentSummary={model.workspaceAgentSummary}
         runningServices={model.runningServices}
         onOpenServicePort={props.openServicePort}
         onShowServices={props.showServices}
+        onStopServices={props.stopServices}
         confirmDeleteWhenActive={model.confirmDeleteWhenActive}
         onSuppressDeleteConfirm={props.suppressDeleteConfirm}
         onToggleWorkspaceLabel={actions.toggleWorkspaceLabel}

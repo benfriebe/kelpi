@@ -75,8 +75,9 @@ export function useStatusbarActions(host: StatusbarActionHost) {
 }
 export function bindStatusbarFeature(input: { model: ReturnType<typeof statusbarModel>; presentation: Pick<StatusFooterProps, 'bucket'>;
     contributions: ReactNode; contributionsKey: string; selectPane(workspaceID: string, paneID: string): void;
-    openServicePort?: StatusFooterProps['onOpenServicePort']; selectWorkspace?: StatusFooterProps['onSelectWorkspace'] }): BundledFeatureBinding {
+    openServicePort?: StatusFooterProps['onOpenServicePort']; selectWorkspace?: StatusFooterProps['onSelectWorkspace'];
+    stopServices?: StatusFooterProps['onStopServices'] }): BundledFeatureBinding {
     return { definition: STATUSBAR_FEATURE, render: () => <StatusFooter {...input.model} {...input.presentation}
         contributions={input.contributions} contributionsKey={input.contributionsKey} onSelectPane={input.selectPane}
-        onOpenServicePort={input.openServicePort} onSelectWorkspace={input.selectWorkspace} /> };
+        onOpenServicePort={input.openServicePort} onSelectWorkspace={input.selectWorkspace} onStopServices={input.stopServices} /> };
 }

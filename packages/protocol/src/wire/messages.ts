@@ -545,6 +545,12 @@ export interface WorkspaceDeleteMessage {
      * a sharer.
      */
     batch_ids?: readonly string[] | undefined;
+    /**
+     * Also stop the services the deleted workspaces own (docs/running-services.md §6, D3): found
+     * before the delete, stopped after it succeeds, so a refused delete stops nothing. Owner-only
+     * over WebSocket.
+     */
+    stop_services?: boolean | undefined;
 }
 
 export interface WorkspaceProfileMessage {
@@ -782,6 +788,34 @@ export interface RunningListMessage {
     /** `current` = the requesting pane's workspace. Any other value is refused. */
     scope?: string | undefined;
     all: boolean;
+}
+
+/** `running-stop` limits: services per request, and the longest wait for them to exit. */
+export const RUNNING_STOP_MAX_IDS = 100;
+export const RUNNING_STOP_MAX_WAIT_MS = 30_000;
+export const RUNNING_STOP_DEFAULT_WAIT_MS = 5_000;
+
+/**
+ * Stop running services (docs/running-services.md §6): `ids` from `running-list`, or the one
+ * service listening on `port`. A pane's foreground job gets Ctrl-C; a process stack SIGTERM
+ * (SIGKILL with `force`); a compose project or container Docker's stop (kill with `force`).
+ * Replies `{ results }`, one per service, after waiting up to `wait_ms` for them to exit.
+ * Owner-only over WebSocket: a paired device is refused.
+ */
+export interface RunningStopMessage {
+    command: 'running-stop';
+    /** Services by `running-list` id. Exactly one of `ids` and `port`. */
+    ids?: readonly string[] | undefined;
+    /** The service with a listener on this port (1 to 65535). */
+    port?: number | undefined;
+    /** One member instead of the whole service: a process id, or a container id. One service only. */
+    member?: string | undefined;
+    /** SIGKILL a process stack, kill a container. */
+    force: boolean;
+    /** The caller asked its user: required to stop a service started outside Kelpi (D2). */
+    confirmed: boolean;
+    /** How long to wait for the stopped processes to exit; 0 = do not wait. Default 5000, at most 30000. */
+    wait_ms?: number | undefined;
 }
 
 // ── 6.9 Web pane commands ───────────────────────────────────────────────────────────
@@ -1086,6 +1120,7 @@ export type WireMessage =
     | GraftStatusMessage
     | PingMessage
     | RunningListMessage
+    | RunningStopMessage
     | RestartOldTerminalsMessage
     | WebOpenMessage
     | WebNavigateMessage
@@ -1157,6 +1192,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'ping',
     'restart-old-terminals',
     'running-list',
+    'running-stop',
     'pane-sync',
     'pane-sync-exclude',
     'pane-send-key',

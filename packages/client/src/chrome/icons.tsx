@@ -65,6 +65,8 @@ export type ChromeIconName =
     | 'plug'
     /** docs/running-services.md §7: services left running after their worktree went. */
     | 'warning'
+    /** docs/running-services.md §6: stop a service, the media "stop" square. */
+    | 'stop'
     // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
     // `memorychip`, `gauge.with.dots.needle.33percent`, `network`,
     // `externaldrive.badge.timemachine`, `internaldrive`) redrawn at this file's 12×12 grid.
@@ -255,6 +257,7 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
             <path d="M6 5v2.2M6 8.6v.1" />
         </>
     ),
+    stop: <rect x="2.75" y="2.75" width="6.5" height="6.5" rx="1.2" />,
     cpu: (
         <>
             <rect x="3.2" y="3.2" width="5.6" height="5.6" rx="0.8" />

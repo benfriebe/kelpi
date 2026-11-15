@@ -26,6 +26,7 @@ import { handleInstallHooks } from './commands/install-hooks.js';
 import { handleLayout } from './commands/layout.js';
 import { handleDiff, handleMarkdown, handleOpen } from './commands/openmd.js';
 import { handlePane } from './commands/pane.js';
+import { handleKill } from './commands/kill.js';
 import { handlePs } from './commands/ps.js';
 import { handlePluginVerb, pluginVerbsHelp } from './commands/plugin-cli.js';
 import { handleTab } from './commands/tab.js';
@@ -90,6 +91,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
             return handleWeb(args);
         case 'ps':
             return handlePs(args);
+        case 'kill':
+            return handleKill(args);
         case 'doctor':
             return handleDoctor(args);
         case 'daemon':

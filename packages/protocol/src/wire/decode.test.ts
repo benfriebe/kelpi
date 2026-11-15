@@ -1001,6 +1001,40 @@ describe('workspace and group commands', () => {
         expect(rejected({ command: 'running-list', all: 'yes' }).field).toBe('all');
     });
 
+    it('decodes running-stop by ids or by port, never both, and bounds what it is given', () => {
+        expect(ok({ command: 'running-stop', ids: ['process:1:2'] })).toEqual({
+            command: 'running-stop',
+            ids: ['process:1:2'],
+            force: false,
+            confirmed: false
+        });
+        expect(ok({ command: 'running-stop', port: 3000, force: true, confirmed: true, wait_ms: 0 })).toEqual({
+            command: 'running-stop',
+            port: 3000,
+            force: true,
+            confirmed: true,
+            wait_ms: 0
+        });
+        // A wait past the limit is clamped, not refused; a negative one is no wait.
+        expect(ok({ command: 'running-stop', port: 3000, wait_ms: 600_000 })).toMatchObject({ wait_ms: 30_000 });
+        expect(ok({ command: 'running-stop', port: 3000, wait_ms: -5 })).toMatchObject({ wait_ms: 0 });
+        expect(ok({ command: 'running-stop', ids: ['compose:shop'], member: '0123456789ab' })).toMatchObject({ member: '0123456789ab' });
+        expect(rejected({ command: 'running-stop' }).field).toBe('ids');
+        expect(rejected({ command: 'running-stop', ids: [] }).field).toBe('ids');
+        expect(rejected({ command: 'running-stop', ids: ['a'], port: 3000 }).field).toBe('ids');
+        expect(rejected({ command: 'running-stop', port: 0 }).field).toBe('port');
+        expect(rejected({ command: 'running-stop', port: 70_000 }).field).toBe('port');
+        expect(rejected({ command: 'running-stop', port: '3000' }).field).toBe('port');
+        expect(rejected({ command: 'running-stop', port: 3000, member: '../x' }).field).toBe('member');
+        expect(rejected({ command: 'running-stop', ids: ['a', 'b'], member: '12' }).field).toBe('member');
+        expect(rejected({ command: 'running-stop', ids: Array.from({ length: 101 }, (_, i) => `process:${String(i)}:1`) }).field).toBe('ids');
+    });
+
+    it('decodes stop_services on workspace-delete only when it is set', () => {
+        expect(ok({ command: 'workspace-delete', name: 'w1', stop_services: true })).toMatchObject({ stop_services: true });
+        expect(ok({ command: 'workspace-delete', name: 'w1' })).not.toHaveProperty('stop_services');
+    });
+
     it('decodes workspace-color from a plain shell, keeping color verbatim for the handler', () => {
         // Explicit chain: no pane_id needed, so an agent outside a pane can recolor a workspace.
         expect(ok({ command: 'workspace-color', name: 'feat-x', color: 'purple' })).toEqual({

@@ -5,8 +5,9 @@ containers on the daemon's machine, each attributed to the workspace whose pane 
 the memory it uses and, in later phases, a way to stop it.
 
 Phase 1 is a scanner in the daemon, the `running-list` verb and `kelpi ps`. Phase 2 is the app:
-a scan loop that broadcasts the list (§4) and the surfaces that show it (§7). Stopping and
-resource sampling are designed here and built in later phases (§8).
+a scan loop that broadcasts the list (§4) and the surfaces that show it (§7). Phase 3 stops them:
+the `running-stop` verb, `kelpi kill`, Stop in the app and the workspace delete's "Also stop"
+(§6). Resource sampling is designed here and built in a later phase (§8).
 
 Implementation index:
 
@@ -23,6 +24,10 @@ Implementation index:
 - `packages/client/src/chrome/running.ts`: the grouping every surface shares (pure)
 - `packages/client/src/chrome/RunningServicesGlyph.tsx`, `InspectorServices.tsx`,
   `RunningServicesChip.tsx`: the sidebar mark, the Inspector section, the status bar chip
+- `packages/daemon/src/running/stop.ts`: stopping a service, every pid rechecked (§6);
+  `running/stop-call.ts`: the pane shells and terminal hosts a handler knows
+- `packages/cli/src/commands/kill.ts`: `kelpi kill`
+- `packages/client/src/chrome/StopServicesDialog.tsx`: the question before a stop
 
 Naming (D1): the UI says **Services**, the user's word. Code, the wire and the CLI say
 `running` (`running-list`, `kelpi ps`, later `kelpi kill`), because "services" already names
@@ -196,21 +201,58 @@ notes           pnpm start             4400                      1h   319M  pane
 Agents use `kelpi ps --current --json` to find the port of the dev server their own pane started,
 and reuse it instead of starting a second copy on the next free port.
 
-## 6. Stopping (phase 3, designed)
+## 6. Stopping (phase 3)
+
+`running-stop` (wire-protocol.md §6.11.1) stops services by id, or the one service listening on
+a port (two on one port are refused, naming both). `kelpi kill`, the app's Stop buttons and the
+workspace delete all send it.
 
 | Selected | Action | Confirm |
 | --- | --- | --- |
-| A pane's foreground job | Ctrl-C to that pane, as `pane send-key ctrl-c` does | none; labelled "Stop (Ctrl-C)" |
-| A detached process stack | recheck each pid's start time, SIGTERM every process in the stack, offer Force stop (SIGKILL) after 5 s | inline, Cancel default |
-| One member of a stack | the same for its subtree; a supervisor such as turbo may restart it | inline |
-| A compose project or container | `POST /containers/{id}/stop` per container, never `down` | inline |
-| Started outside Kelpi | the same as a stack, behind a dialog that names the process (D2) | dialog |
-| Kelpi, the terminal host, pane shells, pid 1, other users' processes | refused | |
+| A pane's foreground job | Ctrl-C to that pane, as `pane send-key ctrl-c` does, once a fresh `ps` says the job still owns the terminal (otherwise the Ctrl-C would land on whatever is in the foreground now, an agent's turn say, and the job is signalled like a stack) | dialog, which says it is Ctrl-C; the button is labelled "Stop (Ctrl-C)" |
+| A server that is the pane's own process | Ctrl-C to the pane; never a signal, which would end the pane | dialog |
+| A detached process stack | the root must still have the start time in its id; SIGTERM to the root and every process under it, root first, then SIGCONT so a job suspended with Ctrl-Z sees it; after 5 s, Force stop (SIGKILL) | dialog, Cancel default |
+| One member of a stack | the same for its subtree | dialog, warning that a supervisor such as turbo may restart it |
+| A compose project or container | `POST /containers/{id}/stop` per container (Docker's own stop timeout), kill with Force; never `down` | dialog |
+| Started outside Kelpi | the same as a stack; the dialog names the process and its command (D2), and the verb refuses it without `confirmed` | dialog |
+| Kelpi, its terminal hosts, the Kelpi app, the daemon's ancestors and children, pane shells, pid 1, an agent's own port | refused | |
 
-The only process-group kill in the repo today is the git runner's (`git/exec.ts`), the pattern to
-follow. Workspace delete gains "Also stop N services", ticked only when every service was started
-from that workspace's panes (D3); `kelpi workspace delete --stop-services` is the CLI's form.
-Paired devices are refused host-wide stops (the owner-only class of `restart-old-terminals`).
+Changed from the design after trying it: every Stop in the app asks in the same dialog, a
+foreground job's Ctrl-C included; the design had the Inspector ask inline and Ctrl-C not ask at
+all, and a Stop that did not raise a dialog read as a click that did nothing.
+
+Rules the stopper keeps (`running/stop.ts`):
+
+- Every pid is checked against a `ps` taken for this stop, never against the scan the caller
+  saw. The walk down a stack stops at a pane shell, at an interactive shell and at an agent
+  (a Kelpi dev instance's panes, a tmux server's sessions are not the stack's).
+- Another user's process is left alone (`skipped`); when it is the root, nothing is signalled.
+- The daemon waits up to `wait_ms` (default 5 s) for the exits, and `remaining` is checked
+  against a fresh `ps`, so a zombie or a reused pid does not count. If a new listener took one
+  of the ports in that time, `restarted_by` names it (turbo, pm2 or a launchd job restarted it).
+- What a stop signalled (or sent Ctrl-C to) is remembered for 10 minutes by service id, as pid
+  and start time; a member's stop is remembered apart and only ever reaches that member. When
+  the root has exited but children have not (pnpm went, next-server stayed), a second stop of
+  the same id, usually Force, signals what is left. A foreground job that Ctrl-C did not stop
+  gets SIGTERM on the next plain stop, then SIGKILL with Force. Only pids the daemon found
+  itself are ever signalled.
+- Docker answers a container stop once the container has stopped, after its own stop timeout,
+  so a container stop is waited for to that answer (up to 35 s) rather than the processes' 5 s.
+- `restarted_by` only names a service that was not there before the stop; one already beside it
+  on the same port (`::1` and `127.0.0.1`) is a neighbour.
+- After a stop the scan loop is poked as soon as everything has exited, so the surfaces update.
+
+Workspace delete gains "Also stop N services (memory)" in its dialog, ticked only when every
+service was started from those workspaces' panes (`attribution` is `process-tree`), unticked if
+any was placed by its folder or a compose label (D3). A group's only go with "Delete Group and N
+Workspaces". `kelpi workspace delete --stop-services` is the CLI's form, and both send
+`workspace-delete` with `stop_services`: the daemon finds the services before the delete and
+stops them once it stands, so a refused delete stops nothing. ⌘W closing a workspace's last pane
+deletes it without that dialog and stops nothing; what it leaves running shows as a leftover,
+with Stop in the status bar popover.
+
+Owner-only: a paired device is refused `running-stop` and `stop_services`, as for
+`restart-old-terminals`; the app says "only the owner of this Kelpi can stop services".
 
 ## 7. Surfaces (phase 2)
 
@@ -260,11 +302,26 @@ user whether or not they run anything. The popover (440 px) holds what the panel
   else "Not in a workspace" with "deleted" on the groups that are.
 - Last, collapsed, "Started outside Kelpi" (D2).
 
+Stop (phase 3, §6), on every surface that lists a service:
+
+- **Inspector row:** a stop square on the row's first line, shown on hover or keyboard focus,
+  labelled "Stop (Ctrl-C)" for a foreground job. An expanded row's members each have their own.
+- **Row menu:** Services ▸ Stop All (N)… (Stop name… for one).
+- **Status bar popover:** "Stop all" on each leftover worktree group, and a stop square on each
+  "Started outside Kelpi" row. The workspaces' own rows have none: their Inspector rows do.
+- **Palette:** a "Stop Service: name" row for each service of a workspace or a leftover worktree,
+  never for what was started outside Kelpi.
+
+Every one of them asks in `StopServicesDialog`: "Stop 3 services in api?" with their memory, for
+a service started outside Kelpi its command (D2), for a foreground job that its pane gets Ctrl-C,
+and for a member that its supervisor may restart it. Cancel is the default for Escape and Return.
+The dialog stays up while the daemon stops them, closes once everything has exited, and offers
+Force Stop if something is still running.
+
 To come:
 
 - **Amber idle marking** on the sidebar mark (D7: up over 3 days and its agent idle that long, or
   its folder has no workspace), with phase 4's idle data.
-- **Stop:** Services ▸ Stop all, the Inspector row's stop button (phase 3, §6).
 - **Corner card:** stacks with no workspace at all, with Review and Stop all (phase 4).
 - **Phone:** a Services sheet; Stop for the owner; Open is desktop-only (D5), since a phone cannot
   reach the Mac's `localhost` without a daemon proxy (phase 5).
@@ -276,6 +333,6 @@ To come:
 1. **Scanner and `kelpi ps`, read-only.** Done.
 2. **See them:** the surfaces in §7 and the `running-services` broadcast. Done, bar amber idle
    marking (phase 4).
-3. **Stop them:** §6, `kelpi kill`, the palette command, the workspace-delete checkbox.
+3. **Stop them:** §6, `kelpi kill`, the palette command, the workspace-delete checkbox. Done.
 4. **Cost and leftovers:** CPU from CPU-time deltas, container stats, idle marking, the corner card.
 5. **Beyond the desktop:** the phone sheet; services a repo declares with start and stop commands.

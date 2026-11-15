@@ -13,6 +13,7 @@ import { useMemo, type ReactElement, type ReactNode } from 'react';
 import { useGraft, type GraftCommands, type UseGraftResult } from '../app/graft';
 import { useInspectorData, type InspectorData, type InspectorReader } from '../app/inspector';
 import { Inspector } from '../chrome/Inspector';
+import type { StopService } from '../chrome/InspectorServices';
 import type { ChromeBucket } from '../chrome/theme';
 import type { ChromeLabelPreset, ChromeWorkspace, WorkspaceWorktreeRequest } from '../chrome/types';
 import { isOkReply, replyError, type CommandClient, type CommandReply, type ConnectionStatus, type KelpiConnection } from '../connection';
@@ -205,6 +206,8 @@ export interface InspectorFeatureViewProps {
     readonly homeDirectory?: string | undefined;
     /** App's one rule for where a service's port opens (docs/running-services.md §7). */
     readonly openServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
+    /** docs/running-services.md §6: App's stop, shared with every other surface. */
+    readonly stopService?: StopService | undefined;
 }
 
 /** The existing Inspector remains the pure view; all feature-specific binding lives here. */
@@ -242,6 +245,7 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
         runningScannedAt={scanClock(props.running)}
         homeDirectory={props.homeDirectory ?? ''}
         onOpenServicePort={props.openServicePort}
+        onStopService={props.stopService}
         graftSessions={model.graft.state.sessions}
         graftOrphans={model.graft.state.orphans}
         graftSwapPrompt={model.graft.state.swapPrompt}

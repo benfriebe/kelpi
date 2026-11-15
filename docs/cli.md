@@ -2691,7 +2691,7 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
 `workspace-delete`, `workspace-nest`, `workspace-label`, `workspace-mute`, `workspace-rename`,
 `workspace-icon`, `workspace-color`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
-`graft-start`, `graft-stop`, `graft-status`, `running-list`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
+`graft-start`, `graft-stop`, `graft-status`, `running-list`, `running-stop`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
 `web-tab-select`, `web-console` (streaming with `follow:true`), `web-inspect`,
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
@@ -2900,6 +2900,55 @@ kelpi ps --workspace feat-x                 # one workspace's services
 kelpi ps --current --json                   # the calling pane's workspace, for a script or agent
 kelpi ps --current --json | jq -r '.[] | "\(.name)\t\([.ports[].port | tostring] | join(" "))"'
 ```
+
+### Stopping a service (`kelpi kill`)
+
+```
+kelpi kill <:port | id> [<id> ...] [--member <pid-or-container>] [--force] [--yes] [--no-wait] [--json]
+```
+
+Sends `running-stop` (wire-protocol.md §6.11.1; docs/running-services.md §6) and prints one line
+per service (`packages/cli/src/commands/kill.ts`).
+
+- **Target:** `:3000` or `3000` is a port (1 to 65535): `{"command":"running-stop","port":3000}`.
+  Anything else is a service id from `kelpi ps --json`, and several ids may be given:
+  `{"ids":[…]}`. A port names the WHOLE service that listens on it (every server of a turbo
+  stack, every container of a compose project); the output names its ports. Two ports, or a port
+  with ids, is refused before anything is sent: `kelpi kill: give one port, or one or more service
+  ids`. No target: `kelpi kill: name a port (:3000) or a service id from \`kelpi ps --json\``.
+  Any other dash-prefixed token: `kelpi kill: unknown option <x>`, the usage, exit 1.
+- **`--member <pid-or-container>`** (one service only): that process and what runs under it, or
+  that container. `--force` → `"force":true`, `--yes` → `"confirmed":true` (needed to stop a
+  service started outside Kelpi; an agent asks its user first), `--no-wait` → `"wait_ms":0`.
+- **Reply timeout:** 60 s, past the default: the daemon scans, waits up to 5 s for the exits, and
+  a Docker stop answers only once the container has stopped.
+- **Output**, one line per service:
+  - `Stopped apps/web (5 processes; ports 3000 3001).` (`Killed …` with `--force`);
+  - `Stopped web with Ctrl-C in its pane; port 5173.` for a pane's foreground job;
+  - `Stopped shop-400 (3 containers; port 54721).`;
+  - `apps/web: 1 of 5 processes still running after the wait. \`kelpi kill --force <id>\` ends them.`
+    (exit 1). The daemon remembers the stop, so `--force` works even after the stack's first
+    process has exited and its id no longer appears in `kelpi ps`;
+  - with `--no-wait`: `Sent SIGTERM to apps/web (5 processes; …).`;
+  - `Left alone: <pids> (not yours to stop).` and `Its port is in use again by <name>: a supervisor
+    restarted it.` are appended when they apply.
+- **Refused services** go to stderr as `kelpi kill: <error>.` and make the exit 1: not running,
+  an agent's own port, Kelpi itself, another user's process. Started outside Kelpi without
+  `--yes`: `kelpi kill: <name> was started outside Kelpi (<command>); ask the user before stopping
+  it. Once the user agrees, run it again with --yes.`. A refused request (`AMBIGUOUS_PORT`,
+  `PORT_NOT_FOUND`, `SCAN_INCOMPLETE`) is `kelpi kill: <error>`, exit 1.
+- `--json` prints the results array (`RunningStopResult`) on stdout.
+
+```bash
+kelpi kill :3000                            # the dev server on port 3000, the whole stack
+kelpi kill process:51513:1794726000 --force # what is left of it, after "still running"
+kelpi kill compose:shop-400 --no-wait       # a leftover compose project
+```
+
+`kelpi workspace delete --stop-services` also stops the workspace's services (nested ones too with
+`--cascade`): `"stop_services":true`, a 30 s reply timeout for the scan before the delete, and
+`  stopping N services` under the `deleted workspace` line (`stopping_services` in `--json`).
+Against a daemon that predates it, a warning says nothing was stopped.
 
 ## Daemon commands (#311)
 

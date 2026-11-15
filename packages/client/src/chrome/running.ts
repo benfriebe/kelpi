@@ -8,7 +8,7 @@
  */
 
 import type { IconRef, WorkspaceColor } from '@kelpi/daemon/store';
-import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
+import type { RunningServiceEntry, RunningServicePort, RunningStopResult } from '@kelpi/protocol';
 
 import { formatBytes } from './stats';
 import { homeAbbreviated } from './theme';
@@ -191,6 +191,43 @@ export function runsElsewhere(service: RunningServiceEntry, ownsFolders = true):
     if (service.directory === null) return false;
     if (service.directory_workspace_id === null) return ownsFolders;
     return service.directory_workspace_id.toUpperCase() !== service.workspace_id?.toUpperCase();
+}
+
+/** A pane's foreground job stops with Ctrl-C in that pane, which needs no confirmation (§6). */
+export function stopsWithCtrlC(service: RunningServiceEntry): boolean {
+    return service.foreground && service.pane_id !== null && service.started_by === 'pane';
+}
+
+/** What a Stop control says: `Stop (Ctrl-C)` for a foreground job. */
+export function stopLabel(service: RunningServiceEntry): string {
+    return stopsWithCtrlC(service) ? 'Stop (Ctrl-C)' : 'Stop';
+}
+
+/** One stop's outcome as the surfaces show it. */
+export interface StopOutcomeSummary {
+    /** Every service exited (or was never waited for). */
+    readonly done: boolean;
+    /** Processes or containers still running when the wait ended. */
+    readonly remaining: number;
+    /** Why one was refused, or what failed. */
+    readonly errors: readonly string[];
+    /** A supervisor started one again on its port. */
+    readonly restartedBy: string | null;
+}
+
+/** The `running-stop` reply's results, folded for a row or a dialog. */
+export function summarizeStop(results: readonly RunningStopResult[]): StopOutcomeSummary {
+    const errors = results.flatMap((result) => [
+        ...(result.error === undefined ? [] : [result.error]),
+        ...result.failed
+    ]);
+    const remaining = results.reduce((sum, result) => sum + (result.remaining?.length ?? 0), 0);
+    return {
+        done: errors.length === 0 && remaining === 0,
+        remaining,
+        errors,
+        restartedBy: results.find((result) => result.restarted_by !== null)?.restarted_by ?? null
+    };
 }
 
 /** The sidebar glyph's tooltip: `3 running · 1.4G · ports 3200 3201 +4`. */

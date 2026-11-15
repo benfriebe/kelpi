@@ -211,6 +211,8 @@ export interface WorkspacesNestRequest {
 export interface WorkspaceDeleteOptions {
     /** Also delete the workspace's nested workspaces; absent/false promotes them instead. */
     readonly cascadeChildren?: boolean | undefined;
+    /** docs/running-services.md §6 (D3): also stop the services the deleted workspaces run. */
+    readonly stopServices?: boolean | undefined;
 }
 
 /**
@@ -421,7 +423,7 @@ export interface SidebarCallbacks {
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;
     /** `cleanup` as `onDeleteWorkspace`'s; only ever passed with `cascade`. */
     readonly onDeleteGroup?:
-        | ((groupID: string, cascade: boolean, cleanup?: WorktreeCleanupChoice | null) => void)
+        | ((groupID: string, cascade: boolean, cleanup?: WorktreeCleanupChoice | null, options?: WorkspaceDeleteOptions) => void)
         | undefined;
     /**
      * The New Workspace form. `worktree` is present when its "Create git worktree" section is
@@ -475,6 +477,6 @@ export interface SidebarCallbacks {
         | undefined;
     /** "Delete N Workspaces…", after ONE confirmation. Absent = falls back to N single deletes. */
     readonly onDeleteWorkspaces?:
-        | ((workspaceIDs: readonly string[], cleanup?: WorktreeCleanupChoice | null) => void)
+        | ((workspaceIDs: readonly string[], cleanup?: WorktreeCleanupChoice | null, options?: WorkspaceDeleteOptions) => void)
         | undefined;
 }

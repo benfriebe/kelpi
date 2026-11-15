@@ -100,6 +100,55 @@ describe.skipIf(!HAS_LSOF)('compat: kelpi ps (this CLI)', () => {
         expect(table.stdout).toContain('pane (foreground)');
     }, 60_000);
 
+    // docs/running-services.md §6: `kelpi kill` against the real probes and real signals.
+    it('stops a foreground server with Ctrl-C in its pane, and a background one by port with SIGTERM', async () => {
+        const folder = fs.mkdtempSync(path.join(kelpi.root, 'kill-'));
+        await kelpi.json(['workspace', 'create', '--name', 'kill', '--path', folder, '--json']);
+        const [pane] = await kelpi.json<PaneJSON[]>(['pane', 'list', '--workspace', 'kill', '--json']);
+        const paneID = pane?.id ?? '';
+        const listen = `${process.execPath} -e "require('net').createServer().listen(0, '127.0.0.1')"`;
+
+        // In the background first (a job of the pane's shell that does not own the terminal),
+        // then one in the foreground.
+        await kelpi.json(['pane', 'send', '--target', paneID, '--json', `${listen} > /dev/null 2>&1 &`]);
+        await kelpi.json(['pane', 'send', '--target', paneID, '--json', listen]);
+        const both = await eventually(
+            () => kelpi.json<(ServiceJSON & { id: string })[]>(['ps', '--workspace', 'kill', '--json']),
+            (list) => list.length === 2,
+            15_000
+        );
+        const background = both.find((service) => !service.foreground);
+        const foreground = both.find((service) => service.foreground);
+        expect(background).toBeDefined();
+        expect(foreground).toBeDefined();
+
+        const byPort = await kelpi.json<{ action: string; stopped: boolean; ports: number[] }[]>([
+            'kill',
+            `:${String(background?.ports[0]?.port ?? 0)}`,
+            '--json'
+        ]);
+        expect(byPort).toMatchObject([{ action: 'signal', stopped: true }]);
+
+        const interrupted = await kelpi.json<{ action: string; stopped: boolean }[]>(['kill', foreground?.id ?? '', '--json']);
+        expect(interrupted).toMatchObject([{ action: 'interrupt', stopped: true }]);
+
+        const after = await eventually(
+            () => kelpi.json<ServiceJSON[]>(['ps', '--workspace', 'kill', '--json']),
+            (list) => list.length === 0,
+            15_000
+        );
+        expect(after).toEqual([]);
+        // The pane's shell is still there to type into.
+        const panes = await kelpi.json<PaneJSON[]>(['pane', 'list', '--workspace', 'kill', '--json']);
+        expect(panes.map((entry) => entry.id)).toEqual([paneID]);
+    }, 60_000);
+
+    it('refuses to stop the daemon itself, by refusing what it cannot find', async () => {
+        const refused = await kelpi.run(['kill', `process:${String(process.pid)}:1`]);
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toContain('is not running');
+    }, 60_000);
+
     it('refuses an unknown workspace', async () => {
         const ghost = await kelpi.run(['ps', '--workspace', 'ghost']);
         expect(ghost.code).toBe(1);

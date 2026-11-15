@@ -267,6 +267,8 @@ export interface StatusFooterProps {
     readonly runningLooks?: ReadonlyMap<string, WorkspaceLook> | undefined;
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     readonly onSelectWorkspace?: ((workspaceID: string) => void) | undefined;
+    /** docs/running-services.md §6: the popover's Stop, which asks first. */
+    readonly onStopServices?: ((services: readonly RunningServiceEntry[], where?: string) => void) | undefined;
 }
 
 /** Everything the gauge row needs, assembled by `App.tsx` from the store + settings. */
@@ -949,6 +951,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                             looks={props.runningLooks}
                             onOpenPort={props.onOpenServicePort}
                             onSelectWorkspace={props.onSelectWorkspace}
+                            onStop={props.onStopServices}
                         />
                     )}
                     <CountItem

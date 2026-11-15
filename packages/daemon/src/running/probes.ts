@@ -213,6 +213,24 @@ export function dockerSocketPath(env: NodeJS.ProcessEnv, home: string, exists: (
     return candidates.find((path) => exists(path)) ?? null;
 }
 
+/**
+ * A request to the Docker engine that answers with a status and nothing we read: `POST
+ * /containers/{id}/stop` answers only once the container has stopped, so the caller sizes the
+ * timeout to the container's stop grace. Rejects on a transport failure or a timeout.
+ */
+export function dockerPost(socketPath: string, path: string, timeoutMs: number): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const req = request({ socketPath, path, method: 'POST', timeout: timeoutMs, headers: { Host: 'docker' } }, (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+            res.on('error', reject);
+        });
+        req.on('timeout', () => req.destroy(new Error('timed out')));
+        req.on('error', reject);
+        req.end();
+    });
+}
+
 function getJSON(socketPath: string, path: string, timeoutMs: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
         const req = request({ socketPath, path, method: 'GET', timeout: timeoutMs, headers: { Host: 'docker' } }, (res) => {

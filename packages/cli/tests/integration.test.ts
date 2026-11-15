@@ -887,6 +887,13 @@ describe('nested workspaces (app-state-core §2.9)', () => {
         ]);
     });
 
+    it('asks the daemon to stop the workspace services with --stop-services, and says how many', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'boss', stopping_services: 2 }] }));
+        const human = await runCLI(['workspace', 'delete', 'boss', '--stop-services'], { port: server.port });
+        expect(human.stdout).toBe('deleted workspace boss\n  stopping 2 services\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-delete', name: 'boss', force: false, stop_services: true });
+    });
+
     it('lists one parent’s nested workspaces with --parent', async () => {
         server.respond(() => ({ lines: [{ ok: true, workspaces: [], parent_id: OTHER, parent_name: 'boss' }] }));
         const result = await runCLI(['workspace', 'list', '--parent', 'boss', '--json'], { port: server.port });

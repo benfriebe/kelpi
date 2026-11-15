@@ -22,9 +22,10 @@
  */
 
 import type { KelpiAction } from '@kelpi/core/config';
-import type { JsonObject } from '@kelpi/protocol';
+import type { JsonObject, RunningServiceEntry } from '@kelpi/protocol';
 
 import { buildPaletteItems, type PaletteItem } from '../chrome/palette';
+import { shortServiceName } from '../chrome/running';
 import type { InteractionPaletteSource, InteractionPaletteSourceSnapshot } from '../interaction/contract';
 import { zenModeActive, type ArrangementSlotBand, type RootArrangement } from '../plugins/arrangement';
 import type { usePluginCommands } from '../plugins/commands';
@@ -92,6 +93,11 @@ export interface PaletteFeatureHost {
      * Its row shows only while one drains; absent = this window draws no notice.
      */
     readonly showOldTerminalHosts?: (() => void) | undefined;
+    /**
+     * docs/running-services.md §6: one "Stop Service" row per service a workspace or a leftover
+     * worktree runs (never what was started outside Kelpi, which would flood the list). Asks first.
+     */
+    readonly stopServices?: ((services: readonly RunningServiceEntry[]) => void) | undefined;
 }
 
 export interface PaletteArrangementHost {
@@ -235,6 +241,24 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                               showOldHosts();
                           })
                   ];
+        const stop = host.stopServices;
+        const serviceEntries: PaletteEntry[] =
+            stop === undefined
+                ? []
+                : (host.runtime.store.getState().daemon.runningServices?.services ?? [])
+                      .filter((service) => service.category === 'workspace' || service.category === 'unattached')
+                      .map((service) =>
+                          commandEntry(
+                              `cmd:stop-service:${service.id}`,
+                              'terminal',
+                              `Stop Service: ${shortServiceName(service)}`,
+                              [service.workspace_name ?? 'not in a workspace', ...service.ports.slice(0, 3).map((port) => `:${String(port.port)}`)].join(' · '),
+                              undefined,
+                              () => {
+                                  stop([service]);
+                              }
+                          )
+                      );
         return [
             ...host.plugins.menu('palette').map((menu): PaletteEntry => ({
                 item: {
@@ -302,6 +326,7 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                     'move the tab on screen, and its panes, to that workspace', undefined, () => act.moveActiveTabToWorkspace(target.id))),
             ...muteEntries,
             ...oldHostEntries,
+            ...serviceEntries,
             ...arrangementEntries(host.arrangement, hint),
             // ⌘, is not a bindable action (assembly dispatches it from its own listener), so the hint
             // is literal rather than a lookup that would answer `undefined` forever.
@@ -333,7 +358,8 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                     state.daemon.hasSnapshot,
                     state.ui.activeWorkspaceID,
                     state.ui.connection,
-                    state.daemon.oldTerminalHosts
+                    state.daemon.oldTerminalHosts,
+                    state.daemon.runningServices
                 ];
             };
             let last = key();

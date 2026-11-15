@@ -97,6 +97,7 @@ import {
     type WorktreeCleanupResult,
     type WorktreeCleanupRow
 } from '../../git/index.js';
+import { stopCall } from '../../running/stop-call.js';
 import { forCommand, listedWorkspaceIDs, refreshSyncGroup, uuidOut, wireTimestamp } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
 import { associationFor, groupRepo, registeredRepo, resolveRepo, type RepoResolution } from './repos.js';
@@ -1264,7 +1265,9 @@ function handleWorkspaceDelete(
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps,
-    deleted: DeletedWorkspaceMemory
+    deleted: DeletedWorkspaceMemory,
+    /** `stop_services`: the services to stop once the delete stands, found by a scan before it. */
+    services?: readonly string[]
 ): void {
     const nameOrID = msg.name;
     const force = msg.force;
@@ -1328,6 +1331,27 @@ function handleWorkspaceDelete(
         return;
     }
 
+    /*
+     * docs/running-services.md §6 (D3): the services go with the workspace. They are found now,
+     * while the workspaces still own them, and stopped once the delete stands, so a refused
+     * delete stops nothing. The scan is async; every guard above runs again on its answer.
+     */
+    if (msg.stop_services === true && services === undefined) {
+        const doomedIDs = new Set(doomed.map((candidate) => candidate.id));
+        void deps.running.scan().then(
+            (scan) => {
+                const owned = scan.services
+                    .filter((service) => service.category !== 'agent' && service.workspaceID !== null && doomedIDs.has(service.workspaceID))
+                    .map((service) => service.id);
+                handleWorkspaceDelete(msg, ctx, reply, deps, deleted, owned);
+            },
+            (error: unknown) => {
+                fail(reply, `could not list the workspace's services: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        );
+        return;
+    }
+
     const panes = doomed.flatMap((candidate) => [...candidate.panes, ...candidate.parkedPanes]);
     try { ctx.prepareDocumentClose?.(panes.map(pane => pane.id)); }
     catch (error) { fail(reply, error instanceof Error ? error.message : String(error)); return; }
@@ -1343,7 +1367,8 @@ function handleWorkspaceDelete(
                   deleted_children: children.map((child) => uuidOut(child.id)),
                   deleted_child_names: children.map((child) => child.name)
               }
-            : {})
+            : {}),
+        ...(services === undefined ? {} : { stopping_services: services.length })
     };
     const cleanup = worktreeCleanupOf(msg);
     if (cleanup === null) ok(reply, head);
@@ -1359,6 +1384,30 @@ function handleWorkspaceDelete(
     else ctx.store.dispatch({ type: 'delete-workspaces', ids: doomed.map((candidate) => candidate.id) });
     for (const candidate of doomed) refreshSyncGroup(ctx, candidate.id);
     deps.persist();
+    // Their panes are gone now, so a foreground job is signalled rather than sent Ctrl-C.
+    // `confirmed`: every one was a `workspace` service of these workspaces when it was chosen (a
+    // service started outside Kelpi never has a workspace), but with its workspace gone the scan
+    // the stop runs on may now call it `outside`; the dialog or `--stop-services` was the yes.
+    if (services !== undefined && services.length > 0) {
+        void deps.runningStop
+            .stop({ ids: services, force: false, confirmed: true, waitMs: 0 }, stopCall(ctx, deps))
+            .then(
+                (outcome) => {
+                    if (!outcome.ok) {
+                        deps.log(`workspace delete: services not stopped: ${outcome.error}`);
+                        return;
+                    }
+                    // The reply already said "stopping N"; what did not stop is at least in the log.
+                    for (const result of outcome.results) {
+                        const problems = [...(result.error === undefined ? [] : [result.error]), ...result.failed];
+                        if (problems.length > 0) deps.log(`workspace delete: ${result.name} not stopped: ${problems.join('; ')}`);
+                    }
+                },
+                (error: unknown) => {
+                    deps.log(`workspace delete: services not stopped: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            );
+    }
     // Each deleted workspace is an owner of its own worktrees (graft-git.md §8.7).
     const owners = doomed.map((candidate) => ({
         id: candidate.id,

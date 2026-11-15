@@ -7,7 +7,8 @@ the memory it uses and, in later phases, a way to stop it.
 Phase 1 is a scanner in the daemon, the `running-list` verb and `kelpi ps`. Phase 2 is the app:
 a scan loop that broadcasts the list (§4) and the surfaces that show it (§7). Phase 3 stops them:
 the `running-stop` verb, `kelpi kill`, Stop in the app and the workspace delete's "Also stop"
-(§6). Resource sampling is designed here and built in a later phase (§8).
+(§6). Phase 4 adds what they cost and what was left behind: CPU and container memory, services
+idle for days, and a corner card for stacks whose worktree is gone (§4, §7).
 
 Implementation index:
 
@@ -28,6 +29,9 @@ Implementation index:
   `running/stop-call.ts`: the pane shells and terminal hosts a handler knows
 - `packages/cli/src/commands/kill.ts`: `kelpi kill`
 - `packages/client/src/chrome/StopServicesDialog.tsx`: the question before a stop
+- `packages/daemon/src/running/cpu.ts`: CPU per process from `ps` time between scans;
+  `running/container-stats.ts`: containers' memory and CPU from Docker's stats
+- `packages/client/src/chrome/LeftoverServicesNotice.tsx`: the corner card for leftovers
 
 Naming (D1): the UI says **Services**, the user's word. Code, the wire and the CLI say
 `running` (`running-list`, `kelpi ps`, later `kelpi kill`), because "services" already names
@@ -129,7 +133,7 @@ when that is strictly inside a workspace's folder (generic names keep their pare
 
 | Probe | Command | Measured (1,600 processes) |
 | --- | --- | --- |
-| Process table | `ps -A -o pid=,ppid=,pgid=,tpgid=,rss=,lstart=,args=` under `LC_ALL=C TZ=UTC` (start times read as UTC, so no daylight-saving hour is ambiguous) | 66 ms |
+| Process table | `ps -A -o pid=,ppid=,pgid=,tpgid=,rss=,time=,lstart=,args=` under `LC_ALL=C TZ=UTC` (start times read as UTC, so no daylight-saving hour is ambiguous; `time` is cumulative CPU, `MMM:SS.ss` on macOS, `[[DD-]HH:]MM:SS` on Linux) | 66 ms |
 | Listening sockets | `lsof -nP -iTCP -sTCP:LISTEN -F pcn` | 85 ms |
 | Working directories | `lsof -a -d cwd -F pn -p <pids>` (Linux: `/proc/<pid>/cwd`), for stack roots and listeners only, cached per pid and start time; lsof's `\xNN` escapes are decoded, so a folder named `été` matches | 70 ms |
 | Containers | `GET /containers/json` on the Docker engine's unix socket | 20 ms |
@@ -170,9 +174,39 @@ store dispatch rewrites SQLite):
 
 It is sent when the list changes and replayed after the snapshot on every attach, like
 `old-terminal-hosts`; before the first scan the replay is an empty list with `scannedAt: null`.
-Memory counts as a change only past a whole MiB, so a server whose resident size wobbles by a few
-pages does not resend the list every 10 s. CPU and memory samples (`running-stats`, phase 4) are
-to be sent only while a client shows them.
+CPU never counts as a change, and memory only in 10% steps, so the list's own figures (a
+tooltip, a dialog) stay close without the list going out every scan; the live numbers travel in
+their own message.
+
+**What they cost (phase 4).** CPU is the change in a process's `ps` time between two scans over
+the time between them, as a percent of one core (Activity Monitor's figure: a busy server on
+several threads passes 100), summed over the same processes as the stack's memory (`cpu.ts`).
+The first scan has no baseline, and neither does one more than 2 minutes after the last (with no
+window open the daemon scans only when asked, and an hours-long average would read as now): the
+figure is null then. A process that started since the last scan counts all its CPU time; one
+missing from the last scan that started before it has no figure this time. On Linux, procps
+reports whole seconds, so a 10-second window moves in 10% steps.
+
+Containers' memory and CPU come from Docker's one-shot stats
+(`GET /containers/{id}/stats?stream=false&one-shot=true`, `container-stats.ts`), off the scan's
+own path: after a scan, while some window is visible, the scan loop asks about the containers of
+the workspaces' and leftover worktrees' services (never what was started outside Kelpi), 8 at a
+time, at most 64, all within 3 seconds; every scan, `kelpi ps` and a stop's included, reads the
+last answers and never waits on Docker. Memory is `docker stats`' figure (usage less the inactive
+page cache); CPU is the change in `cpu_usage.total_usage` between two refreshes over the time
+between Docker's own `read` stamps (never across Docker's clock and the daemon's), and a
+restarted container (its counter back near zero) starts over. A container that does not answer
+keeps its last numbers for 2 minutes.
+
+After every scan while a window is visible (every 10 s), the live numbers go out on their own:
+
+```json
+{ "type": "running-stats", "scannedAt": "2026-11-15T03:00:10.000Z",
+  "stats": [ { "id": "process:51513:1794726000", "cpu_percent": 12.3, "rss_bytes": 222298112 } ] }
+```
+
+The latest one is kept, sent or not, and replayed after `running-services` on attach; the client
+uses whichever of the two is newer.
 
 ## 5. `running-list` and `kelpi ps`
 
@@ -318,11 +352,34 @@ and for a member that its supervisor may restart it. Cancel is the default for E
 The dialog stays up while the daemon stops them, closes once everything has exited, and offers
 Force Stop if something is still running.
 
-To come:
+What they cost and what was left (phase 4):
 
-- **Amber idle marking** on the sidebar mark (D7: up over 3 days and its agent idle that long, or
-  its folder has no workspace), with phase 4's idle data.
-- **Corner card:** stacks with no workspace at all, with Review and Stop all (phase 4).
+- **Numbers:** an Inspector row shows CPU (`12%`, tertiary) before its memory, and containers now
+  have memory; the popover's rows, header total and each leftover worktree (`2 stacks · 28 days ·
+  893M`) use the live numbers. The sidebar's tooltip keeps the list's memory and shows no CPU, so
+  its rows do not redraw every 10 s.
+- **Idle for days (D7):** a workspace's service that has been up 3 days is idle when its folder
+  is gone, or when the pane that started it has been quiet that long (no title or folder change,
+  no new agent turn; a pane kept `running` only by background tasks, which the dev server itself
+  is, counts as quiet, and so does an unanswered `waitingForInput`). A service with no pane goes
+  by its workspace's most recent pane activity. The sidebar's plug turns amber, with "idle for N
+  days" in its tooltip (a collapsed group shows its workspaces' longest), and the Inspector row's
+  warning line says it. The client works it out from the mirror (`idleDays`), so a daemon restart
+  only loses the last turn's start (`agentStartedAt`) and falls back on `lastActivityAt`.
+- **The corner card:** "Left running after their worktree was deleted", for the leftover groups
+  whose worktree folder is gone only (a server in a repo's main checkout no workspace owns is
+  `unattached` too, and deliberate), "2 stacks from old-checkout are still running (893M)", with
+  Later, Review (the status bar's popover, which lists them; offered only while the status bar is
+  shown, and it hides the card for the session so the card does not cover that list) and Stop
+  all (the stop dialog). A stack counts once it has been listed for a minute, so the card does not
+  flash while a delete's "Also stop" is still at work. Later is per viewer and per worktree: another
+  worktree's stacks bring the card back for that worktree alone, so its Stop all never reaches
+  what the user chose to keep; "Show Leftover Services…" in the palette undoes them all. Drawn by the page and by the shell's corner layer, like the old terminal hosts
+  card (corner layer version 2).
+
+Not built: sparklines (the design's 60 samples), Docker's event stream, CPU per member.
+
+To come:
 - **Phone:** a Services sheet; Stop for the owner; Open is desktop-only (D5), since a phone cannot
   reach the Mac's `localhost` without a daemon proxy (phase 5).
 - **Pane chrome presenters** (plugin-ui.md) see the ports badge's fit in `size.badges.ports` but
@@ -331,8 +388,8 @@ To come:
 ## 8. Build order
 
 1. **Scanner and `kelpi ps`, read-only.** Done.
-2. **See them:** the surfaces in §7 and the `running-services` broadcast. Done, bar amber idle
-   marking (phase 4).
+2. **See them:** the surfaces in §7 and the `running-services` broadcast. Done.
 3. **Stop them:** §6, `kelpi kill`, the palette command, the workspace-delete checkbox. Done.
 4. **Cost and leftovers:** CPU from CPU-time deltas, container stats, idle marking, the corner card.
+   Done, bar sparklines.
 5. **Beyond the desktop:** the phone sheet; services a repo declares with start and stop commands.

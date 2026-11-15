@@ -937,10 +937,18 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
 
 // ── workspace row ───────────────────────────────────────────────────────────────────
 
+/** A group's idlest service across its workspaces, or undefined when none is idle. */
+function maxIdle(idle: ReadonlyMap<string, number> | undefined, workspaceIDs: readonly string[]): number | undefined {
+    const days = workspaceIDs.map((id) => idle?.get(id.toUpperCase())).filter((value): value is number => value !== undefined);
+    return days.length === 0 ? undefined : Math.max(...days);
+}
+
 interface WorkspaceRowProps {
     readonly workspace: ChromeWorkspace;
     /** Running services this workspace started (docs/running-services.md); the row's plug glyph. */
     readonly running?: WorkspaceRunning | undefined;
+    /** D7: how long its idlest service has sat idle, whole days; the glyph turns amber. */
+    readonly runningIdleDays?: number | undefined;
     /** 0 top level; 1 in a group or nested under a top-level parent; 2 nested in a group (§2.9). */
     readonly depth: 0 | 1 | 2;
     /** The group this row is inside, or `null` at top level — §WS-007's guide needs it, and it
@@ -1449,7 +1457,7 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
              * workspace-feature.md §11: the workspace's PR status, one trailing glyph on the same
              * line (not a metadata line, so §H5 stands). A `shrink-0` sibling like the bell below.
              */}
-            <RunningServicesGlyph workspaceID={workspace.id} running={props.running} />
+            <RunningServicesGlyph workspaceID={workspace.id} running={props.running} idleDays={props.runningIdleDays} bucket={props.bucket} />
             <PullRequestGlyph workspaceID={workspace.id} pullRequests={workspace.pullRequests} bucket={props.bucket} />
             {/*
              * Agent-lifecycle §7.6: a muted workspace says so on its row, beside the ⌘N badge, so
@@ -1549,6 +1557,7 @@ interface GroupHeaderRowProps {
     readonly repo?: GroupHeaderRepo | null | undefined;
     /** docs/running-services.md §7: what the group's workspaces run, drawn while it is collapsed. */
     readonly running?: WorkspaceRunning | undefined;
+    readonly runningIdleDays?: number | undefined;
 }
 
 /** What the header's repo indicator names: the repo's display name, and its path for the tooltip. */
@@ -1776,7 +1785,13 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                 )}
             </span>
             {props.renaming || !props.collapsed ? null : (
-                <RunningServicesGlyph workspaceID={group.id} testID={`group-running-${group.id}`} running={props.running} />
+                <RunningServicesGlyph
+                    workspaceID={group.id}
+                    testID={`group-running-${group.id}`}
+                    running={props.running}
+                    idleDays={props.runningIdleDays}
+                    bucket={props.bucket}
+                />
             )}
             {props.renaming || !hovered || props.onNewWorkspace === undefined ? null : (
                 <button
@@ -2043,6 +2058,8 @@ export interface SidebarProps extends SidebarCallbacks {
      * Absent = no scan yet, so no glyphs.
      */
     readonly runningServices?: ReadonlyMap<string, WorkspaceRunning> | undefined;
+    /** D7: each workspace's idlest service in whole days, by uppercase id (`idleByWorkspace`). */
+    readonly runningIdle?: ReadonlyMap<string, number> | undefined;
     /** The row menu's Services ▸ Open localhost:… (a web pane beside the pane that started it). */
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     /** The row menu's Services ▸ Show in Inspector: switch to the workspace, open the Inspector. */
@@ -5107,6 +5124,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             key={row.workspace.id}
                             workspace={row.workspace}
                             running={runningFor(props.runningServices, row.workspace.id)}
+                            runningIdleDays={props.runningIdle?.get(row.workspace.id.toUpperCase())}
                             depth={0}
                             active={row.workspace.id === props.activeWorkspaceID}
                             selected={selection.has(row.workspace.id)}
@@ -5175,6 +5193,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 running={
                                     isGroupCollapsed(entry.group, collapse)
                                         ? runningOfWorkspaces(props.runningServices, groupWorkspaceIDs(entry))
+                                        : undefined
+                                }
+                                runningIdleDays={
+                                    isGroupCollapsed(entry.group, collapse)
+                                        ? maxIdle(props.runningIdle, groupWorkspaceIDs(entry))
                                         : undefined
                                 }
                                 bucket={bucket}
@@ -5308,6 +5331,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             key={row.key}
                             workspace={workspace}
                             running={runningFor(props.runningServices, workspace.id)}
+                            runningIdleDays={props.runningIdle?.get(workspace.id.toUpperCase())}
                             depth={row.depth}
                             groupID={row.groupID}
                             childCount={row.childCount ?? 0}

@@ -64,6 +64,7 @@ function service(overrides: Partial<RunningServiceEntry> = {}): RunningServiceEn
         rss_bytes: 200 * MIB,
         ports: [port(3000)],
         members: [{ name: 'node', pid: 100, container_id: null, image: null, ports: [port(3000)], rss_bytes: 200 * MIB }],
+        cpu_percent: null,
         worktree: null,
         ...overrides
     };
@@ -421,7 +422,7 @@ describe('the status bar chip', () => {
 
         const leftovers = within(popover).getByTestId('running-popover-unattached');
         expect(leftovers.textContent).toContain('Left running after their worktree was deleted');
-        expect(within(leftovers).getByTestId('running-popover-worktree').textContent).toBe('gone1 stack · 12 minutesold-web:3100');
+        expect(within(leftovers).getByTestId('running-popover-worktree').textContent).toBe('gone1 stack · 12 minutes · 200.0Mold-web:3100');
 
         const outside = within(popover).getByTestId('running-popover-outside');
         expect(within(outside).queryByText('postgres')).toBeNull();
@@ -455,8 +456,8 @@ describe('the status bar chip', () => {
         // Not every one is deleted, so the heading is the general one and the deleted group says so.
         expect(leftovers.textContent).toContain('Not in a workspace');
         expect(within(leftovers).getAllByTestId('running-popover-worktree').map((group) => group.querySelector('div')?.textContent)).toEqual([
-            'old-checkoutdeleted · 2 stacks · 28 days',
-            'shop1 stack · 2 hours'
+            'old-checkoutdeleted · 2 stacks · 28 days · 400.0M',
+            'shop1 stack · 2 hours · 200.0M'
         ]);
     });
 });

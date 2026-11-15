@@ -96,7 +96,7 @@ describe.skipIf(!HAS_LSOF)('compat: kelpi ps (this CLI)', () => {
 
         const table = await kelpi.run(['ps', '--workspace', 'svc']);
         expect(table.code).toBe(0);
-        expect(table.stdout.split('\n')[0]).toMatch(/^WORKSPACE\s+SERVICE\s+PORTS\s+UP\s+MEM\s+STARTED BY\s+NOTE$/);
+        expect(table.stdout.split('\n')[0]).toMatch(/^WORKSPACE\s+SERVICE\s+PORTS\s+UP\s+MEM\s+CPU\s+STARTED BY\s+NOTE$/);
         expect(table.stdout).toContain('pane (foreground)');
     }, 60_000);
 

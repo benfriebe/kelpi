@@ -46,6 +46,7 @@ import {
     WS_PROTOCOL_VERSION,
     type WsOldTerminalHostsMessage,
     type WsRunningServicesMessage,
+    type WsRunningStatsMessage,
     type WsTransportStatus
 } from '@kelpi/protocol';
 
@@ -127,6 +128,8 @@ export interface WsServerOptions {
     readonly oldTerminalHosts?: (() => WsOldTerminalHostsMessage) | undefined;
     /** Running services' last scan, replayed on attach (docs/running-services.md). */
     readonly runningServices?: (() => WsRunningServicesMessage) | undefined;
+    /** Their latest numbers (`running-stats`), replayed after the list. */
+    readonly runningStats?: (() => WsRunningStatsMessage) | undefined;
     /**
      * Reopen-closed-pane / create-scratchpad / reveal-path (`ws/panes.ts`). Those three need a
      * `PaneHandlerContext` (a PTY to spawn, a `TerminalInput` to type the resume command into),
@@ -359,6 +362,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         graftUi: options.graftUi,
         oldTerminalHosts: options.oldTerminalHosts,
         runningServices: options.runningServices,
+        runningStats: options.runningStats,
         panes: options.panes,
         desktop: options.desktop,
         // Terminal search reads the SAME `@xterm/headless` buffer the PTY streams and

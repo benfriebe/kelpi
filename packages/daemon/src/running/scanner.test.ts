@@ -116,6 +116,32 @@ describe('createRunningScanner', () => {
         expect(probes.calls.table).toBe(4);
     });
 
+    it("reports each stack's CPU from the second scan, and containers' numbers from the stats cache", async () => {
+        let clock = 0;
+        let cpu = 0;
+        const probes = fakeProbes({
+            processTable: () => Promise.resolve([proc(SHELL, 1, '/bin/zsh -l'), { ...proc(200, SHELL, 'node server.js'), cpuSeconds: cpu }]),
+            containers: () =>
+                Promise.resolve([
+                    { id: 'aaaaaaaaaaaa0000', name: 'db', image: 'postgres', project: 'shop', service: 'db', directory: '/w/one', ports: [], createdAt: 1 }
+                ] as unknown as ContainerRow[])
+        });
+        const scanner = createRunningScanner({
+            probes,
+            context: () => context,
+            now: () => clock,
+            cacheMs: 0,
+            containerStats: { get: (id) => (id === 'aaaaaaaaaaaa' ? { rssBytes: 7, cpuPercent: 1.5 } : null), refresh: () => Promise.resolve() }
+        });
+        const first = await scanner.scan();
+        expect(first.services.find((service) => service.kind === 'process')?.cpuPercent).toBeNull();
+        clock += 10_000;
+        cpu = 5;
+        const second = await scanner.scan();
+        expect(second.services.find((service) => service.kind === 'process')?.cpuPercent).toBeCloseTo(50);
+        expect(second.services.find((service) => service.kind === 'compose')).toMatchObject({ rssBytes: 7, cpuPercent: 1.5 });
+    });
+
     it('looks up a working directory once per process', async () => {
         let clock = 0;
         const probes = fakeProbes();

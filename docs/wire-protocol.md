@@ -2203,7 +2203,7 @@ refusal; it is a `warnings` entry (below).
      "attribution":"process-tree","started_by":"pane","agent":null,"foreground":true,
      "directory":"/Users/me/repos/notes","directory_workspace_id":"<uuid>",
      "directory_workspace_name":"notes","directory_missing":false,"worktree":null,
-     "started_at":"2026-11-15T07:00:00Z","pid":51513,"process_count":3,"rss_bytes":222298112,
+     "started_at":"2026-11-15T07:00:00Z","pid":51513,"process_count":3,"rss_bytes":222298112,"cpu_percent":0.3,
      "ports":[{"port":4400,"address":"127.0.0.1","exposed":false,"pid":51530,"container_port":null}],
      "members":[{"name":"node","pid":51530,"container_id":null,"image":null,
        "ports":[{"port":4400,"address":"127.0.0.1","exposed":false,"pid":51530,"container_port":null}],
@@ -2234,7 +2234,8 @@ UUIDs and times ISO 8601 UTC at whole seconds, as elsewhere.
 | `started_at` | string or null | When the root process started, or when the earliest container was created; null when unknown. |
 | `pid` | int or null | The stack's root process; null for containers. |
 | `process_count` | int | Processes in the stack (the root and all its descendants), or containers in the project. |
-| `rss_bytes` | int or null | Resident memory summed over the stack's processes; null for containers. |
+| `rss_bytes` | int or null | Resident memory summed over the stack's processes; for a container or compose project, Docker's figure from the last stats a Kelpi window had the daemon ask for (null before that, or when none answered). |
+| `cpu_percent` | number or null | CPU over the last scan interval, percent of one core (may pass 100), in 0.1 steps, summed like `rss_bytes`; null with no baseline (the daemon's first scan, or none in the last 2 minutes). |
 | `ports` | object[] | Every member's ports, merged and sorted by port. |
 | `members` | object[] | The stack's listening processes, or the project's containers. |
 
@@ -2258,7 +2259,7 @@ A `members` entry (`RunningServiceMember`):
 | `container_id` | string or null | The 12-character container id; null for a process. |
 | `image` | string or null | The container's image; null for a process. |
 | `ports` | object[] | This member's ports, in the shape above. |
-| `rss_bytes` | int or null | This process's resident memory; null for a container. |
+| `rss_bytes` | int or null | This process's resident memory; for a container, Docker's figure when it has one. |
 
 Services come in the scanner's order: by category (`workspace`, `unattached`, `outside`,
 `agent`), then by workspace in sidebar order, then oldest first, then by name.

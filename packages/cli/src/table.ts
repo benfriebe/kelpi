@@ -8,7 +8,7 @@
  * grapheme-cluster `String.count`; that keeps `●` and `…` one column wide.
  */
 
-import { asArray, asBool, asInt, asObjectArray, asString, asStringArray, type JsonObject } from './json.js';
+import { asArray, asBool, asInt, asNumber, asObjectArray, asString, asStringArray, type JsonObject } from './json.js';
 import { printLine } from './io.js';
 
 function width(value: string): number {
@@ -98,6 +98,12 @@ export function ageLabel(iso: string | undefined, nowMs: number): string {
     return `${String(Math.floor(seconds / 86_400))}d`;
 }
 
+/** `12%`, `0.4%` under one percent, `-` when the daemon had no recent baseline. */
+export function cpuLabel(percent: number | undefined): string {
+    if (percent === undefined) return '-';
+    return percent < 1 && percent > 0 ? `${percent.toFixed(1)}%` : `${String(Math.round(percent))}%`;
+}
+
 /** `1.4G`, `512M`, `-` for none. */
 export function memoryLabel(bytes: number | undefined): string {
     if (bytes === undefined) return '-';
@@ -117,7 +123,7 @@ function printable(value: string): string {
 }
 
 /**
- * `kelpi ps`: `WORKSPACE  SERVICE  PORTS  UP  MEM  STARTED BY  NOTE`. NOTE is last, so it never
+ * `kelpi ps`: `WORKSPACE  SERVICE  PORTS  UP  MEM  CPU  STARTED BY  NOTE`. NOTE is last, so it never
  * sets a width: the folder a service runs in when it is not its workspace's own, a deleted
  * folder, a port reachable from other machines.
  */
@@ -159,12 +165,13 @@ export function printServicesTable(services: readonly JsonObject[], noHeader: bo
             portText,
             ageLabel(asString(entry['started_at']), nowMs),
             memoryLabel(asInt(entry['rss_bytes'])),
+            cpuLabel(asNumber(entry['cpu_percent'])),
             by
         ];
         // No NOTE: STARTED BY ends the row, unpadded, so the line has no trailing whitespace.
         return notes.length === 0 ? cells : [...cells, printable(notes.join('; '))];
     });
-    renderRows(['WORKSPACE', 'SERVICE', 'PORTS', 'UP', 'MEM', 'STARTED BY', 'NOTE'], rows, noHeader, 6);
+    renderRows(['WORKSPACE', 'SERVICE', 'PORTS', 'UP', 'MEM', 'CPU', 'STARTED BY', 'NOTE'], rows, noHeader, 7);
 }
 
 /**

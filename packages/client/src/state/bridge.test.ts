@@ -167,6 +167,19 @@ describe('store bridge', () => {
 
         h.sockets.last().emit({ type: 'running-services', services: 'nope', scannedAt: 7, warnings: [1, 'kept'] });
         expect(h.store.getState().daemon.runningServices).toEqual({ services: [], scannedAt: null, warnings: ['kept'], receivedAt: expect.any(Number) });
+
+        // Phase 4: the live numbers, by id, keeping what is well formed.
+        h.sockets.last().emit({
+            type: 'running-stats',
+            scannedAt: '2026-11-15T03:00:10.000Z',
+            stats: [{ id: 'process:1:2', cpu_percent: 12.5, rss_bytes: 1024 }, { id: 'compose:x', cpu_percent: null, rss_bytes: 'big' }, { cpu_percent: 1 }]
+        });
+        const stats = h.store.getState().daemon.runningStats;
+        expect(stats?.scannedAt).toBe('2026-11-15T03:00:10.000Z');
+        expect([...(stats?.byID ?? new Map())]).toEqual([
+            ['process:1:2', { cpu: 12.5, rss: 1024 }],
+            ['compose:x', { cpu: null, rss: null }]
+        ]);
     });
 
     it('renders daemon notifications through the manager', () => {

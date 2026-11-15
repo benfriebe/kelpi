@@ -1,5 +1,5 @@
 /** Bundled Workspaces model, view lifecycle and host binding. */
-import { runningByWorkspace } from '../chrome/running';
+import { idleByWorkspace, runningByWorkspace } from '../chrome/running';
 import { workspaceAgentSummary, type WorkspaceColor } from '@kelpi/daemon/store';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { RemoteDaemonSections, type RemoteSelection } from '../app/RemoteDaemonSections';
@@ -55,8 +55,19 @@ export function useWorkspacesFeatureLifecycle() {
 }
 export type WorkspacesFeatureLifecycle = ReturnType<typeof useWorkspacesFeatureLifecycle>;
 
+/** A value that changes once a minute: D7's idle days move with time alone, not only the store. */
+function useMinuteTick(): number {
+    const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60_000));
+    useEffect(() => {
+        const timer = setInterval(() => setMinute(Math.floor(Date.now() / 60_000)), 60_000);
+        return () => clearInterval(timer);
+    }, []);
+    return minute;
+}
+
 /** Derives the native model from the same mirror used by panes and command routing. */
 export function useWorkspacesFeatureModel(state: KelpiState) {
+    const minute = useMinuteTick();
     return useMemo(() => {
         const workspace = selectActiveWorkspace(state);
         return {
@@ -78,12 +89,14 @@ export function useWorkspacesFeatureModel(state: KelpiState) {
             canStartAgent: state.settings.agentStart,
             // docs/running-services.md §7: each row's plug glyph.
             runningServices: runningByWorkspace(state.daemon.runningServices?.services ?? []),
+            // D7: amber once a service has sat idle for days; time alone moves it (`minute`).
+            runningIdle: idleByWorkspace(state.daemon.runningServices?.services ?? [], state.daemon.state.workspaces, minute * 60_000),
             workspaceAgentSummary: (workspaceID: string) => {
                 const target = state.daemon.state.workspaces.find(candidate => candidate.id === workspaceID);
                 return target === undefined ? { running: 0, waiting: 0, inactive: 0, total: 0 } : workspaceAgentSummary(target);
             }
         };
-    }, [state]);
+    }, [state, minute]);
 }
 export type WorkspacesFeatureModel = ReturnType<typeof useWorkspacesFeatureModel>;
 
@@ -170,6 +183,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         worktreeCleanup={props.worktreeCleanup}
         workspaceAgentSummary={model.workspaceAgentSummary}
         runningServices={model.runningServices}
+        runningIdle={model.runningIdle}
         onOpenServicePort={props.openServicePort}
         onShowServices={props.showServices}
         onStopServices={props.stopServices}

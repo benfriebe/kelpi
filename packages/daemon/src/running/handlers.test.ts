@@ -33,6 +33,7 @@ function service(name: string, category: RunningServiceCategory, workspaceID: st
         pid: 4242,
         processCount: 3,
         rssBytes: 1_048_576,
+        cpuPercent: null,
         ports: [{ port: 3200, address: '*', exposed: true, pid: 4243, containerPort: null }],
         members: [
             {
@@ -105,6 +106,7 @@ describe('running-list', () => {
             pid: 4242,
             process_count: 3,
             rss_bytes: 1_048_576,
+            cpu_percent: null,
             ports: [{ port: 3200, address: '*', exposed: true, pid: 4243, container_port: null }],
             members: [
                 {

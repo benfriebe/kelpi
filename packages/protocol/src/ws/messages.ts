@@ -1229,9 +1229,10 @@ export const WS_OLD_TERMINAL_HOSTS_MESSAGE = 'old-terminal-hosts';
 /**
  * Running services (docs/running-services.md §4): the dev servers, listening processes and
  * containers on the daemon's machine, in `running-list`'s entry shape, every category included
- * (the client filters). Broadcast when the list changes (memory compared to the MiB) and
- * replayed after each snapshot, since it is a standing condition. `scannedAt` is null before
- * the first scan.
+ * (the client filters). Broadcast when the list changes (never for CPU, and for memory only in
+ * 10% steps: `running-stats` carries the live numbers) and replayed after each snapshot, since it
+ * is a standing condition.
+ * `scannedAt` is null before the first scan.
  */
 export interface WsRunningServicesMessage {
     readonly type: 'running-services';
@@ -1241,6 +1242,27 @@ export interface WsRunningServicesMessage {
 }
 
 export const WS_RUNNING_SERVICES_MESSAGE = 'running-services';
+
+/** One service's live numbers in `running-stats`. */
+export interface WsRunningStat {
+    readonly id: string;
+    /** Percent of one core over the last scan interval; null with no recent baseline. */
+    readonly cpu_percent: number | null;
+    readonly rss_bytes: number | null;
+}
+
+/**
+ * Running services' live numbers (docs/running-services.md §4, phase 4): memory and CPU for
+ * every listed service, after each scan while some window is visible (every 10 s), and replayed
+ * after `running-services` on attach. The client takes whichever of the two is newer.
+ */
+export interface WsRunningStatsMessage {
+    readonly type: 'running-stats';
+    readonly scannedAt: string | null;
+    readonly stats: readonly WsRunningStat[];
+}
+
+export const WS_RUNNING_STATS_MESSAGE = 'running-stats';
 
 export type WsServerMessage =
     | WsWelcomeMessage
@@ -1253,6 +1275,7 @@ export type WsServerMessage =
     | WsSizeControlMessage
     | WsOldTerminalHostsMessage
     | WsRunningServicesMessage
+    | WsRunningStatsMessage
     | WsNotificationMessage
     | WsClipboardWriteMessage
     | WsPaneExitMessage

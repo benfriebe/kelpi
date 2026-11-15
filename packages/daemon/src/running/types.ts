@@ -23,6 +23,8 @@ export interface ProcessRow {
     /** The foreground process group of the process's terminal; 0 when it has none. */
     readonly tpgid: number;
     readonly rssBytes: number;
+    /** Cumulative CPU (user and system), seconds, from `ps`'s `time`. Absent in hand-built rows. */
+    readonly cpuSeconds?: number | undefined;
     /** Process start, epoch seconds. With the pid it identifies the process across scans. */
     readonly startedAt: number;
     /** The full command line as `ps` reports it (a process can rewrite its own). */
@@ -129,8 +131,16 @@ export interface RunningService {
     readonly pid: number | null;
     /** Processes in the stack, or containers in the project. */
     readonly processCount: number;
-    /** Resident memory summed over the stack's processes; null for containers. */
+    /**
+     * Resident memory summed over the stack's processes; for containers, what their last stats
+     * said (null until the scan loop has asked Docker, or when none answered).
+     */
     readonly rssBytes: number | null;
+    /**
+     * CPU over the last scan interval, percent of one core, summed like memory; null with no
+     * recent baseline (the first scan, or none for two minutes) or no container stats.
+     */
+    readonly cpuPercent: number | null;
     readonly ports: readonly ServicePort[];
     readonly members: readonly ServiceMember[];
 }

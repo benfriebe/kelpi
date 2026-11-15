@@ -10,14 +10,36 @@ import type { ContainerPort, ContainerRow, ListenSocket, ProcessRow } from './ty
  * The `ps -o` columns the scanner asks for, in order. `args` is last because it is the only one
  * that can contain spaces; `lstart` is always five tokens under `LC_ALL=C`.
  */
-export const PS_COLUMNS = 'pid=,ppid=,pgid=,tpgid=,rss=,lstart=,args=';
+export const PS_COLUMNS = 'pid=,ppid=,pgid=,tpgid=,rss=,time=,lstart=,args=';
 
 const MONTHS: Readonly<Record<string, number>> = {
     Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11
 };
 
+// `time` is one token and read leniently: a value it cannot read is 0 CPU seconds, never a dropped
+// row, since a stop rechecks every pid against this table.
 const PS_LINE =
-    /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\d+)\s+[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(\d{4})(?:\s(.*))?$/;
+    /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\d+)\s+(\S+)\s+[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(\d{4})(?:\s(.*))?$/;
+
+/**
+ * `ps`'s `time`, cumulative CPU (user and system) in seconds. macOS prints `MMM:SS.ss` (minutes
+ * past 59); Linux procps `[[DD-]HH:]MM:SS`, whole seconds only. Anything else is 0.
+ */
+export function parseCpuTime(value: string): number {
+    const match = /^(?:(\d+)-)?(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?))?(?::(\d+(?:\.\d+)?))?$/.exec(value);
+    if (match === null) return 0;
+    const days = Number(match[1] ?? 0);
+    const parts = [match[2], match[3], match[4]].filter((part): part is string => part !== undefined).map(Number);
+    if (parts.some((part) => !Number.isFinite(part))) return 0;
+    // One part: seconds; two: minutes and seconds; three: hours, minutes and seconds.
+    const seconds =
+        parts.length === 3
+            ? (parts[0] as number) * 3600 + (parts[1] as number) * 60 + (parts[2] as number)
+            : parts.length === 2
+              ? (parts[0] as number) * 60 + (parts[1] as number)
+              : (parts[0] as number);
+    return days * 86_400 + seconds;
+}
 
 /**
  * `ps -A -o ${PS_COLUMNS}` output → rows. Lines that do not parse (a header, a race) are skipped.
@@ -29,15 +51,15 @@ export function parsePsTable(text: string): ProcessRow[] {
     for (const line of text.split('\n')) {
         const match = PS_LINE.exec(line);
         if (match === null) continue;
-        const month = MONTHS[match[6] as string];
+        const month = MONTHS[match[7] as string];
         if (month === undefined) continue;
         const started = Date.UTC(
-            Number(match[11]),
+            Number(match[12]),
             month,
-            Number(match[7]),
             Number(match[8]),
             Number(match[9]),
-            Number(match[10])
+            Number(match[10]),
+            Number(match[11])
         );
         rows.push({
             pid: Number(match[1]),
@@ -45,8 +67,9 @@ export function parsePsTable(text: string): ProcessRow[] {
             pgid: Number(match[3]),
             tpgid: Math.max(0, Number(match[4])),
             rssBytes: Number(match[5]) * 1024,
+            cpuSeconds: parseCpuTime(match[6] as string),
             startedAt: Math.floor(started / 1000),
-            args: (match[12] ?? '').trim()
+            args: (match[13] ?? '').trim()
         });
     }
     return rows;

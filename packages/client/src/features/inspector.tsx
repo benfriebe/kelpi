@@ -5,8 +5,8 @@
  */
 
 import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
-import { runningByWorkspace, runningFor, scanClock } from '../chrome/running';
-import type { RunningServicesState } from '../state/store';
+import { idleDays, liveNumbers, runningByWorkspace, runningFor, scanClock } from '../chrome/running';
+import type { RunningServicesState, RunningStatsState } from '../state/store';
 import type { WorkspaceState } from '@kelpi/daemon/store';
 import { useMemo, type ReactElement, type ReactNode } from 'react';
 
@@ -208,6 +208,9 @@ export interface InspectorFeatureViewProps {
     readonly openServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     /** docs/running-services.md §6: App's stop, shared with every other surface. */
     readonly stopService?: StopService | undefined;
+    /** Phase 4: the live numbers (`running-stats`) and the mirror's workspaces, for idle (D7). */
+    readonly runningStats?: RunningStatsState | null | undefined;
+    readonly workspaces?: readonly WorkspaceState[] | undefined;
 }
 
 /** The existing Inspector remains the pure view; all feature-specific binding lives here. */
@@ -246,6 +249,8 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
         homeDirectory={props.homeDirectory ?? ''}
         onOpenServicePort={props.openServicePort}
         onStopService={props.stopService}
+        serviceNumbers={(service) => liveNumbers(service, props.runningStats, props.running?.scannedAt ?? null)}
+        serviceIdle={(service) => idleDays(service, props.workspaces ?? [], Date.now())}
         graftSessions={model.graft.state.sessions}
         graftOrphans={model.graft.state.orphans}
         graftSwapPrompt={model.graft.state.swapPrompt}

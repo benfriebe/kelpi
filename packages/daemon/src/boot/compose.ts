@@ -87,7 +87,16 @@ import {
 } from '../graft/index.js';
 import { createGhRunner, createPullRequestGit, createPullRequestPoller } from '../github/index.js';
 import { createAppHandlers, listedWorkspaceIDs, type WorktreeCreator } from '../handlers/app/index.js';
-import { buildScanContext, createHostProbes, createRunningScanner, createRunningStopper, dockerPost, dockerSocketPath } from '../running/index.js';
+import {
+    buildScanContext,
+    createContainerStats,
+    createHostProbes,
+    createRunningScanner,
+    createRunningStopper,
+    dockerGet,
+    dockerPost,
+    dockerSocketPath
+} from '../running/index.js';
 import { createRunningMonitor } from '../running/monitor.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
@@ -1640,8 +1649,25 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     // `running-list` (docs/running-services.md): scanned on demand, attributed through the pane
     // shells this daemon owns. The daemon itself and its children are never services.
     const runningProbes = createHostProbes({ home, env });
+    // Containers' Docker stats (phase 4): refreshed by the scan loop while a window is visible,
+    // read by every scan. The socket is looked up per request, as the scan's own probe does.
+    // The socket lookup reads Docker's config files synchronously: once every few seconds, not
+    // once per container.
+    let dockerSocketCache: { readonly path: string | null; readonly at: number } | null = null;
+    const statsSocket = (): string | null => {
+        const at = Date.now();
+        if (dockerSocketCache === null || at - dockerSocketCache.at > 5_000) dockerSocketCache = { path: dockerSocketPath(env, home), at };
+        return dockerSocketCache.path;
+    };
+    const containerStats = createContainerStats({
+        fetch: (path, timeoutMs) => {
+            const socket = statsSocket();
+            return socket === null ? Promise.reject(new Error('no Docker engine')) : dockerGet(socket, path, timeoutMs);
+        }
+    });
     const runningServices = createRunningScanner({
         probes: runningProbes,
+        containerStats,
         context: () => {
             const state = store.getState();
             return buildScanContext({
@@ -1662,6 +1688,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         scanner: runningServices,
         presence: () => ws?.presence() ?? { clients: 0, anyVisible: false },
         broadcast: (message) => ws?.broadcast({ ...message }),
+        containerStats,
         onError: (error) => report(error, 'running services')
     });
 
@@ -2804,6 +2831,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // #372: a draining terminal host is a standing condition, replayed on attach.
                 oldTerminalHosts: oldTerminalHostsEvent,
                 runningServices: () => runningMonitor.current(),
+                runningStats: () => runningMonitor.currentStats(),
                 // `/pane-assets/…` — sibling files of an open markdown file, so relative
                 // `<img src>` resolves (content-panes.md port note 4), and an image pane's own
                 // file (§12). Gated by the derived

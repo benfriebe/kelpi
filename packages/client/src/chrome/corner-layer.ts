@@ -31,6 +31,7 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from 'react';
+import type { LeftoverGroupSummary } from './LeftoverServicesNotice';
 import type { WsOldTerminalHost } from '@kelpi/protocol';
 
 import { readShellWindowID } from '../webpane/shell-window';
@@ -40,8 +41,11 @@ import { measureOverlayRect, type OverlayRect } from './modal-presence';
 export const CORNER_PAGE_GLOBAL = '__kelpiCorner';
 /** The overlay page's global (`overlay/corner.tsx`). */
 export const CORNER_OVERLAY_GLOBAL = '__kelpiCornerOverlay';
-/** Bumped when either global changes shape; the shell refuses a page or overlay on another. */
-export const CORNER_LAYER_VERSION = 1;
+/**
+ * Bumped when either global changes shape; the shell refuses a page or overlay on another, and the
+ * page then draws the stack itself. 2 added the leftover-services card (`CornerLeftovers`).
+ */
+export const CORNER_LAYER_VERSION = 2;
 
 /**
  * How long a changed frame may sit untaken before the page stops trusting the layer.
@@ -72,10 +76,18 @@ export interface CornerOldHosts {
     readonly restarting: boolean;
 }
 
+/** docs/running-services.md §7: the card for stacks left running after their worktree went. */
+export interface CornerLeftovers {
+    readonly groups: readonly LeftoverGroupSummary[];
+    readonly canReview: boolean;
+}
+
 /** What the stack is drawing. Plain data: it crosses two processes as JSON. */
 export interface CornerContent {
     readonly toasts: readonly CornerToast[];
     readonly oldHosts: CornerOldHosts | null;
+    /** Absent or null: no card. */
+    readonly leftovers?: CornerLeftovers | null | undefined;
 }
 
 export interface CornerFrame {
@@ -98,7 +110,10 @@ export interface CornerFrame {
 export type CornerAction =
     | { readonly kind: 'dismiss'; readonly id: string }
     | { readonly kind: 'restart-old-hosts' }
-    | { readonly kind: 'later-old-hosts' };
+    | { readonly kind: 'later-old-hosts' }
+    | { readonly kind: 'later-leftovers' }
+    | { readonly kind: 'review-leftovers' }
+    | { readonly kind: 'stop-leftovers' };
 
 /** Read a click the shell relayed, or null when it is not one. */
 export function parseCornerAction(value: unknown): CornerAction | null {
@@ -109,7 +124,15 @@ export function parseCornerAction(value: unknown): CornerAction | null {
         const id = record['id'];
         return typeof id === 'string' && id.length > 0 ? { kind, id } : null;
     }
-    if (kind === 'restart-old-hosts' || kind === 'later-old-hosts') return { kind };
+    if (
+        kind === 'restart-old-hosts' ||
+        kind === 'later-old-hosts' ||
+        kind === 'later-leftovers' ||
+        kind === 'review-leftovers' ||
+        kind === 'stop-leftovers'
+    ) {
+        return { kind };
+    }
     return null;
 }
 

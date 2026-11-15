@@ -181,12 +181,15 @@ describe('parseCornerFrame', () => {
 });
 
 describe('parseCornerAction', () => {
-    it('passes the three clicks and nothing else', () => {
+    it('passes any well-formed click kind, with nothing but a toast id beside it', () => {
         expect(parseCornerAction({ kind: 'dismiss', id: 'x' })).toEqual({ kind: 'dismiss', id: 'x' });
         expect(parseCornerAction({ kind: 'restart-old-hosts' })).toEqual({ kind: 'restart-old-hosts' });
         expect(parseCornerAction({ kind: 'later-old-hosts' })).toEqual({ kind: 'later-old-hosts' });
+        // A new card's clicks need no shell change; whatever else rides along is dropped.
+        expect(parseCornerAction({ kind: 'stop-leftovers', code: '1' })).toEqual({ kind: 'stop-leftovers' });
         expect(parseCornerAction({ kind: 'dismiss', id: 'x'.repeat(513) })).toBeNull();
-        expect(parseCornerAction({ kind: 'eval', code: '1' })).toBeNull();
+        expect(parseCornerAction({ kind: 'Eval(1)' })).toBeNull();
+        expect(parseCornerAction({ kind: 'x'.repeat(41) })).toBeNull();
         expect(parseCornerAction(null)).toBeNull();
     });
 });

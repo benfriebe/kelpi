@@ -1,7 +1,8 @@
 export { buildServices, isPathInside, mergePorts, planProcessStacks, workspaceForPath, type StackPlan } from './attribute.js';
 export { buildScanContext, type ScanContextSources } from './context.js';
 export { runningHandlerEntries, toWireService } from './handlers.js';
-export { createHostProbes, dockerPost, dockerSocketPath, ProbeUnavailableError, type RunningProbes } from './probes.js';
+export { createHostProbes, dockerGet, dockerPost, dockerSocketPath, ProbeUnavailableError, type RunningProbes } from './probes.js';
+export { createContainerStats, type ContainerStats } from './container-stats.js';
 export { createRunningStopper, INERT_RUNNING_STOPPER, type RunningStopper, type RunningStopperDeps } from './stop.js';
 export {
     createRunningScanner,

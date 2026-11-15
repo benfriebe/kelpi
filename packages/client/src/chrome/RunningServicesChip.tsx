@@ -11,14 +11,14 @@
  * Nothing is drawn until a scan finds something to list.
  */
 
-import { useCallback, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
 
 import { useDismissable } from './dismissable';
 import { avatarLetter, ChromeIcon, iconGlyph, iconIsTintable } from './icons';
 import { useOverlayPresence } from './modal-presence';
-import { ageText, memoryText, portURL, uptimeText, type WorkspaceLook } from './running';
+import { ageText, leftoverGroups, memoryText, portURL, uptimeText, type LiveNumbers, type WorkspaceLook } from './running';
 import { ROUNDED_FONT_STACK } from './Sidebar';
 import { SIDEBAR_TINT_VARS, tintedColor, withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -34,6 +34,10 @@ export interface RunningServicesChipProps {
     readonly onSelectWorkspace?: ((workspaceID: string) => void) | undefined;
     /** docs/running-services.md §6: stop a leftover worktree's stacks, or one started outside Kelpi. Asks first. */
     readonly onStop?: ((services: readonly RunningServiceEntry[], where?: string) => void) | undefined;
+    /** Phase 4: a service's memory now (`liveNumbers`); absent reads the list's own. */
+    readonly numbers?: ((service: RunningServiceEntry) => LiveNumbers) | undefined;
+    /** Each new value opens the popover (the leftovers card's Review). */
+    readonly openRequest?: number | undefined;
 }
 
 /** A leftover group's Stop: quiet until pointed at, then red. */
@@ -149,40 +153,21 @@ function basename(path: string): string {
     return trimmed.slice(trimmed.lastIndexOf('/') + 1);
 }
 
-interface LeftoverGroup {
-    readonly key: string;
-    readonly folder: string | null;
-    readonly deleted: boolean;
-    readonly services: readonly RunningServiceEntry[];
-    /** The oldest stack's start, for the group's age. */
-    readonly startedAt: string | null;
-}
-
-/** Leftovers by the worktree they ran in, in the scan's order. */
-export function leftoverGroups(services: readonly RunningServiceEntry[]): LeftoverGroup[] {
-    const groups = new Map<string, RunningServiceEntry[]>();
-    for (const service of services) {
-        const key = service.worktree ?? service.directory ?? service.id;
-        groups.set(key, [...(groups.get(key) ?? []), service]);
-    }
-    return [...groups.entries()].map(([key, members]) => {
-        const starts = members
-            .map((service) => service.started_at)
-            .filter((at): at is string => at !== null)
-            .sort();
-        return {
-            key,
-            folder: members[0]?.worktree ?? members[0]?.directory ?? null,
-            deleted: members.some((service) => service.directory_missing),
-            services: members,
-            startedAt: starts[0] ?? null
-        };
-    });
-}
+/** Grouping lives in `running.ts`, so the corner card can use it without this component. */
+export { leftoverGroups } from './running';
 
 export function RunningServicesChip(props: RunningServicesChipProps): ReactElement | null {
     const [open, setOpen] = useState(false);
     const [showOutside, setShowOutside] = useState(false);
+    // Only a request made after this chip mounted opens it: a remount (the status bar shown again)
+    // must not replay an old Review.
+    const openRequest = props.openRequest ?? 0;
+    const seenRequest = useRef(openRequest);
+    useEffect(() => {
+        if (openRequest === seenRequest.current) return;
+        seenRequest.current = openRequest;
+        setOpen(true);
+    }, [openRequest]);
     const chipRef = useRef<HTMLButtonElement | null>(null);
     const popoverRef = useRef<HTMLDivElement | null>(null);
     const close = useCallback(() => setOpen(false), []);
@@ -193,7 +178,8 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
     const unattached = props.services.filter((service) => service.category === 'unattached');
     const outside = props.services.filter((service) => service.category === 'outside');
     if (owned.length + unattached.length === 0) return null;
-    const memory = owned.reduce((sum, service) => sum + (service.rss_bytes ?? 0), 0);
+    const rss = (service: RunningServiceEntry): number | null => (props.numbers?.(service) ?? { rss: service.rss_bytes }).rss;
+    const memory = owned.reduce((sum, service) => sum + (rss(service) ?? 0), 0);
     const warn = workspaceColorHex('orange', props.bucket);
     const groups = leftoverGroups(unattached);
     const allDeleted = groups.every((group) => group.deleted);
@@ -293,7 +279,7 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
                                             </span>
                                             <PortLinks service={service} shown={2} onOpenPort={props.onOpenPort} />
                                             <span className="text-right font-mono text-[10.5px]" style={{ color: tokens.textSecondary }}>
-                                                {service.rss_bytes === null ? '' : memoryText(service.rss_bytes)}
+                                                {rss(service) === null ? '' : memoryText(rss(service))}
                                             </span>
                                         </div>
                                     );
@@ -315,10 +301,13 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
                             <div className="flex flex-col">
                                 {groups.map((group, index) => {
                                     const age = ageText(group.startedAt, props.scannedAt);
+                                    // Containers' memory arrives with Docker's stats (phase 4).
+                                    const groupMemory = group.services.reduce((sum, service) => sum + (rss(service) ?? 0), 0);
                                     const meta = [
                                         group.deleted && !allDeleted ? 'deleted' : null,
                                         `${String(group.services.length)} ${group.services.length === 1 ? 'stack' : 'stacks'}`,
-                                        age
+                                        age,
+                                        groupMemory > 0 ? memoryText(groupMemory) : null
                                     ].filter((part): part is string => part !== null);
                                     return (
                                         <div key={group.key} className={`flex flex-col ${index > 0 ? 'mt-1' : ''}`} data-testid="running-popover-worktree">
@@ -392,7 +381,7 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
                                             </span>
                                             <PortLinks service={service} shown={1} onOpenPort={props.onOpenPort} />
                                             <span className="text-right font-mono text-[10.5px]" style={{ color: tokens.textTertiary }}>
-                                                {service.rss_bytes === null ? '' : memoryText(service.rss_bytes)}
+                                                {rss(service) === null ? '' : memoryText(rss(service))}
                                             </span>
                                             {props.onStop === undefined ? (
                                                 <span />

@@ -424,7 +424,9 @@ Options:
   -h, --help                  Show this help.
 
 Columns: WORKSPACE, SERVICE, PORTS, UP, MEM (resident memory of the whole
-process stack; - for containers), STARTED BY (claude or codex for an agent's
+process stack; for containers, Docker's figure once a Kelpi window has asked
+for it), CPU (percent of one core over the last scan interval; - before a
+second scan, or when none ran in the last two minutes), STARTED BY (claude or codex for an agent's
 background task, pane, pane (foreground), compose, agent for an agent's own
 port, - when nothing is known), NOTE (the folder it runs in when that is not
 its workspace's own, a deleted folder, a port other machines can reach).

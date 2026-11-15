@@ -283,6 +283,12 @@ export interface SystemStatsSlice {
 export interface UiSlice {
     readonly connection: ConnectionStatus;
     readonly connectionError: string | null;
+    /**
+     * Why the daemon refused this client, when it did (`WsRejectedMessage.code`, e.g.
+     * `protocol-mismatch` for a daemon on another WS generation), so a surface can say what to do
+     * about it rather than repeat the daemon's sentence. Null while connected or never refused.
+     */
+    readonly connectionRejection: string | null;
     /** Per-client (PLAN.md); seeded from the daemon's persisted `lastActiveWorkspaceID`. */
     readonly activeWorkspaceID: string | null;
     /**
@@ -336,7 +342,8 @@ export interface KelpiActions {
     /** `old-terminal-hosts` broadcast (#372). */
     setOldTerminalHosts(hosts: readonly WsOldTerminalHost[]): void;
 
-    setConnectionStatus(status: ConnectionStatus, error?: string | null): void;
+    /** `rejection` is the refusal's code; absent keeps the last one (connecting clears it). */
+    setConnectionStatus(status: ConnectionStatus, error?: string | null, rejection?: string | null): void;
     setActiveWorkspace(workspaceID: string | null): void;
     setFocusEcho(workspaceID: string, paneID: string | null): void;
     clearFocusEcho(): void;
@@ -764,6 +771,7 @@ function initialUiSlice(): UiSlice {
     return {
         connection: 'idle',
         connectionError: null,
+        connectionRejection: null,
         activeWorkspaceID: null,
         focusEcho: null,
         documentVisible: true,
@@ -915,11 +923,12 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
             set({ daemon: { ...daemon, oldTerminalHosts: hosts } });
         },
 
-        setConnectionStatus(status, error) {
+        setConnectionStatus(status, error, rejection) {
             const ui = get().ui;
             const connectionError = error === undefined ? (status === 'connected' ? null : ui.connectionError) : error;
-            if (ui.connection === status && ui.connectionError === connectionError) return;
-            set({ ui: { ...ui, connection: status, connectionError } });
+            const connectionRejection = rejection !== undefined ? rejection : status === 'connected' || status === 'connecting' ? null : ui.connectionRejection;
+            if (ui.connection === status && ui.connectionError === connectionError && ui.connectionRejection === connectionRejection) return;
+            set({ ui: { ...ui, connection: status, connectionError, connectionRejection } });
         },
 
         setActiveWorkspace(workspaceID) {

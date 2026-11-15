@@ -64,9 +64,13 @@ export function hostKindLabel(kind: PhoneHostKind): string {
     return 'Added on this phone';
 }
 
-/** The words a host says when it is not simply reachable. */
-export function hostReachability(status: ConnectionStatus): string {
+/**
+ * The words a host says when it is not simply reachable. `otherVersion`: it refused this phone
+ * for running another Kelpi version (wire-protocol.md compat item 22), which only updating fixes.
+ */
+export function hostReachability(status: ConnectionStatus, otherVersion = false): string {
     if (status === 'connected') return 'reachable';
+    if (otherVersion) return 'different Kelpi version: update both';
     if (status === 'connecting') return 'connecting…';
     if (status === 'reconnecting') return 'reconnecting…';
     if (status === 'rejected') return 'refused';

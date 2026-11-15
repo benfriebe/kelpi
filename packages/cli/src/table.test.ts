@@ -141,6 +141,18 @@ describe('workspace tabs in the tables (workspace-feature.md §12)', () => {
         expect(lines.slice(1).map((line) => line.split(/\s+/)[4])).toEqual(['3', '1']);
     });
 
+    it('keeps --no-header columns fixed, tabs or not, so a positional parser never shifts', () => {
+        const tabbedPanes = capture(() => printPaneTable([pane(PANE_A, 'alpha', { number: 2, active: true })], true, '/Users/me'));
+        const plainPanes = capture(() => printPaneTable([pane(PANE_A, 'alpha')], true, '/Users/me'));
+        expect(tabbedPanes[0]?.split(/\s+/)).toEqual(plainPanes[0]?.split(/\s+/));
+        expect(tabbedPanes[0]?.split(/\s+/)[4]).toBe('idle');
+        const row = { id: PANE_A, name: 'alpha', pane_count: 3, is_active: false, labels: [] };
+        const tabbedWorkspaces = capture(() => printWorkspaceTable([{ ...row, tab_count: 3 }], true));
+        const plainWorkspaces = capture(() => printWorkspaceTable([row], true));
+        expect(tabbedWorkspaces).toEqual(plainWorkspaces);
+        expect(plainWorkspaces[0]?.split(/\s+/).slice(1)).toEqual(['alpha', '-', '3', '-', '-']);
+    });
+
     it('lists tabs number first, the one on screen marked, the full id last', () => {
         const tab = (number: number, title: string, active: boolean, workspace = 'alpha') => ({
             id: number === 1 ? PANE_A : PANE_B,

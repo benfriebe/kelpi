@@ -31,7 +31,7 @@ import type { ChromeBucket } from '../chrome/theme';
 import { nestedTreeRows, type TreeRowOptions } from '../chrome/nested-tree';
 import type { ChromeLabelPreset, ChromeWorkspace } from '../chrome/types';
 import type { ConnectionStatus } from '../connection';
-import { selectSidebarEntries } from '../state';
+import { isVersionMismatch, selectSidebarEntries } from '../state';
 import type { RemoteDaemonRuntime } from './remote-daemons';
 
 export interface RemoteSelection {
@@ -148,6 +148,9 @@ function RemoteDaemonSection(props: {
     // app-state-core.md §5.5: that daemon's own registry names its groups' repositories.
     const remoteRepos = useStore(held.runtime.store, (state) => state.daemon.state.repos);
     const connection = useStore(held.runtime.store, (state) => state.ui.connection);
+    // wire-protocol.md compat item 22: a paired daemon on another WS generation refuses this
+    // window for good, and only updating one side fixes it, so the section says so.
+    const otherVersion = useStore(held.runtime.store, (state) => isVersionMismatch(state.ui));
     const [collapsed, setCollapsed] = useState(() => readCollapsed(held.name));
     const [hovered, hover] = useHoverKey();
     const [draggingWorkspaceID, setDraggingWorkspaceID] = useState<string | null>(null);
@@ -396,9 +399,11 @@ function RemoteDaemonSection(props: {
                 <div className="flex flex-col" data-testid={`remote-daemon-body-${held.name}`}>
                     {connection !== 'connected' && entries.length === 0 ? (
                         <span className="px-2 pb-1 pl-6 text-[11px]" style={{ color: tokens.textTertiary }}>
-                            {connection === 'rejected'
-                                ? 'connection refused - check the pairing URL'
-                                : 'connecting…'}
+                            {otherVersion
+                                ? `${held.name} runs a different Kelpi version: update both to the same version`
+                                : connection === 'rejected'
+                                  ? 'connection refused - check the pairing URL'
+                                  : 'connecting…'}
                         </span>
                     ) : null}
                     {entries.map((entry) => {

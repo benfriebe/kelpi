@@ -558,8 +558,8 @@ carry `"command"`.
 | `workspace-tab-select` | R/R | `tab`, or `pane_id` for the caller's tab | `workspace` |
 | `workspace-tab-rename` | R/R | `name` or `clear`; `tab`, or `pane_id` | `workspace` |
 | `workspace-tab-move` | R/R | `index` or `at_end`; `tab`, or `pane_id` | `workspace` |
-| `workspace-tab-close` | R/R | `tab`, or `pane_id` | `workspace` |
-| `workspace-tab-close-others` | R/R | `tab`, or `pane_id` | `workspace` |
+| `workspace-tab-close` | R/R | `tab`, or `pane_id` | `workspace`, `force` |
+| `workspace-tab-close-others` | R/R | `tab`, or `pane_id` | `workspace`, `force` |
 | `workspace-tab-split-panes` | R/R | `tab`, or `pane_id` | `workspace` |
 | `workspace-tab-merge-previous` | R/R | `tab`, or `pane_id` | `workspace` |
 | `workspace-tab-duplicate` | R/R | `tab`, or `pane_id` | `workspace`, `focus` |
@@ -2078,10 +2078,20 @@ the window's tab verbs, which it sends over the WebSocket with exact ids (`works
   workspace holding the tab named by id, else the workspace of `pane_id` (a `pane_id` naming no
   visible pane is refused, as for the pane verbs), else the one on screen
   (`lastActiveWorkspaceID`). `tab` is a 1-based number (what ⌥⌘1-9 count), then a tab id (found
-  in any workspace), then the title the tab bar shows, exactly and then ignoring case; a number
-  past the last tab is tried as a title before it is refused, and two tabs with one title are
-  refused (`tab name 'x' is ambiguous in workspace 'dev': tabs 2, 4 (use a number or id)`). A
-  verb that acts on one tab and names none acts on the tab holding `pane_id`.
+  in any workspace), then a name the user gave a tab, then the title the bar derives from an
+  unnamed tab's pane, each exactly and then ignoring case (a user's name is never shadowed by a
+  title a program set); a number past the last tab is tried as a title before it is refused, and
+  two tabs that match at the same step are refused (`tab name 'x' is ambiguous in workspace
+  'dev': tabs 2, 4 (use a number or id)`). A verb that acts on one tab and names none acts on
+  the tab holding `pane_id`.
+- **Closing over agents is refused unless `force`.** `workspace-tab-close` and
+  `workspace-tab-close-others` take `force` (bool, default false). Without it, tabs whose panes
+  (and the shells parked behind them, but not the caller's own pane) hold agent sessions are
+  refused as `workspace-delete` refuses (§6.3): `{"ok":false,"error":"tab 2 has 1 running agent;
+  pass --force to close anyway","active_agents":1,"running":1,"waiting":0,"inactive":0}`. The
+  WebSocket verbs take no `force` and never refuse for agents (the window asks first).
+- **`workspace-tab-new` from a pane** goes just after the caller's tab, and `kind: "same"` copies
+  the caller's pane, unless `index`, `at_end` or "New tabs go: at the end" say otherwise.
 - **Blank is refused.** A `tab`, `workspace`, `to_workspace` or `anchor` (or its id spelling)
   that is present but blank is refused at decode (`tab is empty (an unset variable?)`): absent
   means the caller's own, so an unset variable must not close the caller's own tab.
@@ -2097,8 +2107,10 @@ the window's tab verbs, which it sends over the WebSocket with exact ids (`works
   shows the tab.
 - **Positions are 0-based** on the wire (`index`), the tab's position once placed; `at_end`
   puts it after the last tab. `kelpi tab` counts from 1 and converts.
-- **Replies** carry `workspace_id`, `workspace_name`, `tab_id` and `tab_number` as they stand
-  after the change; `workspace-tab-new` adds `pane_id` and `kind`, a close adds `closed` (panes),
+- **Replies** carry `workspace_id`, `workspace_name`, `tab_id` and, for a tab that still exists
+  afterwards, `tab_number` as they stand after the change: a `workspace-tab-close` reply names
+  the tab that went and so has no `tab_number` (`workspace-tab-close-others` has the kept
+  tab's). `workspace-tab-new` adds `pane_id` and `kind`, a close adds `closed` (panes),
   `workspace-tab-split-panes` adds `tab_ids` and `tab_numbers`, `workspace-tab-merge-previous`
   names the tab it merged into (and `merged_tab_id`), `workspace-tab-duplicate` names the copy
   (and `source_tab_id`), `workspace-tab-move-to-workspace` names the destination (and
@@ -2161,7 +2173,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `bare` | bool | `pane-send` |
 | `new_name` | string | `group-rename`, `workspace-rename` |
 | `cascade` | bool | `group-delete`, `workspace-delete` |
-| `force` | bool | `workspace-delete` |
+| `force` | bool | `workspace-delete`; `workspace-tab-close`, `workspace-tab-close-others` (close over agents, §6.10) |
 | `worktree_paths`, `force_worktree_paths`, `batch_ids` | string[] | `workspace-delete` |
 | `prune_worktrees`, `delete_branches` | bool | `workspace-delete` |
 | `index` | int | `workspace-move`, `workspace-nest`, `group-move`, `workspace-tab-new`, `workspace-tab-move`, `pane-move-to-new-tab` (a tab's 0-based position) |
@@ -2492,11 +2504,12 @@ saved state keep working:
 
 22. **Workspace tabs are additive (workspace-feature.md §12).** The tab verbs (§6.10) are new
     commands with new request fields (`kind`, `to_workspace`, `at_end`; `tab`, `index`, `name`,
-    `clear`, `all`, `anchor`, `zone` and `focus` gain uses); no existing command's request
-    changed. `workspace-list` entries gain `tab_count` and `active_tab_id` once a workspace has
-    two tabs, and the table a TABS column. `pane-list` lists every tab's panes, tab by tab, and
-    its entries gain `tab_id`, `tab_number` and `is_active_tab` once a workspace has two tabs
-    (the table, a TAB column); `pane-split` /
+    `clear`, `all`, `anchor`, `zone`, `focus` and `force` gain uses); no existing command's
+    request changed. `workspace-list` entries gain `tab_count` and `active_tab_id` once a
+    workspace has two tabs, and the table a TABS column (with its header only: `--no-header`
+    keeps its old columns for positional parsers). `pane-list` lists every tab's panes, tab by
+    tab, and its entries gain `tab_id`, `tab_number` and `is_active_tab` once a workspace has two
+    tabs (the table, with its header, a TAB column); `pane-split` /
     `pane-create` put the new pane in its source's tab (or, under
     `agent-pane-placement = new-tab`, a new background tab); `layout-cycle` /
     `layout-select` lay out the caller's tab. Compatibility, in each direction:
@@ -2512,5 +2525,10 @@ saved state keep working:
       predates tabs (a cached phone PWA bundle, an older remote view) is refused with
       `protocol-mismatch` and shows the update sentence instead of a grid that hides every
       background tab; reloading the bundle the daemon serves brings it to generation 4.
-    - **New window client, old daemon:** refused the same way (the daemon speaks 3); a
-      phone or remote view that reaches an older host shows the update sentence for that host.
+    - **New window client, old daemon:** refused the same way (the daemon speaks 3). The
+      client keeps the refusal's code (`ui.connectionRejection`, `isVersionMismatch`), so a
+      paired host on the other generation says so where it is listed: the desktop's remote
+      section reads "`<host>` runs a different Kelpi version: update both to the same version",
+      a phone's host rows read "different Kelpi version: update both", and the phone's
+      can't-reach card names the version and drops "Kelpi keeps retrying" (a refusal is never
+      retried).

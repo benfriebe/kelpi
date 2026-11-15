@@ -35,6 +35,15 @@ export function isTokenRejection(message: WsRejectedMessage): boolean {
     return message.reason === 'bad-token' || message.code === 'unauthorized';
 }
 
+/**
+ * The daemon refused this client for speaking another WS generation (wire-protocol.md): a
+ * different Kelpi version on one side, which nothing but updating fixes, and which the client
+ * never retries (`connection/socket.ts`).
+ */
+export function isVersionMismatch(ui: { readonly connection: string; readonly connectionRejection: string | null }): boolean {
+    return ui.connection === 'rejected' && ui.connectionRejection === 'protocol-mismatch';
+}
+
 export interface StoreBridgeOptions {
     readonly store: KelpiStoreApi;
     readonly connection: KelpiConnection;
@@ -268,7 +277,7 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             // stale one cannot wedge the KELPIT visit as well.
             const state = store.getState();
             const terminal = message.code !== 'server-error';
-            state.setConnectionStatus(terminal ? 'rejected' : state.ui.connection, message.message);
+            state.setConnectionStatus(terminal ? 'rejected' : state.ui.connection, message.message, terminal ? message.code : undefined);
             if (isTokenRejection(message)) forgetStoredToken(options.tokenStorage);
         })
     );

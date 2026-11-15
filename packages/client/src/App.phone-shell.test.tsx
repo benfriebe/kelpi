@@ -1512,6 +1512,21 @@ describe('needs you, across hosts', () => {
         expect(studio.calls.filter((call) => call === 'connect').length).toBe(dials + 1);
     });
 
+    it('says when the hosts refuse it for running another Kelpi version, and never promises a retry', () => {
+        const h = setup({ landing: true, storage: TWO_HOSTS });
+        const studio = h.remotes.get(PAIRING_URL);
+        if (studio === undefined) throw new Error('studio was not dialled');
+        act(() => {
+            studio.runtime.store.getState().setConnectionStatus('rejected', 'daemon speaks client protocol v3, client speaks v4', 'protocol-mismatch');
+            h.runtime.store.getState().setConnectionStatus('rejected', 'daemon speaks client protocol v3, client speaks v4', 'protocol-mismatch');
+        });
+        const card = screen.getByTestId('phone-home-unreachable');
+        expect(card.textContent).toContain('Your hosts run a different Kelpi version');
+        expect(screen.getByTestId('phone-home-unreachable-advice').textContent).toBe('Update both to the same version of Kelpi, then retry.');
+        expect(card.textContent).not.toContain('keeps retrying');
+        expect(document.body.textContent).toContain('different Kelpi version: update both');
+    });
+
     it('finds a pane on another host from Jump to…, and shows it there', () => {
         const h = setup({ landing: true, storage: TWO_HOSTS });
         tap('phone-bar-jump');

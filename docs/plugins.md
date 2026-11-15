@@ -826,6 +826,14 @@ and database transactions. Recursive invocations carry a bounded trace; a hook d
 reenter itself. Plugin administration and ping remain outside hooks for recovery, and so does
 `probe-terminal-target`, the terminal link hover's read-only question (#303).
 
+The workspace-tab verbs (`workspace-tab-*`, `pane-move-to-tab`, `pane-move-to-new-tab`;
+socket-handlers.md §4.17) reach a hook in the shape their caller sent. From the CLI the payload
+NAMES what it acts on (`{ tab: "3", workspace: "dev", pane_id }`, where `tab` is a number, id or
+title and an absent one means the caller's tab), and the context may carry no `workspaceID`;
+from the window and the SDK it carries exact ids (`{ workspace_id, tab_id }`). A policy hook that
+needs the tab resolves a CLI payload itself, for example by calling `api.tabs.list()` and matching
+the number or title as socket-handlers.md §4.17.1 describes.
+
 A before hook must explicitly return allow or refuse; refusal reaches the caller without
 performing the operation. Invalid decisions, errors, and timeouts fail the current operation
 and fail that backend. Future operations bypass failed/disabled hooks. All before hooks share

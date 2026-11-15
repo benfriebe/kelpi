@@ -24,10 +24,11 @@ import {
     rejectLeftoverArgs,
     type UsagePrinter
 } from '../args.js';
-import { originPaneID } from '../env.js';
+import { homeDirectory, originPaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asArray, asInt, asString, stableStringify, type JsonObject } from '../json.js';
-import { decodeReply } from '../reply.js';
+import { decodeReply, decodeReplyAllowingFailure } from '../reply.js';
+import { localFileURL } from '../routing.js';
 import { printWorkspaceTabTable, replyArray } from '../table.js';
 import {
     tabCloseOthersUsage,
@@ -65,11 +66,11 @@ export async function handleTab(args: string[]): Promise<void> {
         case 'show':
             return handleOneTab(args, 'select', 'workspace-tab-select', tabSelectUsage, (reply) => `showing ${where(reply)}`);
         case 'close':
-            return handleOneTab(args, 'close', 'workspace-tab-close', tabCloseUsage, (reply) => `closed tab ${asString(reply['tab_id']) ?? '?'} in workspace ${asString(reply['workspace_name']) ?? '?'}${panes(reply)}`);
+            return handleOneTab(args, 'close', 'workspace-tab-close', tabCloseUsage, (reply) => `closed tab ${asString(reply['tab_id']) ?? '?'} in workspace ${asString(reply['workspace_name']) ?? '?'}${panes(reply)}`, { canForce: true });
         case 'close-others':
-            return handleOneTab(args, 'close-others', 'workspace-tab-close-others', tabCloseOthersUsage, (reply) => `closed every tab but ${where(reply)}${panes(reply)}`);
+            return handleOneTab(args, 'close-others', 'workspace-tab-close-others', tabCloseOthersUsage, (reply) => `closed every tab but ${where(reply)}${panes(reply)}`, { canForce: true });
         case 'duplicate':
-            return handleOneTab(args, 'duplicate', 'workspace-tab-duplicate', tabDuplicateUsage, (reply) => `duplicated as ${where(reply)}`, true);
+            return handleOneTab(args, 'duplicate', 'workspace-tab-duplicate', tabDuplicateUsage, (reply) => `duplicated as ${where(reply)}`, { canFocus: true });
         case 'merge':
             return handleOneTab(args, 'merge', 'workspace-tab-merge-previous', tabMergeUsage, (reply) => `merged into ${where(reply)}`);
         case 'split':
@@ -212,7 +213,9 @@ async function handleTabNew(args: string[]): Promise<void> {
     }
     const payload = scoped('workspace-tab-new', workspace, undefined);
     if (kind !== null) payload['kind'] = kind;
-    if (url !== null) payload['url'] = url;
+    // A local path becomes a file:// URL exactly as `kelpi web open` makes one (cli.md §12a);
+    // anything else goes as typed, and the daemon reads it as a URL or a host.
+    if (url !== null) payload['url'] = localFileURL(url, { cwd: process.cwd(), home: homeDirectory() }) ?? url;
     if (name !== null) payload['name'] = name;
     if (at !== undefined) payload['index'] = at;
     if (end) payload['at_end'] = true;
@@ -227,7 +230,9 @@ async function handleTabNew(args: string[]): Promise<void> {
 
 /**
  * The verbs that take one tab and nothing else: select, close, close-others, duplicate, merge,
- * split. `canFocus` lets `--focus` through for the one that opens something (duplicate).
+ * split. `canFocus` lets `--focus` through for the one that opens something (duplicate);
+ * `canForce` lets `--force|-y` through for the closes, which the daemon refuses over agents
+ * unless forced (as `workspace delete` is), reporting the counts.
  */
 async function handleOneTab(
     args: string[],
@@ -235,7 +240,7 @@ async function handleOneTab(
     command: string,
     usage: string,
     ack: (reply: JsonObject) => string,
-    canFocus = false
+    { canFocus = false, canForce = false }: { readonly canFocus?: boolean; readonly canForce?: boolean } = {}
 ): Promise<void> {
     const tail = extractPositionalTail(args);
     if (hasHelpFlag(args)) {
@@ -244,6 +249,8 @@ async function handleOneTab(
     }
     const workspace = parseFlag('--workspace', args);
     const focus = canFocus && popSwitch('--focus', args);
+    // Both flags are popped, so `--force -y` is not left over as an unknown argument.
+    const force = canForce && [popSwitch('--force', args), popSwitch('-y', args)].some(Boolean);
     const asJSON = popSwitch('--json', args);
     const words = positionals(args, tail);
     const tab = words.shift();
@@ -253,6 +260,19 @@ async function handleOneTab(
     requireTabOutsidePane(tab, verb, usage);
     const payload = scoped(command, workspace, tab);
     if (focus) payload['focus'] = true;
+    if (force) payload['force'] = true;
+    if (canForce && asJSON) {
+        // A refusal over agents carries its counts, which `--json` prints (as `workspace
+        // delete --json` does) before exiting 1.
+        const answer = await decodeReplyAllowingFailure(payload, `kelpi tab ${verb}`);
+        if (answer['ok'] !== true) {
+            printReplyWithoutOk(answer);
+            exit(1);
+            return;
+        }
+        printReplyWithoutOk(answer);
+        return;
+    }
     const reply = await decodeReply(payload, `kelpi tab ${verb}`);
     if (asJSON) {
         printReplyWithoutOk(reply);

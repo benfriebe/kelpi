@@ -62,10 +62,12 @@ function renderRows(headers: readonly string[], rows: readonly (readonly string[
  * `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`: ID is the FULL uuid (issue #240). A TAB
  * column follows WORKSPACE only when some pane's workspace has more than one tab
  * (workspace-feature.md §12): the tab's number, `*` on the tab on screen, `-` in a workspace
- * with one tab. The table is unchanged for everyone with one tab per workspace.
+ * with one tab. The table is unchanged for everyone with one tab per workspace, and under
+ * `--no-header` it never appears: a script reading fields by position must not see STATUS move
+ * because someone pressed ⌥⌘T (`--json` carries `tab_number` for a script that wants it).
  */
 export function printPaneTable(panes: readonly JsonObject[], noHeader: boolean, home: string): void {
-    const tabbed = panes.some((entry) => asInt(entry['tab_number']) !== undefined);
+    const tabbed = !noHeader && panes.some((entry) => asInt(entry['tab_number']) !== undefined);
     const rows = panes.map((entry) => {
         const session = asString(entry['agent_session_id']) ?? '';
         const type = asString(entry['type']) ?? '';
@@ -89,11 +91,13 @@ export function printPaneTable(panes: readonly JsonObject[], noHeader: boolean, 
  * `ID  NAME  GROUP  PANES  ACTIVE  LABELS`: LABELS is last, so it never sets a width. A PARENT
  * column follows GROUP only when some workspace is nested (app-state-core.md §2.9), and a TABS
  * column follows PANES only when some workspace has more than one tab (workspace-feature.md
- * §12), so the table is unchanged for everyone who never nests one or opens a second tab.
+ * §12), so the table is unchanged for everyone who never nests one or opens a second tab. TABS,
+ * like TAB in `pane list`, is left out under `--no-header`, so a positional parser's columns
+ * never change with the UI (`--json` has `tab_count`).
  */
 export function printWorkspaceTable(workspaces: readonly JsonObject[], noHeader: boolean): void {
     const nesting = workspaces.some((entry) => asString(entry['parent_name']) !== undefined);
-    const tabbed = workspaces.some((entry) => (asInt(entry['tab_count']) ?? 1) > 1);
+    const tabbed = !noHeader && workspaces.some((entry) => (asInt(entry['tab_count']) ?? 1) > 1);
     const rows = workspaces.map((entry) => {
         const labels = asStringArray(entry['labels']) ?? [];
         return [

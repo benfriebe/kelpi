@@ -413,7 +413,8 @@ describe('moving panes and tabs', () => {
         const f = fixture();
         f.run('workspace-tab-new', { workspace_id: W1 });
         expect(f.channel.run('workspace-tab-merge-previous', { workspace_id: W1, tab_id: W1 })).toMatchObject({ ok: false });
-        expect(f.channel.run('workspace-tab-merge-previous', { workspace_id: W1, tab_id: T1 })).toMatchObject({ ok: true });
+        // The reply names the tab it went into (the one left), and the merged one as merged_tab_id.
+        expect(f.channel.run('workspace-tab-merge-previous', { workspace_id: W1, tab_id: T1 })).toEqual({ ok: true, workspace_id: W1, tab_id: W1, merged_tab_id: T1 });
         expect(workspaceTabs(f.h.workspace(W1))).toHaveLength(1);
     });
 });

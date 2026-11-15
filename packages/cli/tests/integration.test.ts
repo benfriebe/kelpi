@@ -2941,6 +2941,18 @@ describe('kelpi tab (workspace-feature.md §12)', () => {
         expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', pane_id: PANE, kind: 'web', url: 'example.com', focus: true });
     });
 
+    it('opens a local file with --url as a file:// URL, as kelpi web open does', async () => {
+        const home = scratchHome();
+        fs.writeFileSync(path.join(home, 'r.html'), '<h1>hi</h1>');
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER, kind: 'web' }] }));
+        for (const given of ['./r.html', 'r.html']) {
+            await runCLI(['tab', 'new', '--url', given], { port: server.port, paneID: PANE, cwd: home });
+            const sent = String((await lastRequest())['url']);
+            expect(sent.startsWith('file://')).toBe(true);
+            expect(sent.endsWith('/r.html')).toBe(true);
+        }
+    });
+
     it('names a tab by number, id or title, and the caller\'s own tab by default', async () => {
         server.respond(() => ({ lines: [placed] }));
         const shown = await runCLI(['tab', 'show', 'build'], { port: server.port, paneID: PANE });
@@ -2955,6 +2967,25 @@ describe('kelpi tab (workspace-feature.md §12)', () => {
         expect(result.code).toBe(1);
         expect(result.stderr).toContain('kelpi tab close: name a tab (a number, id or title) when not in a Kelpi pane');
         expect(server.requests).toEqual([]);
+    });
+
+    it("closes over agents only with --force or -y, and prints a refusal's counts under --json", async () => {
+        const refusal = { ok: false, error: 'tab 2 has 1 running agent; pass --force to close anyway', active_agents: 1, running: 1, waiting: 0, inactive: 0 };
+        server.respond(() => ({ lines: [refusal] }));
+        const refused = await runCLI(['tab', 'close', '2'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close', pane_id: PANE, tab: '2' });
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toBe('kelpi tab close: tab 2 has 1 running agent; pass --force to close anyway\n');
+        const asJSON = await runCLI(['tab', 'close-others', '1', '--json'], { port: server.port, paneID: PANE });
+        expect(asJSON.code).toBe(1);
+        expect(JSON.parse(asJSON.stdout)).toEqual({ error: refusal.error, active_agents: 1, running: 1, waiting: 0, inactive: 0 });
+        server.respond(() => ({ lines: [{ ...placed, closed: 2 }] }));
+        await runCLI(['tab', 'close', '2', '--force'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close', pane_id: PANE, tab: '2', force: true });
+        await runCLI(['tab', 'close-others', '-y'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close-others', pane_id: PANE, force: true });
+        const flagOnSelect = await runCLI(['tab', 'select', '2', '--force'], { port: server.port, paneID: PANE });
+        expect(flagOnSelect.code).toBe(1);
     });
 
     it("prints the daemon's refusal and exits 1", async () => {

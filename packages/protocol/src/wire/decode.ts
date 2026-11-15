@@ -168,6 +168,10 @@ function decodeTabVerb(command: WireCommandName, where: TabScope, fields: WireFi
         }
         case 'workspace-tab-duplicate':
             return { command, ...where, focus: fields.flag('focus', false) };
+        case 'workspace-tab-close':
+            return { command, ...where, force: fields.flag('force', false) };
+        case 'workspace-tab-close-others':
+            return { command, ...where, force: fields.flag('force', false) };
         case 'workspace-tab-move-to-workspace': {
             const destination = named('to_workspace', 'to_workspace_id');
             if ('ok' in destination) return destination;

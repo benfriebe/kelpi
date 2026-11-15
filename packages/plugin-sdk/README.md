@@ -97,10 +97,26 @@ await api.tabs.select({ workspaceID: docs.workspaceID, tabID: docs.tabID });
 
 `tabs.select`, `rename`, `move` (0-based), `close`, `closeOthers`, `duplicate`, `merge` (into the tab
 before it), `split` (each pane its own tab) and `moveToWorkspace` take a `{ workspaceID, tabID }` or a
-`tabs.list` entry, and refuse one without its workspace before anything is sent.
+`tabs.list` entry, and refuse one without its workspace before anything is sent. `merge` resolves
+with the tab it merged INTO (the merged tab is gone), naming the one that went as `mergedTabID`.
+`tabs.create({ url })` takes what the window's address bar takes: a full URL (`https://…`,
+`file:///…`, `about:blank`) or a bare host (`example.com`, which gets `https://`; `localhost` and
+other local hosts get `http://`). A relative path means nothing here (there is no working directory),
+so pass a `file://` URL for a local file. `tabs.close` and `closeOthers` act at once, agents or not,
+as the window's own verb does; only the CLI refuses a close over agents without `--force`.
 `panes.moveToNewTab(paneID, { index })` takes the new tab's 0-based position among the tabs as they
 are now; a pane alone in its tab moves that tab instead, and `index` is then a drop slot that counts
-the tab itself, so a slot past it lands one position earlier. Inputs and results use camelCase (`workspaceID`, `paneCount`); list helpers
+the tab itself, so a slot past it lands one position earlier.
+
+Tabs live in the workspace snapshot as `tabs` (in bar order, each `{ id, name, seen, stash }`) and
+`activeTabID`. A workspace's own `layout`, `focusedPaneID` and `zoomedPaneID` are the TAB ON
+SCREEN's; a background tab keeps its own in `stash`, and `panes` holds every tab's panes. A change
+to the tabs (a new, closed, moved or shown tab) arrives in `state.changed` as a `layout-changed`
+event carrying `tabs` and `activeTabID`.
+
+Inputs and results use camelCase (`workspaceID`, `paneCount`). A wire field ending in `_ids` comes
+out as `…IDs` (`syncedPaneIDs`, `workspaceIDs`), as the typings always said; until this release the
+runtime spelled them `…IDS`, so a plugin that read `workspaceIDS` must read `workspaceIDs`. List helpers
 return arrays and mutation helpers unwrap the successful reply. Snapshots retain their daemon
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.

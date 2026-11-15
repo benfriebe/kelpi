@@ -950,9 +950,12 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
 - `--json`: print the `panes` **array unwrapped**, compact JSON, sorted keys, exit 0.
 - Table rendering (`--no-header` omits the header row):
   - Columns: `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`, with `TAB` after WORKSPACE
-    only when some listed pane carries `tab_number` (so the table is unchanged for everyone
-    with one tab per workspace). TAB is the tab's number with `*` on the tab on screen
-    (`2*`), or `-` for a pane of a workspace with one tab.
+    only when some listed pane carries `tab_number` AND the header is shown (so the table is
+    unchanged for everyone with one tab per workspace). TAB is the tab's number with `*` on
+    the tab on screen (`2*`), or `-` for a pane of a workspace with one tab. Under
+    `--no-header` there is never a TAB column: a script that reads fields by position must
+    not see STATUS move because someone opened a tab. `--json` is the stable way to read
+    tabs.
   - ID prints the **full UUID** (copy-pasteable into `--target`; issue #240).
   - LABEL: `label` or `-`. TYPE: `type` or `-`.
   - SESSION: `-` when `agent_session_id` empty; else truncated as `first8…last4`
@@ -1123,7 +1126,8 @@ kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--
 - `--json`: the array unwrapped, compact, sorted keys.
 - Table columns: `ID  NAME  GROUP  PANES  ACTIVE  LABELS`, with `PARENT` after GROUP only
   when some listed workspace is nested, and `TABS` after PANES only when some listed workspace
-  has more than one tab (so the table is unchanged for anyone who never nests or tabs).
+  has more than one tab and the header is shown (so the table is unchanged for anyone who never
+  nests or tabs, and `--no-header` output never gains it: read `tab_count` from `--json`).
   - ID short-form `first8…last4` (>=12 chars only).
   - GROUP: `group_name` or `-`.
   - PARENT: `parent_name` or `-`.
@@ -1718,11 +1722,12 @@ kelpi layout select <name>
 
 ```
 kelpi tab list [--workspace <name-or-id> | --all] [--json] [--no-header]
-kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>] [--url <url>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
+kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>] [--url <url-or-path>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
 kelpi tab select|show [<tab>] [--workspace <name-or-id>] [--json]
 kelpi tab rename <tab> <new-name> | <new-name> | [<tab>] --clear   [--workspace <name-or-id>] [--json]
 kelpi tab move [<tab>] (--to <n> | --end) [--workspace <name-or-id>] [--json]
-kelpi tab close|close-others|duplicate|merge|split [<tab>] [--workspace <name-or-id>] [--json]
+kelpi tab close|close-others [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
+kelpi tab duplicate|merge|split [<tab>] [--workspace <name-or-id>] [--json]
 kelpi tab duplicate [<tab>] [--focus]
 kelpi tab move-to-workspace [<tab>] --to-workspace <name-or-id> [--workspace <name-or-id>] [--focus] [--json]
 ```
@@ -1734,10 +1739,12 @@ verbs (wire-protocol.md §6.10, socket-handlers.md §4.17.1).
   group usage to stdout, exit 0; unknown action => `Unknown tab action: <x>` and the valid
   list, exit 1. `-h`/`--help` anywhere after a subcommand and before a `--` prints its usage,
   exit 0, nothing sent (`hasHelpFlag` stops at `--`, for every command).
-- **Addressing.** `<tab>` is a 1-based number (as `tab list` and ⌥⌘1-9 count), a tab id, or the
-  title the tab bar shows; the daemon resolves it (exact title, then ignoring case; two tabs
-  with one title are refused). A number in range is always the position; past the last tab it
-  is tried as a title. A tab id is found in whichever workspace holds it, with no
+- **Addressing.** `<tab>` is a 1-based number (as `tab list` and ⌥⌘1-9 count), a tab id, a
+  name the user gave a tab, or the title the bar derives from an unnamed tab's pane; the daemon
+  resolves it in that order, each name exactly and then ignoring case, so a user's name always
+  wins over a title a program set (a shell's `printf '\e]0;build\a'` cannot hijack
+  `kelpi tab close build`), and two tabs matching at the same step are refused. A number in
+  range is always the position; past the last tab it is tried as a title. A tab id is found in whichever workspace holds it, with no
   `--workspace`. Without `<tab>` the calling pane's own tab is meant: the CLI sends `pane_id`
   (`KELPI_PANE_ID`) on every verb, and outside a pane a verb that acts on one tab refuses
   before sending: `kelpi tab <verb>: name a tab (a number, id or title) when not in a Kelpi
@@ -1757,10 +1764,19 @@ verbs (wire-protocol.md §6.10, socket-handlers.md §4.17.1).
   `--end`, or `move` without exactly one of `--to`/`--end`, is refused before sending.
 - **`new`**: `--kind` is checked locally (`unknown kind '<x>'; use terminal, same, agent, web,
   scratchpad`); absent, Settings "A new tab opens" decides. `--name` names the tab. `--url`
-  opens a web tab at that address (the daemon adds `https://` to a bare host, as `kelpi web
-  open` does) and implies `--kind web`; with any other `--kind` it is refused before sending
-  (`--url is for a web tab, not --kind <kind>`). Ack: `created tab <n> (<id>) in workspace
-  <name>`.
+  opens a web tab at that address and implies `--kind web`; with any other `--kind` it is
+  refused before sending (`--url is for a web tab, not --kind <kind>`). It is read as `kelpi
+  web open` reads its argument (`localFileURL`, §13): a local path (`./r.html`, `~/x.html`, or a
+  bare name of an existing file with an extension) is sent as a `file://` URL, anything else as
+  typed, and the daemon adds `https://` to a bare host. Run from a pane, the tab goes just after
+  the CALLER's tab (not the one on screen) unless `--at`, `--end` or Settings "New tabs go: at
+  the end" say otherwise, and `--kind same` copies the caller's pane. Ack: `created tab <n>
+  (<id>) in workspace <name>`.
+- **`close`, `close-others`** refuse when the tabs they would end hold agent sessions (running,
+  waiting for input or resumable; the calling pane itself is not counted), as `kelpi workspace
+  delete` does: `kelpi tab close: tab 2 has 1 running agent; pass --force to close anyway`, exit
+  1. `--force` (or `-y`) closes anyway. Under `--json` the refusal prints `{"active_agents":…,
+  "error":…,"inactive":…,"running":…,"waiting":…}` on stdout before exiting 1.
 - **`rename`**: two positionals are `<tab> <new-name>`; one is the new name of the caller's
   tab; `--clear` takes the tab alone (or none) and sends `clear`. A name that is only digits
   gets a note on stderr (it also reads as a tab number, and a number names a position first).

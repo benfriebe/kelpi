@@ -234,6 +234,13 @@ scrolls to and highlights the new row instead).
   `kelpi pane move`.
 - Address panes by name or UUID (`--target worker-1`), never by
   assuming which pane is focused.
+- **Your panes land in your own tab.** Every workspace has tabs in the
+  title bar, each with its own split layout, and the user may be looking
+  at a different tab from the one you run in. A pane you split or create
+  joins YOUR tab, so it can appear in a tab nobody is looking at; that is
+  expected, not lost. (If the user set Settings ▸ Tabs "Panes an agent
+  creates go" to "into a new tab each", each background split opens as a
+  new background tab right after yours instead.) See Tab Commands below.
 
 ### Keep the layout readable (grid + prominent coordinator)
 
@@ -360,7 +367,13 @@ Each JSON entry includes: `id`, `label`, `type` (`shell` / `markdown` /
 optional `group_id` and `group_name` (both absent for top-level workspaces),
 `working_directory`, `git_branch`, `status` (`idle`/`running`/
 `waitingForInput`), `agent_session_id`, `is_focused`,
-`is_active_workspace`, `created_at`, `last_activity_at`.
+`is_active_workspace`, `created_at`, `last_activity_at`. Once a workspace
+has more than one tab, its entries also carry `tab_id`, `tab_number`
+(1-based, the bar's order) and `is_active_tab` (the tab on screen), and
+`is_focused` is only ever true in the tab on screen. The list covers every
+tab's panes, tab by tab. The table adds a TAB column (`2*` marks the tab on
+screen) only with its header; `--no-header` output keeps its old columns,
+so read tabs from `--json`.
 
 Exit codes: `0` on success (including empty list), `1` on usage error,
 transport failure, or `ok: false` from the server. Empty output with
@@ -423,9 +436,11 @@ kelpi workspace list
 kelpi workspace list --json
 ```
 
-Each JSON entry includes `id`, `name`, `color`, `pane_count`, `is_active`,
-and optional `group_id` / `group_name` (both absent for a top-level
-workspace). The `group_name` field matches the one on `pane list`, so
+Each JSON entry includes `id`, `name`, `color`, `pane_count` (every tab's
+panes), `is_active`, and optional `group_id` / `group_name` (both absent for
+a top-level workspace). A workspace with more than one tab also carries
+`tab_count` and `active_tab_id`, and the table adds a TABS column (with its
+header only). The `group_name` field matches the one on `pane list`, so
 `.group_name // "top-level"` answers "which group is this workspace in".
 A nested workspace is listed right after its parent and carries
 `parent_id` / `parent_name` (the table adds a PARENT column when any
@@ -443,6 +458,44 @@ With the user's `gh` installed and logged in, an entry whose branches have
 GitHub pull requests also carries `pull_requests` (`number`, `title`, `url`,
 `state` of `open` / `draft` / `merged` / `closed`, `repo_id`, `branch`; absent
 when there are none), the same status the sidebar row shows.
+
+### Tab Commands
+
+Every workspace has tabs (the window's title bar), and every tab its own
+split layout. A tab is named by its 1-based number, its id, or its name
+(a name the user gave wins over a title the tab takes from its pane);
+without one, a verb acts on YOUR tab.
+
+```bash
+kelpi tab list [--workspace <name-or-id> | --all] [--json]   # TAB ACTIVE TITLE PANES STATUS ID
+kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--url <url-or-path>] [--name N] [--at <n> | --end] [--focus]
+kelpi tab select <tab>                                  # shows it: moves the user's screen
+kelpi tab rename [<tab>] (<name> | --clear)
+kelpi tab move [<tab>] (--to <n> | --end)
+kelpi tab duplicate [<tab>] [--focus]
+kelpi tab merge [<tab>]                                 # into the tab before it
+kelpi tab split [<tab>]                                 # each pane its own tab
+kelpi tab move-to-workspace [<tab>] --to-workspace <name-or-id> [--focus]
+kelpi tab close [<tab>] [--force|-y]
+kelpi tab close-others [<tab>] [--force|-y]
+kelpi pane move-to-tab <tab> [--target P] [--above|--below|--left-of|--right-of <pane>] [--focus]
+kelpi pane move-to-new-tab [--target P] [--at <n> | --end] [--focus]
+```
+
+- **Leave the user's screen alone.** New tabs, copies and moves open in the
+  background unless `--focus`. But `tab select`, `tab close-others` and
+  closing the tab on screen DO change what the user sees and where their
+  keyboard goes; do them only when the user asked.
+- **Address destructive verbs by id.** Tab numbers shift whenever the user
+  drags a tab or opens one. Read the id from `kelpi tab list --json` (or the
+  reply of `tab new`) and pass it to `close`, `close-others`, `merge` and
+  `move-to-workspace`.
+- **Closing asks about agents.** `tab close` and `close-others` refuse,
+  with the counts, when the tabs they would end hold agent sessions (your
+  own pane is not counted), as `workspace delete` does. Pass `--force` only
+  when the user asked for those agents to go.
+- `tab new` lands just after your tab (or at the end, per the user's
+  setting); `--kind same` copies YOUR pane, a shell opening where it is now.
 
 ### Event Commands (Agent Lifecycle)
 

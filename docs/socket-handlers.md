@@ -966,8 +966,11 @@ Shared rules: `workspace_id` is an id, never a name; an absent or unknown one is
 else counts as absent). `focus`, where a verb takes it, defaults to true: only `focus: false`
 leaves the change in the background.
 
-- **`workspace-tab-new`** `{workspace_id, kind?, url?, index?, focus?}`: a new tab holding one new
-  pane (`create-tab`), at `index`, else where `new-tab-position` puts it. `kind` is
+- **`workspace-tab-new`** `{workspace_id, kind?, url?, index?, focus?, source_pane_id?}`: a new
+  tab holding one new pane (`create-tab`), at `index`, else where `new-tab-position` puts it.
+  "The focused pane" below, and the tab "next to the current one" follows, is `source_pane_id`'s
+  when it names a visible pane of the workspace (the control socket sends its caller, §4.17.1),
+  else the tab on screen's focused pane (the window sends none). `kind` is
   `terminal`, `same`, `agent`, `web` or `scratchpad`; absent, `new-tab-opens` decides
   (config-keybindings.md §1.2). `terminal` and `agent` are a shell in the workspace's folder
   (its first repository association's checkout, else the focused pane's directory), and
@@ -1007,7 +1010,8 @@ leaves the change in the background.
   `workspace_id`, `tab_id`, `tab_ids` (the new tabs, in bar order).
 - **`workspace-tab-merge-previous`** `{workspace_id, tab_id}`: the tab's tree joins the previous
   tab's, side by side, and the tab goes. Refused
-  `the first tab has no tab before it to merge into`. Reply `workspace_id`, `tab_id`.
+  `the first tab has no tab before it to merge into`. Reply `workspace_id`, `tab_id` (the tab
+  it went INTO, which is the one left) and `merged_tab_id` (the tab that went).
 - **`workspace-tab-move-to-workspace`** `{workspace_id, tab_id, to_workspace_id, focus?}`: moves
   the tab with its panes and tree to the end of the other workspace's bar; with `focus` it is
   shown there and that workspace becomes the daemon's active one. A workspace's only tab moves
@@ -1049,8 +1053,11 @@ command so it reads the settings of the moment:
   that names no visible pane (closed, or parked behind a `--here` open) is refused as the pane
   verbs refuse it: `origin pane '<id>' no longer exists; pass --workspace <name-or-id> to
   address a tab in another workspace`, never a fall back to the workspace on screen. `tab` is a
-  1-based number, a tab id, or the title the tab bar shows (`workspaceTabTitle`, exactly, then
-  ignoring case; two tabs with one title are refused, never guessed). A number in range is
+  1-based number, a tab id, a name the user gave the tab (exactly, then ignoring case), or the
+  title the bar derives from an unnamed tab's pane (`workspaceTabTitle`, the same two ways).
+  A user's name always wins over a derived title, so a program that sets its terminal title
+  (or a page its `<title>`) can neither shadow a named tab nor make its name ambiguous; two tabs
+  that match at the same step are refused, never guessed. A number in range is
   always the position; one past the last tab is tried as a title before it is refused (`no
   tab <n> in workspace '<name>' (it has <count> tabs)`), so a tab named "7" stays reachable in
   a two-tab workspace. A verb on one tab that names none takes the tab holding `pane_id`, else
@@ -1078,7 +1085,19 @@ command so it reads the settings of the moment:
   the end; negative is refused), `at_end` the end. `workspace-tab-move` refuses a position past
   the last tab: `no position <n> in workspace '<name>' (it has <count> tabs)`.
 - **`workspace-tab-new`** takes `name` too, which renames the new tab once it exists, and
-  passes `url` through (a web tab at that address; `kelpi tab new --url`).
+  passes `url` through (a web tab at that address; `kelpi tab new --url`). When `pane_id` is a
+  pane of the workspace, the handler sends it to the channel as `source_pane_id`: a tab with no
+  position goes just after the CALLER's tab (not the one on screen) unless "New tabs go" says
+  the end, and `kind: "same"` copies the caller's pane, a shell in the directory it is in now.
+  The window sends no `source_pane_id`, so its tabs follow the tab on screen and its focused
+  pane.
+- **Closing over agents.** `workspace-tab-close` and `workspace-tab-close-others` refuse when
+  the panes they would end (the shells a `--here` open parked behind them included, the caller's
+  own pane not) hold agent sessions, counted as `workspace-delete` counts them (§2.3: running,
+  waiting for input, or resumable): `tab <n> has <counts>; pass --force to close anyway` (or
+  `the other tabs of workspace <name> have …`), with `active_agents`, `running`, `waiting` and
+  `inactive` beside the error. `force: true` closes anyway. The WS verbs above never ask; the
+  window raises its own confirmation (`TabCloseGate`) first.
 - **Replies** add `workspace_name` and `tab_number`, as both stand after the change, to the
   channel's reply (wire-protocol.md §6.10 lists the extras per verb). A `name` in a reply is
   the name as stored (trimmed; null once a blank rename has cleared it), not as typed.

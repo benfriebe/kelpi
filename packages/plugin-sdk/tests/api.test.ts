@@ -350,6 +350,14 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(calls).toHaveLength(sent);
     });
 
+    it('resolves a merge with the tab it went into, naming the merged one', async () => {
+        const T1 = testID('F', 1);
+        const T2 = testID('F', 2);
+        const transport: HostCall = async () => ({ ok: true, workspace_id: W1, tab_id: T1, merged_tab_id: T2 });
+        const api = createKelpiAPI(transport, () => ({ workspaceID: W1, paneID: P1 }));
+        expect(await api.tabs.merge({ workspaceID: W1, tabID: T2 })).toEqual({ workspaceID: W1, tabID: T1, mergedTabID: T2 });
+    });
+
     it('workspace, move-to-workspace, diff and view helpers focus by default and pass focus:false through', async () => {
         const calls: { method: string; args: JsonObject }[] = [];
         const transport: HostCall = async (method, args) => {

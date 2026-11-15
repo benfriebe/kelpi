@@ -47,8 +47,9 @@ export const globalUsage = `Usage:
   kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
   kelpi workspace color <name-or-id> <color> [--json]
   kelpi tab list [--workspace <name-or-id> | --all] [--json] [--no-header]
-  kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>] [--at <n> | --end] [--focus] [--json]
-  kelpi tab select|close|close-others|duplicate|merge|split [<tab>] [--workspace <name-or-id>] [--json]
+  kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--url <url-or-path>] [--name <name>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
+  kelpi tab select|duplicate|merge|split [<tab>] [--workspace <name-or-id>] [--json]
+  kelpi tab close|close-others [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
   kelpi tab rename [<tab>] (<new-name> | --clear) [--json]
   kelpi tab move [<tab>] (--to <n> | --end) [--json]
   kelpi tab move-to-workspace [<tab>] --to-workspace <name-or-id> [--focus] [--json]
@@ -827,11 +828,15 @@ Exit codes: 0 on success, non-zero on failure.
 `;
 
 export const tabCloseUsage = `Usage:
-  kelpi tab close [<tab>] [--workspace <name-or-id>] [--json]
+  kelpi tab close [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
 
 Closes a tab and every pane in it (each can be reopened with ⇧⌘T). A
-workspace's only tab never closes; delete the workspace instead. Closing does
-not ask, even with agents in the tab, as kelpi pane close does not.
+workspace's only tab never closes; delete the workspace instead.
+
+A tab whose panes hold agent sessions (running, waiting for input, or
+resumable) is refused with the counts, as kelpi workspace delete is; pass
+--force (or -y) to close it anyway. Your own pane is not counted, so an agent
+can close its own tab. With --json a refusal prints its counts and exits 1.
 
 ${TAB_ADDRESSING}
 
@@ -840,9 +845,11 @@ Exit codes: 0 on success, non-zero on failure.
 `;
 
 export const tabCloseOthersUsage = `Usage:
-  kelpi tab close-others [<tab>] [--workspace <name-or-id>] [--json]
+  kelpi tab close-others [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
 
-Closes every tab of the workspace but this one, with their panes.
+Closes every tab of the workspace but this one, with their panes. Refused,
+with the counts, when those tabs hold agent sessions; pass --force (or -y) to
+close them anyway, as with kelpi tab close.
 
 ${TAB_ADDRESSING}
 

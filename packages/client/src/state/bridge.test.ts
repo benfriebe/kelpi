@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOKEN_STORAGE_KEY, type StorageLike } from '../app/config';
 import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
 import { noteAgentCreateSent } from './agent-launch';
-import { connectStore, createKelpiRuntime, isTokenRejection } from './bridge';
+import { connectStore, createKelpiRuntime, isTokenRejection, isVersionMismatch } from './bridge';
 import { createNotificationManager, type NotificationApi } from './notifications';
 import { createKelpiStore, type KelpiStoreApi } from './store';
 
@@ -234,6 +234,23 @@ describe('store bridge', () => {
         expect(h.sockets.sockets).toHaveLength(1);
         // And the remembered credential is gone, so the next visit is not wedged by it.
         expect(storage.data.has(TOKEN_STORAGE_KEY)).toBe(false);
+    });
+
+    it('keeps the rejection code beside the sentence, so a version mismatch can be named', () => {
+        const h = harness(createKelpiStore(), memoryStorage({}));
+        h.connection.connect();
+        h.sockets.last().open();
+        h.sockets.last().emit({
+            type: 'rejected',
+            code: 'protocol-mismatch',
+            message: 'daemon speaks client protocol v3, client speaks v4; update Kelpi so the app and the daemon run the same version',
+            protocolVersion: 3
+        });
+        h.sockets.last().serverClose(4002, 'protocol-mismatch');
+        const ui = h.store.getState().ui;
+        expect(ui.connection).toBe('rejected');
+        expect(ui.connectionRejection).toBe('protocol-mismatch');
+        expect(isVersionMismatch(ui)).toBe(true);
     });
 
     it('connects again once a good token arrives', () => {

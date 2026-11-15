@@ -17,7 +17,6 @@ import {
     type Pane,
     type WorkspaceState
 } from '@kelpi/daemon/store';
-import { summarizeAgentPanes, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 
 export type WorkspaceTabKind = 'terminal' | 'agent' | 'web' | 'document' | 'scratchpad' | 'image';
 export type WorkspaceTabStatus = 'idle' | 'running' | 'waitingForInput';
@@ -110,24 +109,5 @@ export function workspaceTabViews(workspace: WorkspaceState): WorkspaceTabView[]
     });
 }
 
-/**
- * The agents that closing these tabs would close: their panes, and the shells a `--here` open
- * parked behind them (the close ends those too), for the close-tab gate.
- */
-export function tabsAgentSummary(workspace: WorkspaceState, tabIDs: readonly string[]): WorkspaceAgentSummary {
-    const wanted = new Set(tabIDs);
-    const ids = new Set(workspaceTabs(workspace).filter((tab) => wanted.has(tab.id)).flatMap((tab) => tabPaneIDs(workspace, tab)));
-    const closing = workspace.panes.filter((pane) => ids.has(pane.id));
-    const parked: Pane[] = [];
-    const follow = (pane: Pane): void => {
-        const sourceID = pane.parkedSourcePaneID ?? null;
-        if (sourceID === null || ids.has(sourceID)) return;
-        const source = workspace.parkedPanes.find((candidate) => candidate.id === sourceID);
-        if (source === undefined) return;
-        ids.add(source.id);
-        parked.push(source);
-        follow(source);
-    };
-    for (const pane of closing) follow(pane);
-    return summarizeAgentPanes([...closing, ...parked]);
-}
+/** The close-tab gate's count (workspace-feature.md §12.5), shared with the CLI's refusal. */
+export { tabsAgentSummary } from '@kelpi/daemon/store';

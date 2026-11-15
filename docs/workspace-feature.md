@@ -2118,7 +2118,9 @@ A window asks before it closes tabs with agents in them (`chrome/TabCloseGate.ts
 tabs' panes, and the shells parked behind them, hold any agent session (running, waiting or
 inactive, as the workspace gate counts them) and `confirm-workspace-delete` is on, Close Tab, ×,
 middle-click, ⌥⌘W and Close Other Tabs raise an alert whose default is Cancel. Its "Don't ask
-again" turns that setting off, for workspaces and tabs alike. The WS verbs themselves never ask.
+again" turns that setting off, for workspaces and tabs alike. The WS verbs themselves never ask. The
+control socket (`kelpi tab close`, `close-others`) refuses such a close with the counts unless
+`force`, as `workspace-delete` does, leaving out the calling pane (socket-handlers.md §4.17.1).
 
 ### 12.6 What only the tab on screen does
 

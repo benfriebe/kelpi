@@ -15,7 +15,7 @@
  */
 
 import { newUUID } from '@kelpi/core/codec';
-import { allPaneIDs as treePaneIDs, dropZoneForWireEdge } from '@kelpi/core/layout';
+import { allPaneIDs as treePaneIDs, dropZoneForWireEdge, type Pane } from '@kelpi/core/layout';
 import { DROP_ZONES, type DropZone as WireDropZone, type JsonObject } from '@kelpi/protocol';
 
 import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../handlers/pane/index.js';
@@ -152,12 +152,29 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         return null;
     };
 
-    /** Where a new tab goes: Settings ▸ Workspaces "New tabs go", unless the caller says. */
+    /**
+     * The pane a new tab is opened from: `source_pane_id` when it names a visible pane of this
+     * workspace (the control socket sends its caller, which may sit in a background tab), else
+     * the focused pane of the tab on screen (the window, which sends none).
+     */
+    const sourcePane = (workspace: WorkspaceState, payload: Record<string, unknown>): Pane | null => {
+        const named = text(payload['source_pane_id']);
+        const source = named === undefined ? null : visiblePane(workspace, named);
+        if (source !== null) return source;
+        return workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
+    };
+
+    /**
+     * Where a new tab goes: Settings ▸ Workspaces "New tabs go", unless the caller says. "Next to
+     * the current tab" is next to the source pane's tab when one was named, else the tab on screen.
+     */
     const newTabIndex = (workspace: WorkspaceState, payload: Record<string, unknown>): number => {
         const asked = integer(payload['index']);
         if (asked !== undefined) return asked;
         if ((ctx.newTabPosition?.() ?? 'after-current') === 'end') return workspaceTabs(workspace).length;
-        return tabIndex(workspace, activeTabIDOf(workspace)) + 1;
+        const named = text(payload['source_pane_id']);
+        const from = named === undefined ? null : tabOfPane(workspace, named);
+        return tabIndex(workspace, from?.id ?? activeTabIDOf(workspace)) + 1;
     };
 
     /** "A terminal in the workspace folder": its repository's worktree, else where the tab on screen is. */
@@ -212,7 +229,7 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
             if (typeof url !== 'string' || url.trim() === '') return failure('workspace-tab-new: url must be a non-empty string');
             if (requested !== 'web') return failure(`workspace-tab-new: a url is for a web tab, not a ${requested} tab`);
         }
-        const focusedPane = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
+        const focusedPane = sourcePane(workspace, payload);
         // "The same kind as the focused pane", for a shell: a terminal where that shell is now,
         // which only the OS knows (OSC 7 may never have said), so ask before opening it.
         const asking = requested === 'same' && focusedPane?.type === 'shell' ? liveDirectories(workspace, [focusedPane.id]) : null;
@@ -243,7 +260,7 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
         const workspace = workspaceFor(payload);
         if (workspace === null) return failure('workspace-tab-new requires a known workspace_id');
         let kind = requested;
-        const focusedPane = workspace.focusedPaneID === null ? null : visiblePane(workspace, workspace.focusedPaneID);
+        const focusedPane = sourcePane(workspace, payload);
         if (kind === 'same') {
             // The kinds a tab can be opened as; anything else (a diff, a document, a plugin
             // view) has no blank form, so it opens a terminal.
@@ -417,10 +434,14 @@ export function createWorkspaceTabChannel(options: WorkspaceTabChannelOptions): 
             case 'workspace-tab-merge-previous': {
                 const args = tabArgs(payload, command);
                 if (isFailure(args)) return args;
-                if (tabIndex(args.workspace, args.tabID) <= 0) return failure('the first tab has no tab before it to merge into');
+                const at = tabIndex(args.workspace, args.tabID);
+                if (at <= 0) return failure('the first tab has no tab before it to merge into');
+                const into = workspaceTabs(args.workspace)[at - 1]?.id ?? args.tabID;
                 ctx.store.dispatch({ type: 'merge-tab-into-previous', workspaceID: args.workspace.id, tabID: args.tabID });
                 refreshSyncGroup(ctx, args.workspace.id);
-                return { ok: true, workspace_id: args.workspace.id, tab_id: args.tabID };
+                // The merged tab is gone: the reply names the tab it went into, as the control
+                // socket's does, and the one that went as `merged_tab_id`.
+                return { ok: true, workspace_id: args.workspace.id, tab_id: into, merged_tab_id: args.tabID };
             }
             case 'workspace-tab-move-to-workspace': {
                 const args = tabArgs(payload, command);

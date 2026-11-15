@@ -303,10 +303,18 @@ export interface WorkspaceTabMoveMessage extends TabScope {
 
 export interface WorkspaceTabCloseMessage extends TabScope {
     command: 'workspace-tab-close';
+    /**
+     * Close even when the tab's panes hold agent sessions. Absent, the control socket refuses
+     * such a close with the counts, as `workspace-delete` does; the WS verb never asks (the
+     * window raises its own confirmation).
+     */
+    force: boolean;
 }
 
 export interface WorkspaceTabCloseOthersMessage extends TabScope {
     command: 'workspace-tab-close-others';
+    /** As `workspace-tab-close`'s: close the other tabs even when they hold agent sessions. */
+    force: boolean;
 }
 
 export interface WorkspaceTabSplitPanesMessage extends TabScope {

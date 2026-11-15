@@ -144,7 +144,7 @@ function HostsLevel(props: PhonePickerProps): ReactElement {
                     const reachable = connection === 'connected';
                     const status = reading.known && reachable
                         ? `${hostKindLabel(host.kind)} · ${plural(reading.workspaces.length, 'workspace')}`
-                        : `${hostKindLabel(host.kind)} · ${hostReachability(connection)}`;
+                        : `${hostKindLabel(host.kind)} · ${hostReachability(connection, reading.otherVersion)}`;
                     return (
                         <div key={host.key} className="flex items-center gap-1" data-testid={`phone-host-${host.key}`} data-host-kind={host.kind} data-status={connection}>
                             <Row testID={`phone-picker-host-${host.key}`} current={host.key === props.host.key} dim={!reachable} onClick={() => props.onHost(host.key)}>

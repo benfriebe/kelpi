@@ -13,6 +13,7 @@
  * script can address the tab next without listing first.
  */
 
+import { describeAgentSummary } from '@kelpi/core/agent';
 import { dropZoneForWireEdge } from '@kelpi/core/layout';
 import { idsEqual, isUUIDToken, resolvePaneInWorkspace, resolveWorkspaceLenient, resolveWorkspaceStrict, workspacesMatchingName } from '@kelpi/core/resolve';
 import type { JsonObject, WireMessage } from '@kelpi/protocol';
@@ -25,6 +26,7 @@ import {
     tabLayout,
     tabOfPane,
     tabPaneIDs,
+    tabsAgentSummary,
     workspaceByID,
     workspaceContainingVisiblePane,
     workspaceTabStatus,
@@ -103,10 +105,11 @@ function resolveWorkspace(state: DaemonState, ref: TabReference): Resolved<Works
 }
 
 /**
- * A tab of `workspace` by 1-based number, then id, then the title the bar shows (exactly, then
- * ignoring case). A number past the last tab is tried as a title before it is an error, so a
- * tab named "7" in a two-tab workspace is still reachable; a number in range is always the
- * position. Two tabs with the same title are ambiguous, never a guess.
+ * A tab of `workspace` by 1-based number, then id, then a name the user gave it (exactly, then
+ * ignoring case), then the title the bar derives from its pane (the same two ways). A number
+ * past the last tab is tried as a title before it is an error, so a tab named "7" in a two-tab
+ * workspace is still reachable; a number in range is always the position. Two tabs that match
+ * at the same step are ambiguous, never a guess.
  */
 export function resolveWorkspaceTab(workspace: WorkspaceState, token: string): Resolved<WorkspaceTab> {
     const tabs = workspaceTabs(workspace);
@@ -120,13 +123,19 @@ export function resolveWorkspaceTab(workspace: WorkspaceState, token: string): R
         const byID = tabs.find((tab) => idsEqual(tab.id, token));
         if (byID !== undefined) return found(byID);
     }
-    const titled = tabs.map((tab, index) => ({ tab, number: index + 1, title: workspaceTabTitle(workspace, tab) }));
+    // A name the user gave a tab outranks a title derived from its pane: a program setting its
+    // terminal title (or a page its <title>) can never shadow a named tab, or make it ambiguous.
+    const entries = tabs.map((tab, index) => ({ tab, number: index + 1, title: workspaceTabTitle(workspace, tab) }));
+    const named = entries.filter((entry) => entry.tab.name !== null);
+    const derived = entries.filter((entry) => entry.tab.name === null);
     const folded = token.toLowerCase();
     for (const matches of [
-        titled.filter((entry) => entry.title === token),
-        titled.filter((entry) => entry.title.toLowerCase() === folded)
+        named.filter((entry) => entry.title === token),
+        named.filter((entry) => entry.title.toLowerCase() === folded),
+        derived.filter((entry) => entry.title === token),
+        derived.filter((entry) => entry.title.toLowerCase() === folded)
     ]) {
-        if (matches.length === 1) return found((matches[0] as (typeof titled)[number]).tab);
+        if (matches.length === 1) return found((matches[0] as (typeof entries)[number]).tab);
         if (matches.length > 1) {
             const numbers = matches.map((entry) => String(entry.number)).join(', ');
             return missing(`tab name '${token}' is ambiguous in workspace '${workspace.name}': tabs ${numbers} (use a number or id)`);
@@ -287,8 +296,12 @@ export const handleWorkspaceTabNew: CommandHandler<PaneHandlerContext> = (msg, c
     }
     const index = msg.at_end ? count : msg.index === undefined ? undefined : Math.min(msg.index, count);
     guarded(reply, async () => {
+        // The caller's pane, when it is in this workspace: the new tab goes after the CALLER's
+        // tab (not the one on screen) and "same" copies the caller, not the pane the user has.
+        const caller = msg.pane_id === undefined ? undefined : workspace.value.panes.find((pane) => idsEqual(pane.id, msg.pane_id as string))?.id;
         const result = await runChannel(ctx, 'workspace-tab-new', {
             workspace_id: workspace.value.id,
+            ...(caller !== undefined ? { source_pane_id: caller } : {}),
             ...(msg.kind !== undefined ? { kind: msg.kind } : {}),
             ...(index !== undefined ? { index } : {}),
             ...(msg.url !== undefined ? { url: msg.url } : {}),
@@ -317,6 +330,23 @@ function plainTabVerb(command: 'workspace-tab-select' | 'workspace-tab-close' | 
     return (msg, ctx, reply) => {
         if (msg.command !== command) return;
         withTab(msg, ctx, reply, async (workspace, tab) => {
+            if ((msg.command === 'workspace-tab-close' || msg.command === 'workspace-tab-close-others') && !msg.force) {
+                // workspace-feature.md §12.5: closing tabs ends their agents, so the control
+                // socket refuses it unless told, as `workspace-delete` does for a workspace. The
+                // caller's own pane is not counted (an agent closing its own tab means it).
+                const closing = msg.command === 'workspace-tab-close' ? [tab.id] : workspaceTabs(workspace).map((other) => other.id).filter((id) => id !== tab.id);
+                const agents = tabsAgentSummary(workspace, closing, msg.pane_id);
+                if (agents.total > 0) {
+                    const what = msg.command === 'workspace-tab-close' ? `tab ${String(tabIndex(workspace, tab.id) + 1)}` : `the other tabs of workspace ${workspace.name}`;
+                    sendError(reply, `${what} ${msg.command === 'workspace-tab-close' ? 'has' : 'have'} ${describeAgentSummary(agents)}; pass --force to close anyway`, {
+                        active_agents: agents.total,
+                        running: agents.running,
+                        waiting: agents.waiting,
+                        inactive: agents.inactive
+                    });
+                    return;
+                }
+            }
             // Merging a tab into the one before it leaves no tab of its own to report, so the
             // reply names the tab it went into, as it stands after.
             const previous = command === 'workspace-tab-merge-previous' ? workspaceTabs(workspace)[tabIndex(workspace, tab.id) - 1] : undefined;

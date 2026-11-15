@@ -206,7 +206,7 @@ export interface TabsAPI {
      * helpers: code without a user gesture behind it passes `focus: false`. `url` opens a web
      * tab at that address (it implies `kind: 'web'`; any other kind with a url is refused).
      */
-    create(options?: { workspaceID?: string; kind?: NewTabKind; url?: string; index?: number; name?: string; focus?: boolean }): Promise<TabPlacement & { paneID: string; kind: NewTabKind; url?: string }>;
+    create(options?: { workspaceID?: string; kind?: NewTabKind; url?: string; index?: number; name?: string; focus?: boolean }): Promise<TabPlacement & { paneID: string; kind: Exclude<NewTabKind, 'same'>; url?: string }>;
     select(tab: TabRef): Promise<TabPlacement>;
     /** `null` names it after its focused pane again. */
     rename(tab: TabRef, name: string | null): Promise<TabPlacement>;
@@ -217,8 +217,11 @@ export interface TabsAPI {
     closeOthers(tab: TabRef): Promise<TabPlacement & { closed: number }>;
     /** Resolves with the copy's id. */
     duplicate(tab: TabRef, options?: { focus?: boolean }): Promise<TabPlacement>;
-    /** Merges the tab into the one before it. */
-    merge(tab: TabRef): Promise<TabPlacement>;
+    /**
+     * Merges the tab into the one before it. Resolves with the tab it went INTO (the merged tab
+     * is gone), and the merged tab's id as `mergedTabID`.
+     */
+    merge(tab: TabRef): Promise<TabPlacement & { mergedTabID: string }>;
     /** Gives each pane of the tab its own tab. */
     split(tab: TabRef): Promise<TabPlacement & { tabIDs: string[] }>;
     moveToWorkspace(tab: TabRef, workspaceID: string, options?: { focus?: boolean }): Promise<TabPlacement>;
@@ -413,9 +416,23 @@ export interface SnapshotPane {
     plugin?: { pluginID: string; viewID: string; stateVersion: number; state: Data } | null;
     [key: string]: Json | undefined;
 }
+/**
+ * One workspace tab (workspace-feature.md §12). `stash` is a background tab's own layout and
+ * focus; it is null for the tab on screen, whose are the workspace's own fields.
+ */
+export interface SnapshotTab {
+    id: string; name: string | null; seen: boolean;
+    stash: { layout: Json; focusedPaneID: string | null; zoomedPaneID: string | null; [key: string]: unknown } | null;
+}
 export interface SnapshotWorkspace {
-    id: string; name: string; color: WorkspaceColor; labels: string[]; panes: SnapshotPane[]; parkedPanes: SnapshotPane[];
+    id: string; name: string; color: WorkspaceColor; labels: string[];
+    /** Every tab's panes. */
+    panes: SnapshotPane[]; parkedPanes: SnapshotPane[];
+    /** The TAB ON SCREEN's focus, zoom and layout; a background tab keeps its own in `tabs[].stash`. */
     focusedPaneID: string | null; zoomedPaneID: string | null; layout: Json; recentlyClosedCount: number;
+    /** In bar order; never empty. */
+    tabs: SnapshotTab[];
+    activeTabID: string;
     [key: string]: unknown;
 }
 export interface StateSnapshot {

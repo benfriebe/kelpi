@@ -92,6 +92,26 @@ describe('workspace-tab-new', () => {
         expect(activeTabIDOf(h.workspace(W1))).toBe(reply['tab_id']);
     });
 
+    it("opens next to the CALLER's tab, and copies the caller for the same kind, not what is on screen", async () => {
+        // Seeded: tab 1 (P1, /repo) is on screen; the caller P2 (/repo/build) is in tab 2 behind it.
+        const h = seeded();
+        const reply = await settled(h, { command: 'workspace-tab-new', pane_id: P2, kind: 'same', at_end: false });
+        expect(reply).toMatchObject({ ok: true, tab_number: 3, kind: 'terminal' });
+        expect(h.workspace(W1).panes.find((pane) => pane.id === NEW)?.workingDirectory).toBe('/repo/build');
+        expect(activeTabIDOf(h.workspace(W1))).toBe(W1);
+        // From a pane in tab 1, the new tab goes right after tab 1.
+        const h2 = harness({ minted: [NEW] });
+        seedWorkspace(h2, { id: W1, name: 'dev', paneID: P1, path: '/repo' });
+        h2.store.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: T2,
+            focus: true,
+            create: { type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/repo/build', focus: true }
+        });
+        expect(await settled(h2, { command: 'workspace-tab-new', pane_id: P1, kind: 'terminal', at_end: false })).toMatchObject({ ok: true, tab_number: 2 });
+    });
+
     it('refuses a kind it does not know', async () => {
         const h = seeded();
         const reply = await settled(h, { command: 'workspace-tab-new', pane_id: P1, kind: 'spreadsheet', at_end: false });
@@ -132,6 +152,19 @@ describe('naming a tab', () => {
         expect(reply).toEqual({ ok: false, error: "tab name 'build' is ambiguous in workspace 'dev': tabs 1, 2 (use a number or id)" });
     });
 
+    it('prefers a name the user gave over a title a program set, in any case', async () => {
+        const h = seeded();
+        // Tab 1 is unnamed and titled after its pane, whose program now calls itself "build";
+        // tab 2 is the one the user named "build". Neither "build" nor "Build" is ambiguous.
+        h.store.dispatch({ type: 'pane-title-changed', paneID: P1, title: 'build', now: NOW });
+        for (const tab of ['build', 'Build']) {
+            expect(await settled(h, { command: 'workspace-tab-select', pane_id: P1, tab })).toMatchObject({ ok: true, tab_id: T2 });
+        }
+        // A derived title still reaches its tab when no name matches.
+        h.store.dispatch({ type: 'pane-title-changed', paneID: P1, title: 'vim', now: NOW });
+        expect(await settled(h, { command: 'workspace-tab-select', pane_id: P1, tab: 'VIM' })).toMatchObject({ ok: true, tab_id: W1 });
+    });
+
     it("uses the caller's own tab when none is named, and asks for one from outside a pane", async () => {
         const h = seeded();
         expect(await settled(h, { command: 'workspace-tab-rename', pane_id: P3, name: 'workers', clear: false })).toMatchObject({
@@ -168,9 +201,9 @@ describe('the tab verbs', () => {
 
     it('closes a tab and ends its panes, but never the only tab', async () => {
         const h = seeded();
-        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P1, tab: '2' })).toMatchObject({ ok: true, closed: 2 });
+        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P1, tab: '2', force: false })).toMatchObject({ ok: true, closed: 2 });
         expect(h.pty.killed.sort()).toEqual([P2, P3].sort());
-        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P1, tab: '1' })).toEqual({
+        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P1, tab: '1', force: false })).toEqual({
             ok: false,
             error: 'a workspace keeps at least one tab'
         });
@@ -178,8 +211,35 @@ describe('the tab verbs', () => {
 
     it('closes every other tab', async () => {
         const h = seeded();
-        expect(await settled(h, { command: 'workspace-tab-close-others', pane_id: P1, tab: '1' })).toMatchObject({ ok: true, closed: 2, tab_number: 1 });
+        expect(await settled(h, { command: 'workspace-tab-close-others', pane_id: P1, tab: '1', force: false })).toMatchObject({ ok: true, closed: 2, tab_number: 1 });
         expect(workspaceTabs(h.workspace(W1))).toHaveLength(1);
+    });
+
+    it('refuses to close a tab whose panes hold agents unless forced, as workspace delete does', async () => {
+        const h = seeded();
+        h.store.dispatch({ type: 'pane-agent-event', paneID: P3, event: { type: 'agentStarted', agent: 'claude' }, now: NOW });
+        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P1, tab: 'build', force: false })).toEqual({
+            ok: false,
+            error: 'tab 2 has 1 running agent; pass --force to close anyway',
+            active_agents: 1,
+            running: 1,
+            waiting: 0,
+            inactive: 0
+        });
+        expect(workspaceTabs(h.workspace(W1))).toHaveLength(2);
+        expect(h.pty.killed).toEqual([]);
+        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P1, tab: 'build', force: true })).toMatchObject({ ok: true, closed: 2 });
+        expect(workspaceTabs(h.workspace(W1))).toHaveLength(1);
+    });
+
+    it('refuses close-others over agents in the other tabs, but not over the caller itself', async () => {
+        const h = seeded();
+        h.store.dispatch({ type: 'pane-agent-event', paneID: P2, event: { type: 'agentStarted', agent: 'claude' }, now: NOW });
+        const refused = await settled(h, { command: 'workspace-tab-close-others', pane_id: P1, tab: '1', force: false });
+        expect(refused).toMatchObject({ ok: false, active_agents: 1, running: 1 });
+        expect(String(refused['error'])).toBe("the other tabs of workspace dev have 1 running agent; pass --force to close anyway");
+        // An agent closing its own tab (the agent is the caller) is not asking about itself.
+        expect(await settled(h, { command: 'workspace-tab-close', pane_id: P2, force: false })).toMatchObject({ ok: true, closed: 2 });
     });
 
     it('gives each pane its own tab, and merges a tab into the one before it', async () => {

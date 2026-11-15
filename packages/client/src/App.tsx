@@ -4109,6 +4109,8 @@ function Shell(props: AppProps): ReactElement {
     // docs/running-services.md §7: a service's port in a web pane, beside the pane that started
     // it when that pane still exists, else in the service's own workspace (its focused pane),
     // else beside the focused pane. One rule for the row menu, the Inspector and the footer.
+    // The window goes to that workspace first: from another workspace's row menu or the footer,
+    // the new web pane would otherwise open where nobody is looking.
     const openServicePort = useCallback((service: RunningServiceEntry, port: RunningServicePort): void => {
         const current = store.getState();
         const workspaces = current.daemon.state.workspaces;
@@ -4120,8 +4122,11 @@ function Shell(props: AppProps): ReactElement {
         const ownPane = owner === undefined ? undefined
             : owner.panes.find(pane => pane.id === owner.focusedPaneID)?.id ?? owner.panes[0]?.id;
         const anchor = started ?? ownPane ?? selectFocusedPaneID(current);
-        if (anchor !== null) act.openLinkInWebPane(anchor, portURL(port));
-    }, [act, store]);
+        if (anchor === null) return;
+        const home = workspaces.find(workspace => workspace.panes.some(pane => pane.id === anchor));
+        if (home !== undefined && home.id !== selectActiveWorkspace(current)?.id) activateWorkspaceAndReveal(home.id);
+        act.openLinkInWebPane(anchor, portURL(port));
+    }, [act, activateWorkspaceAndReveal, store]);
     /** The pane header chip's port, beside its own pane; stable so `memo(PaneHeader)` holds. */
     const openPanePort = useCallback((paneID: string, port: RunningServicePort): void => {
         act.openLinkInWebPane(paneID, portURL(port));

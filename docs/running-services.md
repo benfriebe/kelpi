@@ -241,7 +241,8 @@ Built:
 
 Opening a port puts a web pane beside the pane that started the service when that pane still
 exists, otherwise beside the focused pane of the service's own workspace, otherwise beside the
-focused pane. Uptimes keep counting between broadcasts: the client measures them against the
+focused pane. The window switches to that pane's workspace first (and the web pane brings its
+tab on screen), so a port opened from another workspace's row menu or the status bar is seen. Uptimes keep counting between broadcasts: the client measures them against the
 daemon's clock (the scan's time plus what has passed since it arrived).
 
 Changed from the design: the status bar chip opens a popover, not the bottom panel. The bottom

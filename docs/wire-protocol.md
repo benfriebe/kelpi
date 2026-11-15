@@ -309,7 +309,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `group-list`, `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
    `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
-   `graft-status`, `ping`, `restart-old-terminals`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
+   `graft-status`, `ping`, `restart-old-terminals`, `running-list`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
    `pane-font-size`, `pane-clear`, `pane-move-adjacent`, the workspace-tab verbs
    (`workspace-tab-*`, `pane-move-to-tab`, `pane-move-to-new-tab`, §6.10).
@@ -368,6 +368,7 @@ workspace-icon, workspace-color,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping, restart-old-terminals,
+running-list,
 permission-request,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
 web-tabs, web-tab-new, web-tab-close, web-tab-select,
@@ -594,6 +595,7 @@ carry `"command"`.
 | `graft-status` | R/R | — | — |
 | `ping` | R/R | — | — |
 | `restart-old-terminals` | R/R | — | — |
+| `running-list` | R/R | - | `pane_id`, `workspace`, `scope`, `all` |
 | `plugin` | R/R | — | `action`, `text` (JSON object encoded as a string; see [plugins](plugins.md)) |
 | `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction`, `focus`, `gesture` |
 | `web-navigate` | R/R | pane-target*; `url` (non-empty) | `gesture`, `typed` |
@@ -2139,6 +2141,133 @@ ones above, `no tab 7 in workspace 'dev' (it has 2 tabs)`, `no position 6 in wor
 (it has 2 tabs)`, `the pane is alone in its tab already` (`pane-move-to-new-tab`) and `the pane
 is in that tab already` (`pane-move-to-tab` with no `anchor`).
 
+### 6.11 `running-list` (R/R)
+
+The dev servers, listening processes and Docker containers running on the daemon's host, each
+attributed to the workspace whose pane started it (docs/running-services.md, which also covers
+how attribution works). It is a read: it changes nothing, and the daemon scans the host when
+asked. `kelpi ps` sends it (cli.md, "Running services"). It is on the explicit chain (§3), so it
+works from a plain shell with no `pane_id`; only `scope:"current"` needs one.
+
+Every field is optional:
+
+- `workspace` (string): only that workspace's services. Name or id, resolved strictly (§5.8).
+- `scope` (string): `"current"` lists the requesting pane's workspace, found from `pane_id`.
+  Any other value is refused, `"all"` included (unlike `pane-list`, where `all` is a scope;
+  here it is its own flag).
+- `pane_id` (UUID): the requesting pane. Read only with `scope:"current"`, where it must be a
+  pane of some workspace, visible or parked.
+- `all` (bool, default `false`): also list services started outside Kelpi and agents' own
+  local ports.
+
+An empty `workspace` or `scope` reads as absent (§2.2).
+
+```json
+{"command":"running-list"}
+{"command":"running-list","workspace":"feat-x"}
+{"command":"running-list","pane_id":"1B4E…","scope":"current"}
+{"command":"running-list","all":true}
+```
+
+What is listed, by each entry's `category`:
+
+| request | listed |
+|---|---|
+| no `workspace`, no `scope` | `workspace` and `unattached` |
+| no `workspace`, no `scope`, `all:true` | every category: `workspace`, `unattached`, `outside`, `agent` |
+| `workspace`, or `scope:"current"` | every service whose `workspace_id` is that workspace, whatever its category, so its agents' own ports are included. `all` changes nothing. |
+
+Refusals are checked in this order and sent before any scan starts:
+
+- `unknown scope: <scope>`: a `scope` other than `current`.
+- `workspace and --current are mutually exclusive`: `workspace` with `scope:"current"`.
+- `no workspace contains the requesting pane`: `scope:"current"` with no `pane_id`, or with one
+  that no workspace contains (visible or parked).
+- `workspace not found: <name>` and `workspace name is ambiguous: <name> (use the id)`, as for
+  `workspace-rename`.
+
+A scan that throws is `running-list failed: <message>`. A probe that cannot run is never a
+refusal; it is a `warnings` entry (below).
+
+```json
+→ {"ok":true,"scanned_at":"2026-11-15T09:40:00Z","warnings":[],"services":[
+    {"id":"process:51513:1794726000","kind":"process","name":"pnpm start",
+     "command":"node /opt/homebrew/bin/pnpm start","category":"workspace",
+     "workspace_id":"<uuid>","workspace_name":"notes","pane_id":"<uuid>",
+     "attribution":"process-tree","started_by":"pane","agent":null,"foreground":true,
+     "directory":"/Users/me/repos/notes","directory_workspace_id":"<uuid>",
+     "directory_workspace_name":"notes","directory_missing":false,
+     "started_at":"2026-11-15T07:00:00Z","pid":51513,"process_count":3,"rss_bytes":222298112,
+     "ports":[{"port":4400,"address":"127.0.0.1","exposed":false,"pid":51530,"container_port":null}],
+     "members":[{"name":"node","pid":51530,"container_id":null,"image":null,
+       "ports":[{"port":4400,"address":"127.0.0.1","exposed":false,"pid":51530,"container_port":null}],
+       "rss_bytes":150994944}]}]}
+```
+
+Each entry of `services` (`RunningServiceEntry` in `packages/protocol/src/replies/types.ts`)
+carries every key below; a value that does not apply is `null`, never absent. Ids are uppercase
+UUIDs and times ISO 8601 UTC at whole seconds, as elsewhere.
+
+| key | type | meaning |
+|---|---|---|
+| `id` | string | `process:<root pid>:<root start>` (start in epoch seconds), `compose:<project>` or `container:<12-char id>`. Stable for the service's life; a reused pid never inherits another process's id. |
+| `kind` | string | `process` (a process stack: the command that was started and every process under it), `compose` (the containers of one compose project) or `container` (a container with no project). |
+| `name` | string | The display name (running-services.md §3.4): an app folder such as `admin-web`, the command as typed, an app bundle's name, `Claude Code` or `Codex` for an agent's own port, a compose project, or a container's name. |
+| `command` | string | The stack root's command line as `ps` reports it; `docker compose -p <project>` for a compose project; the image for a lone container. |
+| `category` | string | `workspace` (an owner was found), `unattached` (no owner, in a worktree or repo folder no workspace owns, or in a folder that is gone), `outside` (started outside Kelpi) or `agent` (an agent's own port). |
+| `workspace_id`, `workspace_name` | string or null | The workspace the service is listed under: the starting pane's, else the one whose folder holds it. Always set for `workspace`, null for `unattached` and `outside`, either for `agent`. |
+| `pane_id` | string (UUID) or null | The pane whose shell the process tree leads back to. Null for containers and for stacks placed by folder. |
+| `attribution` | string | How the owner was found: `process-tree` (the parent chain reaches a pane shell), `directory` (the working directory is inside a workspace's folder; for a compose project, a folder where one of a workspace's panes started a stack), `compose-label` (a container's working-directory label, compose's or the Supabase CLI's, is inside a workspace's folder) or `none`. |
+| `started_by` | string | `agent` (an agent is in the parent chain), `pane` (a pane's shell started it directly; also an agent's own port inside a pane), `compose` (a compose project) or `unknown`. |
+| `agent` | string or null | `claude` or `codex` when an agent started it; for an `agent` entry, the agent itself. |
+| `foreground` | bool | The service is its pane's foreground job, so Ctrl-C in that pane stops it. Only ever true for a stack a pane's shell started directly. |
+| `directory` | string or null | The stack root's working directory (else its first listener's), or the compose project's folder (the most common one among its containers' labels). |
+| `directory_workspace_id`, `directory_workspace_name` | string or null | The workspace whose folder holds `directory`, null when none does. It differs from `workspace_id` when a pane of one workspace started a server in a folder that is not that workspace's own. |
+| `directory_missing` | bool | `directory` no longer exists (a deleted worktree). |
+| `started_at` | string or null | When the root process started, or when the earliest container was created; null when unknown. |
+| `pid` | int or null | The stack's root process; null for containers. |
+| `process_count` | int | Processes in the stack (the root and all its descendants), or containers in the project. |
+| `rss_bytes` | int or null | Resident memory summed over the stack's processes; null for containers. |
+| `ports` | object[] | Every member's ports, merged and sorted by port. |
+| `members` | object[] | The stack's listening processes, or the project's containers. |
+
+A `ports` entry (`RunningServicePort`); IPv4 and IPv6 sockets on one port fold into one entry,
+exposed if either is:
+
+| key | type | meaning |
+|---|---|---|
+| `port` | int | The listening port; for a container, the host port Docker publishes. |
+| `address` | string | The bound address: `127.0.0.1`, `::1`, `*`, `0.0.0.0` or `::` (IPv6 without brackets). |
+| `exposed` | bool | Bound to every interface (`*`, `0.0.0.0`, `::`), so other machines on the network can reach it. |
+| `pid` | int or null | The listening process; null for a container's published port. |
+| `container_port` | int or null | For a container's published port, the port inside the container; otherwise null. |
+
+A `members` entry (`RunningServiceMember`):
+
+| key | type | meaning |
+|---|---|---|
+| `name` | string | A process's app folder when it runs in a subfolder of the stack's `directory`, else its program name (`next-server`); a container's compose service, else its container name. |
+| `pid` | int or null | The listening process; null for a container. |
+| `container_id` | string or null | The 12-character container id; null for a process. |
+| `image` | string or null | The container's image; null for a process. |
+| `ports` | object[] | This member's ports, in the shape above. |
+| `rss_bytes` | int or null | This process's resident memory; null for a container. |
+
+Services come in the scanner's order: by category (`workspace`, `unattached`, `outside`,
+`agent`), then by workspace in sidebar order, then oldest first, then by name.
+
+`scanned_at` is when the scan ran. `warnings` lists the probes that could not run, each
+`<probe>: <reason>` with the probe one of `processes`, `listening ports`, `working directories`
+or `docker` (`listening ports: lsof not found`, `docker: timed out`). The reply stays `ok:true`
+and lists what the other probes found; an empty array means every probe ran. Docker that is not
+installed or not running (no socket, or a socket that refuses) is not a warning: the list just
+has no containers.
+
+The scan runs on demand. Concurrent requests share the scan in flight, and an answer is reused
+for 1.5 s (a reused answer keeps its `scanned_at`), so an agent polling costs one set of probes.
+Each probe is capped at 3 s. The daemon and its children are never services. Against a daemon
+that predates the verb, the CLI reports "no response from Kelpi (upgrade required?)" with exit 1.
+
 ---
 
 ## 7. Full wire-field dictionary
@@ -2179,8 +2308,8 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `index` | int | `workspace-move`, `workspace-nest`, `group-move`, `workspace-tab-new`, `workspace-tab-move`, `pane-move-to-new-tab` (a tab's 0-based position) |
 | `group` | string | `workspace-create`, `workspace-move`, `workspace-list` |
 | `profile` | string | `workspace-create`, `workspace-profile`, `session-start` (+ dual-fire on any session-id-bearing event, §3.1) |
-| `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination), `workspace-tab-*` (§6.10) |
-| `scope` | string | `pane-list` |
+| `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination), `workspace-tab-*` (§6.10), `running-list` |
+| `scope` | string | `pane-list`, `running-list` (`current` only) |
 | `reuse` | bool | `open` |
 | `as` | string | `open` (`"markdown"` only: force a markdown pane for a `.csv`/`.tsv` path, #324, or an image path, content-panes.md §12) |
 | `repo_path`, `target_path` | string | `diff` |
@@ -2201,7 +2330,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `disarm` | bool | `web-inspect` |
 | `private` | bool | `web-open`, `web-private` |
 | `domain` | string | `web-cookies-clear`, `web-cookies-delete` |
-| `all` | bool | `web-cookies-clear`, `workspace-tab-list` |
+| `all` | bool | `web-cookies-clear`, `workspace-tab-list`, `running-list` |
 | `selector` | string | `web-click`, `web-type`, `web-q-*`, `web-wait`, `web-select`, `web-scroll`, `web-hover`, `web-key` |
 | `double`, `right` | bool | `web-click` |
 | `at_x`, `at_y` | double | `web-click` |

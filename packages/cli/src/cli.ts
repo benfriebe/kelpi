@@ -26,6 +26,7 @@ import { handleInstallHooks } from './commands/install-hooks.js';
 import { handleLayout } from './commands/layout.js';
 import { handleDiff, handleMarkdown, handleOpen } from './commands/openmd.js';
 import { handlePane } from './commands/pane.js';
+import { handlePs } from './commands/ps.js';
 import { handlePluginVerb, pluginVerbsHelp } from './commands/plugin-cli.js';
 import { handleTab } from './commands/tab.js';
 import { handleWeb } from './commands/web.js';
@@ -87,6 +88,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
             return handleGraft(args);
         case 'web':
             return handleWeb(args);
+        case 'ps':
+            return handlePs(args);
         case 'doctor':
             return handleDoctor(args);
         case 'daemon':

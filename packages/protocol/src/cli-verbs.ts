@@ -18,6 +18,7 @@ export const BUILTIN_CLI_VERBS: readonly string[] = [
     'diff',
     'graft',
     'web',
+    'ps',
     'doctor',
     'daemon',
     'install-hooks',

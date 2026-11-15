@@ -92,7 +92,7 @@ id is guaranteed to be the real one. Handlers whose reply describes the resultin
 (`pane-name`, `pane-resize`, `pane-font-size`, `pane-sync`, `pane-sync-exclude`, `workspace-label`) apply the
 change first and reply from post-mutation state (`handlers/pane/lifecycle.ts:56`,
 `geometry.ts:87`, `sync.ts:87`). Async handlers (`pane-capture`, `pane-clear`, `graft-*`,
-worktree `workspace-create`) reply only after the async work resolves.
+worktree `workspace-create`, `running-list`) reply only after the async work resolves.
 
 ---
 
@@ -109,7 +109,8 @@ rules. This asymmetry is load-bearing for CLI compatibility. Both live in
 Used by: `pane list --workspace`, `pane sync --workspace`, `resolvePaneTarget`'s
 `--workspace` scope, `pane split/create --workspace`, `workspace-move`, `workspace-delete`,
 `workspace-profile`, `workspace-label`, `workspace-mute`, `workspace-rename`,
-`workspace-icon`, `workspace-color`, `workspace-list --group` (via `resolveGroup`).
+`workspace-icon`, `workspace-color`, `running-list --workspace`, `workspace-list --group` (via
+`resolveGroup`).
 
 ```
 resolveWorkspace(nameOrID):
@@ -132,8 +133,8 @@ resolveWorkspace(nameOrID):
   shadowed by an `auth`.
 - Ambiguous names (2+ workspaces with the same exact name) return `null`. Callers that
   want to distinguish "ambiguous" from "missing" must re-check themselves (`workspace-delete`,
-  `workspace-rename`, `workspace-icon` and `workspace-color` do, through one shared helper, so
-  their messages match; see §6.4).
+  `workspace-rename`, `workspace-icon`, `workspace-color` and `running-list` do, through one
+  shared helper, so their messages match; see §6.4).
 
 ### 2.2 `resolveGroup(nameOrID)` — identical contract for groups
 
@@ -2088,7 +2089,56 @@ workspace's focus is untouched. All of them (except
 
 ---
 
-## 13. Quick reference — reply payloads
+## 13. `running-list` → handleRunningList (pure read)
+
+Handled by the running-services subsystem (`packages/daemon/src/running/handlers.ts`; the scan
+and attribution are docs/running-services.md). Request/response, explicit chain, so it needs no
+pane. It dispatches nothing and writes nothing.
+
+Inputs: `paneID?`, `workspaceFilter?`, `scope?`, `all` (default false). Validation reads the
+store as it is, and every refusal is sent before any scan starts:
+
+1. `scope` set and not `"current"` ⇒ `error("unknown scope: {scope}")`. Unlike `pane-list`
+   (§4.12), `"all"` is not a scope here: `all` is its own flag.
+2. `scope == "current"`:
+   - with `workspaceFilter` ⇒ `error("workspace and --current are mutually exclusive")`;
+   - `paneID` absent, or in no workspace's `panes` or `parkedPanes` ⇒
+     `error("no workspace contains the requesting pane")` (unlike `pane-list`, a parked pane
+     counts: the scanner attributes parked panes' processes too);
+   - otherwise that workspace.
+3. `workspaceFilter` set: strict `resolveWorkspace`, else the §6.4 pair, as in §6.8.
+4. Neither: no workspace.
+
+Then `await deps.running.scan()` and filter the services:
+
+- a workspace from step 2 or 3: every service whose `workspaceID` is that workspace's id,
+  whatever its category, so an agent's own port in that workspace is included; `all` is
+  ignored;
+- no workspace, `all` false: categories `workspace` and `unattached` only;
+- no workspace, `all` true: every service (`outside` and `agent` too).
+
+Reply, the services in the scanner's order (category, then workspace in sidebar order, then
+oldest first):
+
+```json
+{"ok": true, "services": [ … ], "scanned_at": "2026-11-15T09:40:00Z", "warnings": ["docker: timed out"]}
+```
+
+Each entry is a `RunningServiceEntry` (`packages/protocol/src/replies/types.ts`) built by
+`toWireService`: `workspace_id`, `pane_id` and `directory_workspace_id` go out as uppercase
+UUIDs, `started_at` and `scanned_at` as ISO 8601 UTC at whole seconds, and an absent value as
+`null`. Field meanings are in wire-protocol.md §6.11.
+
+The scanner (`deps.running`, a `createRunningScanner` built in `boot/compose.ts`) shares a scan
+in flight between concurrent requests and reuses an answer for 1.5 s
+(`RUNNING_SCAN_CACHE_MS`). A probe that cannot run becomes a `warnings` entry and the reply
+stays `ok: true`; only a scan that throws is `error("running-list failed: {message}")`. A
+handler table built without a scanner (tests) gets `INERT_RUNNING_SCANNER`, which finds
+nothing.
+
+---
+
+## 14. Quick reference: reply payloads
 
 | Command | Success payload keys (beyond `ok:true`) |
 |---|---|
@@ -2119,6 +2169,7 @@ workspace's focus is untouched. All of them (except
 | graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed; then also `error`, `error_kind`) |
 | graft-status | `sessions: [...]` |
 | ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `terminals`, `persistence?` |
+| running-list | `services: [...]`, `scanned_at`, `warnings` (strings; empty when every probe ran) |
 | permission-request | `behavior` (`allow`, `deny` or `abstain`), `message?` (deny only), `provider?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),

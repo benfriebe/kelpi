@@ -87,6 +87,7 @@ export const globalUsage = `Usage:
   kelpi web key <key-name> [--selector <sel>] [--target X] [--workspace Y] [--json]
   kelpi web console [--since N] [--level log|debug|info|warn|error] [--clear] [--follow] [--json]
   kelpi web exec (--file <path> | <js>) [--timeout 30] [--target X] [--workspace Y] [--json]
+  kelpi ps [--workspace <name-or-id> | --current] [--all] [--json] [--no-header]   # dev servers, ports, containers
   kelpi doctor [--json]                                   # IPC health check
   kelpi daemon restart|status|start                      # restart keeps running terminals and agents
   kelpi daemon stop [--force]                            # ends every terminal and agent; asks first
@@ -397,6 +398,39 @@ Options:
 
 --workspace and --current are mutually exclusive. This command takes no
 positional arguments. Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const psUsage = `Usage:
+  kelpi ps [--workspace <name-or-uuid> | --current] [--all] [--json] [--no-header]
+
+Lists the dev servers, listening processes and Docker containers running on the
+daemon's machine, each under the workspace whose pane started it: by following
+the process back to the pane's shell, else by the folder it runs in. A process
+stack (pnpm, turbo and its servers) is one row; so is a compose project.
+
+By default it lists every workspace's services, plus services in a worktree or
+repo folder that no workspace owns (a deleted worktree's stack, say).
+
+Options:
+  --workspace <name-or-uuid>  Only this workspace's services.
+  --current                   Only the calling pane's workspace (requires KELPI_PANE_ID;
+                              outside a pane it lists nothing: [] with --json).
+  --all                       Also list services started outside Kelpi, and
+                              agents' own local ports.
+  --json                      Print a JSON array instead of the table.
+  --no-header                 Omit the table header row.
+  -h, --help                  Show this help.
+
+Columns: WORKSPACE, SERVICE, PORTS, UP, MEM (resident memory of the whole
+process stack; - for containers), STARTED BY (claude or codex for an agent's
+background task, pane, pane (foreground), compose, agent for an agent's own
+port, - when nothing is known), NOTE (the folder it runs in when that is not
+its workspace's own, a deleted folder, a port other machines can reach).
+
+A probe that could not run (lsof missing, Docker not answering) is a warning on
+stderr; the rest of the list is still printed. --workspace and --current are
+mutually exclusive. Exit codes: 0 on success, non-zero on failure.
 
 `;
 

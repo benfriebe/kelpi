@@ -438,6 +438,89 @@ export interface PingReply extends ReplySuccess {
     readonly pid: number;
 }
 
+// ── running-list (docs/running-services.md) ─────────────────────────────────────────
+
+export type RunningServiceKind = 'process' | 'compose' | 'container';
+
+/**
+ * Where a service is listed: under its `workspace`; `unattached` when it runs in a worktree or
+ * repo folder that no workspace owns (a deleted worktree's stack, say); `outside` when it was
+ * started outside Kelpi; `agent` for an agent's own local port. Only `all` lists the last two.
+ */
+export type RunningServiceCategory = 'workspace' | 'unattached' | 'outside' | 'agent';
+
+/** How the owning workspace was found, strongest first. */
+export type RunningServiceAttribution = 'process-tree' | 'directory' | 'compose-label' | 'none';
+
+export type RunningServiceStarter = 'agent' | 'pane' | 'compose' | 'unknown';
+
+export interface RunningServicePort {
+    readonly port: number;
+    /** The bound address: `127.0.0.1`, `::1`, `*`, `0.0.0.0`, `::` (IPv6 unbracketed). */
+    readonly address: string;
+    /** Bound to every interface, so other machines on the network can reach it. */
+    readonly exposed: boolean;
+    /** The listening process; null for a container's published port. */
+    readonly pid: number | null;
+    /** For a container's published port, the port inside the container; otherwise null. */
+    readonly container_port: number | null;
+}
+
+/** A listening process of a process stack, or a container of a compose project. */
+export interface RunningServiceMember {
+    readonly name: string;
+    readonly pid: number | null;
+    /** The 12-character container id. */
+    readonly container_id: string | null;
+    readonly image: string | null;
+    readonly ports: readonly RunningServicePort[];
+    readonly rss_bytes: number | null;
+}
+
+export interface RunningServiceEntry {
+    /** `process:<root pid>:<root start>`, `compose:<project>` or `container:<12-char id>`. */
+    readonly id: string;
+    readonly kind: RunningServiceKind;
+    readonly name: string;
+    /** The command that started it, as `ps` reports it; for compose, `docker compose -p <project>`. */
+    readonly command: string;
+    readonly category: RunningServiceCategory;
+    /** The workspace it is listed under: the starting pane's, else the one whose folder holds it. */
+    readonly workspace_id: string | null;
+    readonly workspace_name: string | null;
+    /** The pane whose shell the process tree leads back to. */
+    readonly pane_id: string | null;
+    readonly attribution: RunningServiceAttribution;
+    readonly started_by: RunningServiceStarter;
+    /** `claude` or `codex` when an agent sits between the pane's shell and the service. */
+    readonly agent: string | null;
+    /** The pane's foreground job: Ctrl-C in that pane stops it. */
+    readonly foreground: boolean;
+    /** The stack root's working directory, or the compose project's folder. */
+    readonly directory: string | null;
+    /** The workspace whose folder holds `directory`; null when none does. May differ from the owner. */
+    readonly directory_workspace_id: string | null;
+    readonly directory_workspace_name: string | null;
+    /** `directory` no longer exists (a deleted worktree). */
+    readonly directory_missing: boolean;
+    readonly started_at: string | null;
+    /** The stack's root process; null for containers. */
+    readonly pid: number | null;
+    /** Processes in the stack, or containers in the project. */
+    readonly process_count: number;
+    /** Resident memory summed over the stack's processes; null for containers. */
+    readonly rss_bytes: number | null;
+    readonly ports: readonly RunningServicePort[];
+    readonly members: readonly RunningServiceMember[];
+}
+
+export interface RunningListReply extends ReplySuccess {
+    readonly services: readonly RunningServiceEntry[];
+    readonly scanned_at: string;
+    /** Probes that could not run (`listening ports: lsof not found`). Never fatal. */
+    readonly warnings: readonly string[];
+}
+
 // ── web pane replies (the fields the CLI parses; cli.md §15) ────────────────────────
 
 export interface WebPaneReplyBase extends ReplySuccess {
@@ -658,6 +741,7 @@ export type WireReply =
     | GraftStopReply
     | GraftStatusReply
     | PingReply
+    | RunningListReply
     | PermissionRequestReply
     | WebOpenReply
     | WebNavigateReply

@@ -87,6 +87,86 @@ export function printPaneTable(panes: readonly JsonObject[], noHeader: boolean, 
     renderRows(headers, rows, noHeader, headers.length);
 }
 
+/** `3d`, `5h`, `12m`, `40s`: how long ago an ISO timestamp was, in its largest whole unit. */
+export function ageLabel(iso: string | undefined, nowMs: number): string {
+    const then = iso === undefined ? Number.NaN : Date.parse(iso);
+    if (!Number.isFinite(then)) return '-';
+    const seconds = Math.max(0, Math.floor((nowMs - then) / 1000));
+    if (seconds < 60) return `${String(seconds)}s`;
+    if (seconds < 3600) return `${String(Math.floor(seconds / 60))}m`;
+    if (seconds < 86_400) return `${String(Math.floor(seconds / 3600))}h`;
+    return `${String(Math.floor(seconds / 86_400))}d`;
+}
+
+/** `1.4G`, `512M`, `-` for none. */
+export function memoryLabel(bytes: number | undefined): string {
+    if (bytes === undefined) return '-';
+    const mib = bytes / 1_048_576;
+    if (mib >= 1024) return `${(mib / 1024).toFixed(1)}G`;
+    return `${String(bytes === 0 ? 0 : Math.max(1, Math.round(mib)))}M`;
+}
+
+const PORTS_SHOWN = 4;
+
+/**
+ * Names and folders come from other programs (a compose project, a container's labels), so a
+ * control character in one must not reach the terminal as an escape sequence.
+ */
+function printable(value: string): string {
+    return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?');
+}
+
+/**
+ * `kelpi ps`: `WORKSPACE  SERVICE  PORTS  UP  MEM  STARTED BY  NOTE`. NOTE is last, so it never
+ * sets a width: the folder a service runs in when it is not its workspace's own, a deleted
+ * folder, a port reachable from other machines.
+ */
+export function printServicesTable(services: readonly JsonObject[], noHeader: boolean, home: string, nowMs: number): void {
+    const rows = services.map((entry) => {
+        const category = asString(entry['category']);
+        const workspace =
+            asString(entry['workspace_name']) ??
+            (category === 'unattached' ? '(no workspace)' : category === 'outside' ? '(outside Kelpi)' : '-');
+        const ports = asObjectArray(entry['ports']);
+        const shown = ports.slice(0, PORTS_SHOWN).map((port) => String(asInt(port['port']) ?? ''));
+        const portText = ports.length === 0 ? '-' : `${shown.join(' ')}${ports.length > PORTS_SHOWN ? ` +${String(ports.length - PORTS_SHOWN)}` : ''}`;
+        const agent = asString(entry['agent']);
+        const startedBy = asString(entry['started_by']);
+        const by =
+            category === 'agent'
+                ? 'agent'
+                : agent !== undefined
+                  ? agent
+                  : startedBy === 'pane'
+                    ? asBool(entry['foreground']) === true
+                        ? 'pane (foreground)'
+                        : 'pane'
+                    : startedBy === 'compose'
+                      ? 'compose'
+                      : '-';
+        const notes: string[] = [];
+        const directory = asString(entry['directory']);
+        const owner = asString(entry['workspace_id']);
+        if (directory !== undefined && owner === undefined) {
+            notes.push(`in ${collapseHome(directory, home)}${asBool(entry['directory_missing']) === true ? ' (deleted)' : ''}`);
+        } else if (directory !== undefined && asString(entry['directory_workspace_id']) !== owner) {
+            notes.push(`runs in ${collapseHome(directory, home)}`);
+        }
+        if (ports.some((port) => asBool(port['exposed']) === true)) notes.push('reachable on network');
+        const cells = [
+            clip(printable(workspace), 24),
+            clip(printable(asString(entry['name']) ?? ''), 32),
+            portText,
+            ageLabel(asString(entry['started_at']), nowMs),
+            memoryLabel(asInt(entry['rss_bytes'])),
+            by
+        ];
+        // No NOTE: STARTED BY ends the row, unpadded, so the line has no trailing whitespace.
+        return notes.length === 0 ? cells : [...cells, printable(notes.join('; '))];
+    });
+    renderRows(['WORKSPACE', 'SERVICE', 'PORTS', 'UP', 'MEM', 'STARTED BY', 'NOTE'], rows, noHeader, 6);
+}
+
 /**
  * `ID  NAME  GROUP  PANES  ACTIVE  LABELS`: LABELS is last, so it never sets a width. A PARENT
  * column follows GROUP only when some workspace is nested (app-state-core.md §2.9), and a TABS

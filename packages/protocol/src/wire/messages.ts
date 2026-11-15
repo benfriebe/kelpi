@@ -764,6 +764,26 @@ export interface RestartOldTerminalsMessage {
     command: 'restart-old-terminals';
 }
 
+// ── 6.11 Running services ───────────────────────────────────────────────────────────
+
+/**
+ * The dev servers, listening processes and Docker containers running on the daemon's host,
+ * each attributed to the workspace whose pane started it (docs/running-services.md). A read:
+ * the daemon scans on demand. With neither `workspace` nor `scope: 'current'`, every service
+ * that belongs to a workspace or to a worktree is listed; `all` adds the ones started outside
+ * Kelpi and agents' own local ports. Replies `{ services, scanned_at, warnings }`.
+ */
+export interface RunningListMessage {
+    command: 'running-list';
+    /** The requesting pane, for `scope: 'current'`. */
+    pane_id?: string | undefined;
+    /** Only services owned by this workspace (name or id, strictly resolved). */
+    workspace?: string | undefined;
+    /** `current` = the requesting pane's workspace. Any other value is refused. */
+    scope?: string | undefined;
+    all: boolean;
+}
+
 // ── 6.9 Web pane commands ───────────────────────────────────────────────────────────
 
 export interface WebOpenMessage {
@@ -1065,6 +1085,7 @@ export type WireMessage =
     | GraftStopMessage
     | GraftStatusMessage
     | PingMessage
+    | RunningListMessage
     | RestartOldTerminalsMessage
     | WebOpenMessage
     | WebNavigateMessage
@@ -1135,6 +1156,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'graft-status',
     'ping',
     'restart-old-terminals',
+    'running-list',
     'pane-sync',
     'pane-sync-exclude',
     'pane-send-key',

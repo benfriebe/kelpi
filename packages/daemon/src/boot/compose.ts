@@ -86,7 +86,8 @@ import {
     type RepoAssociationWatchService
 } from '../graft/index.js';
 import { createGhRunner, createPullRequestGit, createPullRequestPoller } from '../github/index.js';
-import { createAppHandlers, type WorktreeCreator } from '../handlers/app/index.js';
+import { createAppHandlers, listedWorkspaceIDs, type WorktreeCreator } from '../handlers/app/index.js';
+import { buildScanContext, createHostProbes, createRunningScanner } from '../running/index.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
 // §TERM-046: the OSC 52 clipboard sink — the gate, the log lines and the client broadcast.
@@ -1635,7 +1636,27 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
     const graftCommands: GraftChannel = { store, graft, orphans: graftOrphanRegistry };
 
+    // `running-list` (docs/running-services.md): scanned on demand, attributed through the pane
+    // shells this daemon owns. The daemon itself and its children are never services.
+    const runningProbes = createHostProbes({ home, env });
+    const runningServices = createRunningScanner({
+        probes: runningProbes,
+        context: () => {
+            const state = store.getState();
+            return buildScanContext({
+                state,
+                panePid: (paneID) => pty.pid(paneID),
+                worktreeBasePath: settings.snapshot.general.worktreeBasePath,
+                home,
+                realpath: (path) => runningProbes.realpath(path),
+                selfPids: new Set([process.pid]),
+                workspaceOrder: listedWorkspaceIDs(state)
+            });
+        }
+    });
+
     const appHandlers = createAppHandlers({
+        running: runningServices,
         git,
         worktrees,
         bundledWorktrees,

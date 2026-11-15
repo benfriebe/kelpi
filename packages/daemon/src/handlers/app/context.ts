@@ -36,6 +36,7 @@ import {
 } from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
+import { INERT_RUNNING_SCANNER, type RunningScanner } from '../../running/scanner.js';
 import type { AgentHookEvent } from './agent-events.js';
 import { BUNDLED_PERMISSIONS_PROVIDER } from '../../plugins/permissions-service.js';
 
@@ -195,6 +196,8 @@ export interface AppHandlerOptions {
      * nowhere to write one); boot always supplies the real one.
      */
     readonly agentLauncher?: AgentLauncher | undefined;
+    /** `running-list`'s scanner (docs/running-services.md); the default finds nothing. */
+    readonly running?: RunningScanner | undefined;
 }
 
 export interface AppDeps {
@@ -221,6 +224,7 @@ export interface AppDeps {
     readonly decidePermission: (args: JsonObject, signal: AbortSignal) => PermissionDecisionCall;
     readonly log: (message: string) => void;
     readonly agentLauncher: AgentLauncher;
+    readonly running: RunningScanner;
 }
 
 const noop = (): void => {};
@@ -292,7 +296,8 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
             options.decidePermission ??
             (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),
         log: options.log ?? noop,
-        agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER
+        agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER,
+        running: options.running ?? INERT_RUNNING_SCANNER
     };
 }
 

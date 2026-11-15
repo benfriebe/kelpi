@@ -744,6 +744,18 @@ function decodeCommand(
         case 'restart-old-terminals':
             return { command };
 
+        // ── 6.11 running services ────────────────────────────────────────────────────
+        case 'running-list':
+            // A bad scope or an unknown workspace is the handler's refusal, so its reply can say
+            // which, the way `pane-list` does.
+            return {
+                command,
+                pane_id: paneId,
+                workspace: fields.text('workspace'),
+                scope: fields.text('scope'),
+                all: fields.flag('all', false)
+            };
+
         // ── 6.9 web pane commands ────────────────────────────────────────────────────
         case 'web-open': {
             const url = fields.nonEmpty('url');

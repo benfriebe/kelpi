@@ -60,6 +60,7 @@ import {
     WS_SHELL_ACTIVATION_MESSAGE,
     WS_WORKSPACE_SELECTION_MESSAGE,
     WS_WINDOW_CHROME_MESSAGE,
+    WS_WINDOW_TABS_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
     decodeCsvEditOps,
@@ -2047,6 +2048,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_WINDOW_CHROME_MESSAGE:
                     windowChromeReport(parsed);
                     return;
+                case WS_WINDOW_TABS_MESSAGE:
+                    windowTabsReport(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -4001,6 +4005,25 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         revealPane({
             type: WS_WINDOW_CHROME_MESSAGE,
             titleBarHidden: hidden,
+            ...(windowID === undefined ? {} : { windowID })
+        });
+    }
+
+    /**
+     * The window's `window-tabs` report → every attached party, and NOT remembered: `window-chrome`
+     * again, with the tab count of the workspace the window draws, so its shell can grey the tab
+     * rows and leave a web page the tab chords the window would not use. Dropped, not guessed,
+     * when the count is not a whole number or the window id is unusable.
+     */
+    function windowTabsReport(message: Record<string, unknown>): void {
+        const tabs = message['tabs'];
+        if (typeof tabs !== 'number' || !Number.isInteger(tabs) || tabs < 0) return;
+        const rawWindowID = message['windowID'];
+        if (rawWindowID !== undefined && (typeof rawWindowID !== 'string' || rawWindowID.length === 0)) return;
+        const windowID = text(rawWindowID);
+        revealPane({
+            type: WS_WINDOW_TABS_MESSAGE,
+            tabs,
             ...(windowID === undefined ? {} : { windowID })
         });
     }

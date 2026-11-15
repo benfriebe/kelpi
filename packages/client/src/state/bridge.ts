@@ -326,6 +326,11 @@ export interface KelpiRuntime {
     activateWorkspace(workspaceID: string, visiblePaneIDs?: readonly string[]): void;
     /** Focus a pane: local echo (so the ring moves now) + the canonical report. */
     focusPane(workspaceID: string, paneID: string | null): void;
+    /**
+     * Report where this client now is after it SAW focus move (a tab or workspace it shows):
+     * recorded for this connection, never dispatched, so it cannot move anyone else.
+     */
+    reportObservedFocus(workspaceID: string, paneID: string | null): void;
     /** Which panes this client renders right now (drives suppression + PTY fan-out). */
     reportVisiblePanes(workspaceID: string, visiblePaneIDs: readonly string[]): void;
     setDocumentVisible(visible: boolean): void;
@@ -432,6 +437,12 @@ export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRunt
                 .daemon.state.workspaces.find((workspace) => workspace.id === workspaceID)?.focusedPaneID;
             commands.reportFocus(workspaceID, paneID, known === paneID ? {} : { force: true });
             // Visiting a pane acknowledges its notification (agent-lifecycle §7.5 removal).
+            if (paneID !== null) notifications?.clear(paneID);
+        },
+
+        reportObservedFocus(workspaceID, paneID): void {
+            commands.reportFocus(workspaceID, paneID, { force: true, observed: true });
+            // Showing a pane acknowledges its notification, as visiting it does.
             if (paneID !== null) notifications?.clear(paneID);
         },
 

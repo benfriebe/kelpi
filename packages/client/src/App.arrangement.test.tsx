@@ -216,4 +216,24 @@ describe('the traffic lights', () => {
         zenChord();
         expect(h.reports()).toEqual([]);
     });
+
+    it('tells this window’s shell how many tabs it draws, and again when that changes', () => {
+        window.history.replaceState({}, '', `/?shellWindow=${SHELL_WINDOW}`);
+        const h = setup();
+        const tabReports = (): Record<string, unknown>[] => h.socket().messages().filter((message) => message['type'] === 'window-tabs');
+        expect(tabReports()).toEqual([{ type: 'window-tabs', tabs: 1, windowID: SHELL_WINDOW }]);
+        const twoTabs = createDaemonStore(emptyDaemonState('/Users/test'));
+        twoTabs.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: 1 });
+        twoTabs.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: 'FFFFFFFF-0000-4000-8000-000000000001',
+            focus: false,
+            create: { type: 'create-pane', workspaceID: W1, paneID: 'DDDDDDDD-0000-4000-8000-0000000000a2', now: 1 }
+        });
+        act(() => {
+            h.socket().emit({ type: 'snapshot', seq: 5, state: twoTabs.getState() as unknown as JsonObject });
+        });
+        expect(tabReports().at(-1)).toEqual({ type: 'window-tabs', tabs: 2, windowID: SHELL_WINDOW });
+    });
 });

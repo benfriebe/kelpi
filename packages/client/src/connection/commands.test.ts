@@ -356,6 +356,16 @@ describe('CommandClient reports', () => {
         expect(reports(socket, 'focus-report')[0]).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: PANE, replay: true });
     });
 
+    it('marks focus this client only observed (a tab it now shows) record-only, so it moves nobody', () => {
+        const h = harness();
+        h.client.reportFocus('W1', PANE, { force: true, observed: true });
+        h.client.reportFocus('W1', null);
+        expect(reports(h.socket(), 'focus-report')).toEqual([
+            { type: 'focus-report', workspaceID: 'W1', paneID: PANE, replay: true },
+            { type: 'focus-report', workspaceID: 'W1', paneID: null }
+        ]);
+    });
+
     it('sends a live report after a reconnect unmarked', () => {
         const h = harness();
         h.client.reportFocus('W1', PANE);

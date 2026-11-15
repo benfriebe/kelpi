@@ -113,6 +113,8 @@ export interface KeyEventLike {
     readonly target?: unknown;
     /** False for a chord a web page or frame passed on to the window (it is re-dispatched here). */
     readonly isTrusted?: boolean;
+    /** `KeyboardEvent.getModifierState`, read for AltGraph (`typesAltGraphText`). */
+    getModifierState?(key: string): boolean;
     preventDefault?(): void;
     stopPropagation?(): void;
 }
@@ -286,6 +288,8 @@ export interface KeyDispatcherOptions {
      * consumed, `null`/absent not applicable → continue to the normal map.
      */
     readonly webPanePriority?: ((trigger: KeyTrigger, event: KeyEventLike) => boolean | null) | undefined;
+    /** The platform rule for AltGr (`typesAltGraphText`); defaults to this client's platform. */
+    readonly macLike?: boolean | undefined;
     /** Overridable for hosts with their own idea of "a text field is focused". */
     readonly isEditableTarget?: ((target: unknown) => boolean) | undefined;
 }
@@ -364,6 +368,25 @@ export function isEditableTarget(target: unknown): boolean {
     return typeof element.tagName === 'string' && EDITABLE_TAGS.has(element.tagName);
 }
 
+/**
+ * Off macOS, AltGr types a character on most non-US layouts, and Windows reports it as ctrl+alt:
+ * Czech AltGr+W is `|`, German AltGr+7, 8 and 9 are `{`, `[` and `]`. Such a keystroke is text,
+ * never a binding, though the off-mac defaults for the tab chords are ctrl+alt (config-
+ * keybindings.md section 3.5). Read from the AltGraph modifier state, and, as a backstop, from a
+ * letter or digit key that typed a symbol: under a real Ctrl+Alt those keys stay letters and
+ * digits on every layout. (A symbol key cannot be judged that way: on a US layout Ctrl+Alt+[
+ * types `[` and IS the previous-tab chord.)
+ */
+export function typesAltGraphText(event: KeyEventLike, macLike: boolean = CLIENT_MAC_LIKE): boolean {
+    if (macLike) return false;
+    if (event.getModifierState?.('AltGraph') === true) return true;
+    if (!event.ctrlKey || !event.altKey || event.metaKey || event.shiftKey) return false;
+    const key = event.key;
+    if (key === undefined || [...key].length !== 1) return false;
+    if (!/^(Key[A-Z]|Digit[0-9])$/.test(event.code)) return false;
+    return !/[\p{L}\p{N}]/u.test(key);
+}
+
 function resolve<T>(source: T | (() => T)): T {
     return typeof source === 'function' ? (source as () => T)() : source;
 }
@@ -383,6 +406,8 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         }
 
         const trigger = triggerFromEvent(event);
+        // AltGr typing a character is never a chord (off macOS; see `typesAltGraphText`).
+        if (typesAltGraphText(event, options.macLike)) return false;
 
         // 2. Escape clears an active multi-selection before any binding is consulted.
         if (event.code === 'Escape' && modifiersFromEvent(event).length === 0) {

@@ -7,7 +7,7 @@ import { toggleDocumentRenderer } from './plugins/pane-renderers';
 import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
 import { bindToolbarFeature, createToolbarActions } from './features/toolbar';
-import { createWorkspaceTabActions } from './features/workspace-tabs-actions';
+import { createWorkspaceTabActions, tabCloseOwner, type TabCloseOwner } from './features/workspace-tabs-actions';
 import { onScreenPanes, tabsAgentSummary, workspaceTabViews, type WorkspaceTabView } from './chrome/workspace-tabs';
 import { TabCloseGate } from './chrome/TabCloseGate';
 import type { WorkspaceTabBarProps } from './chrome/WorkspaceTabBar';
@@ -210,6 +210,7 @@ import {
     TOGGLE_ZEN_MODE_COMMAND,
     switchWorkspacePosition,
     windowChromeReport,
+    windowTabsReport,
     workspaceSelectionReport
 } from './app/file-menu';
 import { createFrameTick, type FrameTick } from './app/frame-tick';
@@ -738,6 +739,8 @@ function Shell(props: AppProps): ReactElement {
         tabCount: number;
         agents: WorkspaceAgentSummary;
         close: () => boolean;
+        /** "Don't ask again", on the daemon the tabs belong to. */
+        suppress: () => void;
     } | null>(null);
     /**
      * The ⌘W-on-the-last-pane gate (TERM-077 / WS-109). Closing the last pane deletes the
@@ -1753,19 +1756,22 @@ function Shell(props: AppProps): ReactElement {
      * agents in them. The gate is one of the overlays both shells share.
      */
     const confirmTabClose = useCallback(
-        (workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean): boolean => {
+        (workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean, owner?: TabCloseOwner): boolean => {
             const agents = tabsAgentSummary(workspace, tabIDs);
-            if (agents.total === 0 || !store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) return close();
+            // A paired daemon's workspace asks under that daemon's setting; this window's own, under ours.
+            const confirm = owner !== undefined ? owner.confirmWhenActive() : store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive;
+            if (agents.total === 0 || !confirm) return close();
             const only = tabIDs.length === 1 ? workspaceTabViews(workspace).find((tab) => tab.id === tabIDs[0]) : undefined;
             setTabCloseGate({
                 subject: only === undefined ? `${String(tabIDs.length)} tabs` : `“${only.title}”`,
                 tabCount: tabIDs.length,
                 agents,
-                close
+                close,
+                suppress: owner?.suppress ?? (() => void run('Change setting', runtime.commands.setGeneralSetting({ key: 'confirm-workspace-delete', value: 'false' })))
             });
             return true;
         },
-        [store]
+        [store, run, runtime]
     );
 
     const act = useMemo(() => {
@@ -1909,7 +1915,14 @@ function Shell(props: AppProps): ReactElement {
         };
 
         const workspacesActions = createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle });
-        const localTabTarget = (): TabTarget => ({ commands, workspace: activeWorkspace(), focusedPaneID: focused() });
+        const localTabTarget = (): TabTarget => ({
+            commands,
+            workspace: activeWorkspace(),
+            focusedPaneID: focused(),
+            workspaces: sidebarWorkspaceOrder(store.getState().daemon.state)
+                .map((id) => store.getState().daemon.state.workspaces.find((candidate) => candidate.id === id))
+                .filter((candidate): candidate is WorkspaceState => candidate !== undefined)
+        });
         /*
          * The phone layout ignores the DESKTOP remote selection: one left over from the desktop
          * layout (an iPad that lost its mouse) must not take the local tab chips, palette and
@@ -1936,8 +1949,13 @@ function Shell(props: AppProps): ReactElement {
                 commands: { raw: (payload) => tabTarget().commands.raw(payload) },
                 activeWorkspace: () => tabTarget().workspace,
                 focusedPaneID: () => tabTarget().focusedPaneID,
+                workspaces: () => tabTarget().workspaces ?? [],
                 run,
-                confirmClose: confirmTabClose
+                confirmClose: confirmTabClose,
+                closeOwner: () => {
+                    const owner = tabTarget().runtime;
+                    return owner === undefined ? undefined : tabCloseOwner(owner);
+                }
             }),
             ...workspacesActions,
             focusPane(paneID: string | null): boolean {
@@ -2935,7 +2953,9 @@ function Shell(props: AppProps): ReactElement {
         workspaceFocusRef.current = focusKey;
         const current = selectActiveWorkspace(store.getState());
         if (current === null) return;
-        runtime.focusPane(current.id, current.focusedPaneID);
+        // Observed, not chosen: the daemon already has this focus, so the report is record-only
+        // and a late one can never pull another client back to a tab it has left (§12.6).
+        runtime.reportObservedFocus(current.id, current.focusedPaneID);
         if (current.focusedPaneID === null) return;
         return handCaretToPaneWhenReady(current.focusedPaneID);
     }, [focusKey, runtime, store]);
@@ -4952,7 +4972,8 @@ function Shell(props: AppProps): ReactElement {
         resetArrangement: () => { windowArrangement.reset(); },
         openSettings, openHelp: () => setHelpOpen(true),
         openPalette: () => { surface.palette.open({ id: 'native:chrome-command', kind: 'native', displayName: 'Command Palette' }); },
-        shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
+        shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane,
+        tabs: { newTab: () => act.newTab(), closeActiveTab: () => act.closeActiveTab(), selectTabStep: (delta) => act.selectTabStep(delta), selectTab: (tabID) => act.selectTab(tabID) }
     });
     const chromeModel = chromeSource.snapshot();
     /*
@@ -4967,6 +4988,13 @@ function Shell(props: AppProps): ReactElement {
     const remoteWorkspace = useRemoteWorkspace(activeRemote, remoteSelection?.workspaceID ?? null);
     const tabWorkspace = remoteSelection !== null ? remoteWorkspace : workspace;
     const tabViews = useMemo(() => (tabWorkspace === null ? null : workspaceTabViews(tabWorkspace)), [tabWorkspace]);
+    // The shell greys its tab rows and hands a web page the tab chords this window cannot use, so
+    // it hears the drawn count on every (re)connect and every change (`window-tabs`).
+    const drawnTabCount = tabViews?.length ?? 0;
+    useEffect(() => {
+        if (shellWindowID === null || ui.connection !== 'connected') return;
+        runtime.connection.send(windowTabsReport(drawnTabCount, shellWindowID));
+    }, [runtime, shellWindowID, drawnTabCount, ui.connection]);
     const tabBar: WorkspaceTabBarProps | undefined =
         tabWorkspace === null || tabViews === null
             ? undefined
@@ -4991,6 +5019,10 @@ function Shell(props: AppProps): ReactElement {
                   // paired daemon's workspace, that daemon's section of the sidebar (`rowDaemon`),
                   // and the move goes over that daemon's connection like every tab action.
                   rowDaemon: remoteSelection?.daemon,
+                  workspaceID: tabWorkspace.id,
+                  onSelectInWorkspace: (workspaceID, tabID) => {
+                      act.selectTabInWorkspace(workspaceID, tabID);
+                  },
                   onMoveToWorkspace: (tabID, workspaceID) => {
                       const owner = remoteSelection !== null && activeRemote !== null ? activeRemote.runtime.store : store;
                       const known = owner.getState().daemon.state.workspaces.some((candidate) => candidate.id === workspaceID);
@@ -5754,7 +5786,7 @@ function Shell(props: AppProps): ReactElement {
                         setTabCloseGate(null);
                     }}
                     onSuppress={() => {
-                        settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
+                        tabCloseGate.suppress();
                     }}
                 />
             )}

@@ -403,7 +403,7 @@ export class CommandClient {
      * Focus is daemon-canonical (last report from any client wins) and doubles as this
      * connection's active-workspace signal (`ws/sync.ts` `focusReport`).
      */
-    reportFocus(workspaceID: string, paneID: string | null, options: { force?: boolean } = {}): void {
+    reportFocus(workspaceID: string, paneID: string | null, options: { force?: boolean; observed?: boolean } = {}): void {
         if (
             options.force !== true &&
             this.lastFocus !== null &&
@@ -413,7 +413,15 @@ export class CommandClient {
             return;
         }
         this.lastFocus = { workspaceID, paneID };
-        this.connection.send({ type: 'focus-report', workspaceID, paneID });
+        /*
+         * `observed`: focus this client SAW move (it showed another tab or workspace) rather than
+         * a gesture of its own. Sent as a record-only report, the reconnect replay's flag, so the
+         * daemon notes where this connection is without moving anyone: a late echo of a tab the
+         * user has since left must never pull every client back to it (workspace-feature.md §12.6).
+         */
+        this.connection.send(
+            options.observed === true ? { type: 'focus-report', workspaceID, paneID, replay: true } : { type: 'focus-report', workspaceID, paneID }
+        );
     }
 
     /**

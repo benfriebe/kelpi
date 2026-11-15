@@ -443,7 +443,12 @@ New Tab (disabled while the tab on screen holds one pane).
   that workspace's tab on screen. The row lights up while the tab is over it, and only the rows
   of the tab's own daemon take it (`rowDaemon`, `chrome/tab-drop.ts` `TabDragWorkspace`).
 - The strip is a `tablist` in which only the tab on screen takes keyboard focus: ← / → show the
-  previous / next tab (wrapping), Home / End the first / last, F2 renames the tab on screen.
+  previous / next tab (wrapping), Home / End the first / last, F2 renames the tab on screen,
+  and Shift+F10 or the menu key opens the focused tab's menu, which takes the keyboard. A tab
+  focused from the keyboard draws the window's focus ring (a press never focuses a tab). Its
+  accessible name carries what the dot and badges show: pane count, an agent waiting or
+  running, zoomed.
+- A tab dragged over its own workspace's row does not light it up: dropping there does nothing.
 
 **Drag region:** a tab opts out of the window's drag region whole, its padding included
 (`[role='tab']` in the no-drag list of `packages/client/src/styles.css`), as do `+`, the chevron
@@ -1349,8 +1354,9 @@ Structure:
 **Item universe** (rebuilt from state on every read):
 
 - One item per workspace: icon `rectangle.stack`, title = name, subtitle = "N pane(s)".
-- One item per pane of the workspace's tab on screen (in layout order; a background tab's
-  panes are not listed): icon per type (terminal/doc/note/±/globe);
+- One item per pane of the workspace, every tab's, tab by tab in layout order
+  (`workspacePaneOrder`): picking a background tab's pane shows its tab (workspace-feature.md
+  §12.3). Icon per type (terminal/doc/note/±/globe);
   title = `label ?? title ?? cwd(~)`; subtitle = the terminal title when a distinct label
   exists, the cwd when only a label exists, else empty.
 - Then one **command** item per client verb (`PaletteItem.kind = "command"`,
@@ -1358,7 +1364,9 @@ Structure:
   `packages/client/src/App.tsx:4926-4945`), appended after the state-derived items, each with
   an optional shortcut hint (`⌘…`) when the binding map covers its action. New Workspace is
   followed by the workspace tab commands (§3.3): New Tab, New Agent Tab, New Web Tab, Close
-  Tab, Duplicate Tab and Move Pane to New Tab. The next one is titled by the active workspace's state: "Mute
+  Tab, Duplicate Tab, Move Pane to New Tab, then the tab menu's rows for the tab on screen
+  (Close Other Tabs, Merge Into Previous Tab, Give Each Pane Its Own Tab, and one Move Tab to
+  <workspace> row per other workspace of the tab's daemon). The next one is titled by the active workspace's state: "Mute
   Workspace Notifications" or "Unmute Workspace Notifications" (agent-lifecycle.md §7.6). Its
   id names that state too (`cmd:mute-workspace` / `cmd:unmute-workspace`) and it sends the
   explicit state, so a row picked after the state changed is refused as unavailable rather

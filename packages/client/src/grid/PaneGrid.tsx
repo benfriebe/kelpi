@@ -837,6 +837,18 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     }, [endPaneDrag, endDividerDrag]);
 
     useEffect(() => registerGestureReset(resetGestures), [resetGestures]);
+
+    /*
+     * A workspace switch (⌘1-9, a sidebar click) mid-drag ends a pane drag as a cancel: the pane,
+     * and any tab the drag opened on its way, belong to the workspace that just left the screen,
+     * and a release over the new one's grid must not move the pane into the old one's tab.
+     */
+    const dragWorkspaceRef = useRef(props.workspaceID);
+    useEffect(() => {
+        if (dragWorkspaceRef.current === props.workspaceID) return;
+        dragWorkspaceRef.current = props.workspaceID;
+        if (moveRef.current !== null) endPaneDrag(undefined, true);
+    }, [props.workspaceID, endPaneDrag]);
     useEffect(() => {
         if (props.visible !== false) return;
         resetGestures();

@@ -138,7 +138,8 @@ function subscribeWorkspace(listener: () => void): () => void {
     };
 }
 
-function currentTabDragWorkspace(): TabDragWorkspace | null {
+/** The workspace a dragged tab is over now, for a caller outside React (and the tests). */
+export function currentTabDragWorkspace(): TabDragWorkspace | null {
     return tabDragWorkspace;
 }
 

@@ -19,6 +19,10 @@ export interface TabTarget {
     readonly commands: Pick<CommandClient, 'raw'>;
     readonly workspace: WorkspaceState | null;
     readonly focusedPaneID: string | null;
+    /** That daemon's workspaces, for Move Tab to Workspace; absent = none to offer. */
+    readonly workspaces?: readonly WorkspaceState[] | undefined;
+    /** A paired daemon's runtime (its settings, for the close-tab gate); absent = this window's. */
+    readonly runtime?: RemoteDaemonRuntime['runtime'] | undefined;
 }
 
 /** A remote daemon's workspace as its mirror holds it now, or null (gone, or not synced yet). */
@@ -43,7 +47,13 @@ export function tabTargetFor(
     const echo = remote.runtime.store.getState().ui.focusEcho;
     const focusedPaneID =
         workspace === null ? null : echo !== null && echo.workspaceID === workspace.id ? echo.paneID : workspace.focusedPaneID;
-    return { commands: remote.runtime.commands, workspace, focusedPaneID };
+    return {
+        commands: remote.runtime.commands,
+        workspace,
+        focusedPaneID,
+        workspaces: remote.runtime.store.getState().daemon.state.workspaces,
+        runtime: remote.runtime
+    };
 }
 
 /** The selected remote workspace, re-rendering with that daemon's mirror. */

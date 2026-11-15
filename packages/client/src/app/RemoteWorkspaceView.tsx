@@ -25,11 +25,12 @@ import { usePluginCommands } from '../plugins/commands';
  * the pane's links are resolved on this window's daemon, which answers `pane not found`.
  */
 
-import { useEffect, useMemo, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
 import { wireEdgeForDropZone } from '@kelpi/core/layout';
-import { activeTabIDOf } from '@kelpi/daemon/store';
+import { activeTabIDOf, onScreenPaneIDs } from '@kelpi/daemon/store';
+import { visiblePaneIDs } from '../terminal/mount-policy';
 import { onScreenPanes } from '../chrome/workspace-tabs';
 import { createWorkspaceTabActions } from '../features/workspace-tabs-actions';
 
@@ -107,6 +108,30 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
     useEffect(() => {
         if (workspace !== undefined) runtime.activateWorkspace(workspaceID);
     }, [runtime, workspaceID, workspace !== undefined]);
+
+    /*
+     * workspace-feature.md §12: App's two report effects, for this daemon's connection. A tab
+     * switch (or a zoom, a split) changes what is on screen, and the daemon reads its suppression
+     * and PTY fan-out from the set this connection reports; and its record of where this client
+     * is follows the tab on screen, sent record-only so it can move nobody (§12.6).
+     */
+    const present = workspace !== undefined;
+    const visibleKey =
+        workspace === undefined
+            ? ''
+            : visiblePaneIDs({ paneOrder: onScreenPaneIDs(workspace), zoomedPaneID: workspace.zoomedPaneID, workspaceActive: true }).join(',');
+    useEffect(() => {
+        if (!present) return;
+        runtime.reportVisiblePanes(workspaceID, visibleKey.length === 0 ? [] : visibleKey.split(','));
+    }, [runtime, workspaceID, visibleKey, present]);
+    const focusKey = workspace === undefined ? null : `${workspaceID}#${activeTabIDOf(workspace)}`;
+    const reportedFocus = useRef<string | null>(null);
+    useEffect(() => {
+        if (focusKey === null || reportedFocus.current === focusKey) return;
+        reportedFocus.current = focusKey;
+        const current = runtime.store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID);
+        if (current !== undefined) runtime.reportObservedFocus(workspaceID, current.focusedPaneID);
+    }, [focusKey, runtime, workspaceID]);
 
     if (workspace === undefined) {
         return (

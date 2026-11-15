@@ -100,6 +100,7 @@ import {
     CHECK_FOR_UPDATES_LABEL,
     CLOSE_PANE_EXPRESSION,
     appMenuTemplate,
+    applyWindowTabs,
     applyWorkspaceSelection,
     closeRouteLogLine,
     debugMenuSection,
@@ -178,6 +179,7 @@ import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
 import { createCornerLayer, type CornerLayer } from './corner-layer.js';
 import { createCornerOverlayView, type CornerOverlayViewHandle } from './corner-layer-view.js';
 import { setWebFindPalette } from './webhost/scripts.js';
+import { setWindowTabCount } from './webhost/keys.js';
 import {
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
@@ -1743,6 +1745,13 @@ function applyCliInstallPolicy(): void {
 let workspaceSelectionCount = 0;
 
 /**
+ * workspace-feature.md §12: the tab count this window's page last reported (`window-tabs`), or
+ * null before it has. Kept for the same reason as the selection count: a menu rebuild seeds the
+ * tab rows from it.
+ */
+let windowTabCount: number | null = null;
+
+/**
  * config-keybindings.md §7.1 / #47: the accelerator set the LIVE application menu was built
  * from, or null before the first build.
  *
@@ -1924,6 +1933,8 @@ function buildMenu(): void {
         }
     ];
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    // A rebuild must not un-grey tab rows the page has already said belong greyed.
+    if (windowTabCount !== null) applyWindowTabs(Menu.getApplicationMenu(), windowTabCount);
     // Logged rather than inferred, for the same reason the tray item is: an application menu is
     // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
     // "the items are there" becomes a check instead of a hope.
@@ -2107,6 +2118,13 @@ function startStatusController(): void {
                  */
                 workspaceSelectionChanged: (selectedCount) => {
                     applyWorkspaceSelectionCount(selectedCount);
+                },
+                /** workspace-feature.md §12: grey the tab rows, and let a page keep tab chords the window cannot use. */
+                windowTabsChanged: (tabCount) => {
+                    if (windowTabCount === tabCount) return;
+                    windowTabCount = tabCount;
+                    setWindowTabCount(tabCount);
+                    applyWindowTabs(Menu.getApplicationMenu(), tabCount);
                 },
                 /** The root arrangement's toolbar, reported by this window's page (`window-chrome`). */
                 windowChromeChanged: (titleBarHidden) => {

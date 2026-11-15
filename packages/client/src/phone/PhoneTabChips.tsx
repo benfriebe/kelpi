@@ -12,13 +12,14 @@
  * long press, and the press that did open the sheet is not also a tap.
  */
 
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react';
+import { useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react';
 
 import { tokens } from '../chrome/tokens';
 import { withAlpha } from '../chrome/theme';
 import type { WorkspaceTabStatus, WorkspaceTabView } from '../chrome/workspace-tabs';
 import { LONG_PRESS_MS } from '../terminal';
 import { PhoneGlyph } from './glyphs';
+import { phoneStyle } from './style';
 
 /** How far a press may travel and still be a long press rather than the row scrolling. */
 const PRESS_SLOP_PX = 10;
@@ -53,6 +54,16 @@ export function PhoneTabChips(props: PhoneTabChipsProps): ReactElement | null {
     };
     useEffect(() => cancel, []);
 
+    // The tab on screen is never scrolled out of sight: a switch made elsewhere (the desktop, a
+    // chord, an agent) brings its chip into view.
+    const rowRef = useRef<HTMLDivElement | null>(null);
+    const activeID = props.tabs.find((tab) => tab.active)?.id ?? null;
+    useLayoutEffect(() => {
+        if (activeID === null) return;
+        const chip = rowRef.current?.querySelector<HTMLElement>(`[data-testid="phone-tab-chip-${activeID}"]`);
+        chip?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }, [activeID]);
+
     if (props.tabs.length <= 1) return null;
 
     const onPointerDown = (tab: WorkspaceTabView, event: ReactPointerEvent<HTMLButtonElement>): void => {
@@ -76,11 +87,12 @@ export function PhoneTabChips(props: PhoneTabChipsProps): ReactElement | null {
     };
 
     return (
+        <div data-testid="phone-tab-chips" className="flex shrink-0 items-center gap-1.5 px-3 py-1.5">
         <div
+            ref={rowRef}
             role="tablist"
             aria-label="Tabs"
-            data-testid="phone-tab-chips"
-            className="flex shrink-0 gap-1.5 overflow-x-auto px-3 py-1.5"
+            className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto"
             style={{ scrollbarWidth: 'none' }}
             onScroll={cancel}
         >
@@ -96,7 +108,8 @@ export function PhoneTabChips(props: PhoneTabChipsProps): ReactElement | null {
                     style={{
                         color: tab.active || tab.attention ? tokens.textPrimary : tokens.textSecondary,
                         fontWeight: tab.attention ? 600 : 400,
-                        background: tab.active ? withAlpha(tokens.accent, 0.2) : withAlpha('#E6E6EA', 0.06),
+                        // The phone's own mixes, so a chip reads in light and monochrome too.
+                        background: tab.active ? withAlpha(tokens.accent, 0.2) : phoneStyle.well,
                         boxShadow: tab.active ? `inset 0 0 0 1px ${withAlpha(tokens.accent, 0.75)}` : 'none',
                         // A long press is ours: no text selection or link callout under the thumb.
                         WebkitTouchCallout: 'none',
@@ -142,13 +155,15 @@ export function PhoneTabChips(props: PhoneTabChipsProps): ReactElement | null {
                     ) : null}
                 </button>
             ))}
+        </div>
+            {/* Beside the tablist, not in it: it opens a tab, it is not one. */}
             {props.onNewTab === undefined ? null : (
                 <button
                     type="button"
                     data-testid="phone-tab-new"
                     aria-label="New tab"
                     className="flex h-8 w-9 shrink-0 items-center justify-center rounded"
-                    style={{ color: tokens.textSecondary, background: withAlpha('#E6E6EA', 0.06) }}
+                    style={{ color: tokens.textSecondary, background: phoneStyle.well }}
                     onClick={props.onNewTab}
                 >
                     <PhoneGlyph name="plus" size={16} />

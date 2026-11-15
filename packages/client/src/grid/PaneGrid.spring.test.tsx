@@ -93,6 +93,22 @@ describe('a pane drag that opened another tab on its way', () => {
         expect(props.onMovePane).not.toHaveBeenCalled();
     });
 
+    it('ends the drag when another workspace comes on screen, and sends the old one home', () => {
+        const { props, springTo, view } = renderGrid({ workspaceID: 'W1' });
+        const returnHome = vi.fn();
+        liftPaneA();
+        springTo(returnHome);
+        // ⌘2 mid-drag: the grid now draws another workspace.
+        act(() => {
+            view.rerender(<PaneGrid {...props} {...OPENED} workspaceID="W2" />);
+        });
+        expect(tabDropState().dragging).toBe(false);
+        expect(returnHome).toHaveBeenCalledTimes(1);
+        act(() => firePointer(window, 'pointerup', { clientX: 780, clientY: 300 }));
+        expect(props.onMovePaneToTab).not.toHaveBeenCalled();
+        expect(props.onMovePane).not.toHaveBeenCalled();
+    });
+
     it('goes back when released outside the grid and the bar', () => {
         const { props, springTo } = renderGrid();
         const returnHome = vi.fn();

@@ -43,8 +43,8 @@ function localState(twoTabs = false): JsonObject {
     return store.getState() as unknown as JsonObject;
 }
 
-/** The paired daemon: one workspace with two tabs, the first on screen. */
-function remoteState(): JsonObject {
+/** The paired daemon: one workspace with two tabs, the first on screen (or the second). */
+function remoteState(showSecond = false): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/home/remote'));
     store.dispatch({ type: 'create-workspace', id: REMOTE_WS, paneID: REMOTE_P1, name: 'remote-ws', color: 'green', now: NOW });
     store.dispatch({
@@ -54,6 +54,7 @@ function remoteState(): JsonObject {
         focus: false,
         create: { type: 'create-pane', workspaceID: REMOTE_WS, paneID: REMOTE_P2, now: NOW, workingDirectory: '/home/remote/api' }
     });
+    if (showSecond) store.dispatch({ type: 'select-tab', workspaceID: REMOTE_WS, tabID: REMOTE_T2 });
     return store.getState() as unknown as JsonObject;
 }
 
@@ -84,6 +85,7 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; sent: JsonO
             store.getState().setFocusEcho(workspaceID, paneID);
         }),
         reportVisiblePanes: vi.fn(),
+        reportObservedFocus: vi.fn(),
         setDocumentVisible: vi.fn()
     };
     return { runtime: runtime as unknown as KelpiRuntime, sent };
@@ -95,6 +97,8 @@ interface Harness {
     readonly localCommands: () => Record<string, unknown>[];
     /** Commands the paired daemon received (bar its plugin handshake). */
     readonly remoteCommands: () => JsonObject[];
+    /** The paired daemon's runtime, once the window has made it. */
+    readonly remote: () => KelpiRuntime | null;
 }
 
 function setup(
@@ -150,7 +154,8 @@ function setup(
                 .messages()
                 .filter((message) => message['type'] === 'command')
                 .map((message) => message['payload'] as Record<string, unknown>),
-        remoteCommands: () => (remote as { sent: JsonObject[] } | null)?.sent ?? []
+        remoteCommands: () => (remote as { sent: JsonObject[] } | null)?.sent ?? [],
+        remote: () => (remote as { runtime: KelpiRuntime } | null)?.runtime ?? null
     };
 }
 
@@ -204,6 +209,21 @@ describe('a paired daemon\'s workspace in the title bar (§12, §1.7)', () => {
             expect(h.remoteCommands()).toContainEqual(expect.objectContaining({ command: 'workspace-tab-duplicate', workspace_id: REMOTE_WS, tab_id: REMOTE_WS }))
         );
         expect(tabCommands(h.localCommands())).toEqual([]);
+    });
+
+    it('tells that daemon what this window shows, and where it is, when its tab on screen changes', async () => {
+        const h = setup();
+        await selectRemoteWorkspace();
+        await waitFor(() => expect(tabIDs()).toEqual([REMOTE_WS, REMOTE_T2]));
+        const remote = h.remote() as KelpiRuntime;
+        await waitFor(() => expect(remote.reportVisiblePanes).toHaveBeenLastCalledWith(REMOTE_WS, [REMOTE_P1]));
+        act(() => {
+            remote.store.getState().applySnapshot(1, remoteState(true));
+        });
+        await waitFor(() => expect(remote.reportVisiblePanes).toHaveBeenLastCalledWith(REMOTE_WS, [REMOTE_P2]));
+        // Record-only: the daemon already moved the tab, so this report can move nobody.
+        expect(remote.reportObservedFocus).toHaveBeenLastCalledWith(REMOTE_WS, REMOTE_P2);
+        expect(remote.focusPane).not.toHaveBeenCalledWith(REMOTE_WS, REMOTE_P2);
     });
 
     it('lets the tab chords act on that workspace, the window\'s own pane chords still standing down', async () => {

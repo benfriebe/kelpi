@@ -25,7 +25,10 @@ function fixture() {
         createScratchpad: vi.fn(() => true), toggleSearch: vi.fn(() => true), toggleZoomFocused: vi.fn(() => true),
         cycleLayout: vi.fn(() => true), toggleSyncInput: vi.fn(() => true), newWorkspace: vi.fn(() => true),
         setWorkspaceMuted: vi.fn((_workspaceID: string, _muted: boolean) => true),
-        newTab: vi.fn(() => true), closeActiveTab: vi.fn(() => true), duplicateActiveTab: vi.fn(() => true), moveFocusedPaneToNewTab: vi.fn(() => true)
+        newTab: vi.fn(() => true), closeActiveTab: vi.fn(() => true), duplicateActiveTab: vi.fn(() => true), moveFocusedPaneToNewTab: vi.fn(() => true),
+        closeOtherTabsOnScreen: vi.fn(() => true), mergeActiveTabIntoPrevious: vi.fn(() => true), splitActiveTabPanes: vi.fn(() => true),
+        moveActiveTabToWorkspace: vi.fn((_workspaceID: string) => true),
+        moveTabTargets: vi.fn(() => [{ id: 'W-OPS', name: 'ops' }])
     };
     const host: PaletteFeatureHost = {
         runtime,
@@ -91,6 +94,19 @@ describe('palette feature source', () => {
         await expect(h.source.execute('cmd:search-pane', {})).resolves.toBeUndefined();
 
         await expect(h.source.execute('cmd:invented', {})).rejects.toThrow('unavailable');
+    });
+
+    it('offers the tab menu rows for the tab on screen, one Move Tab row per other workspace', async () => {
+        const h = fixture();
+        await h.source.execute('cmd:close-other-tabs', {});
+        expect(h.actions.closeOtherTabsOnScreen).toHaveBeenCalledOnce();
+        await h.source.execute('cmd:merge-tab-previous', {});
+        expect(h.actions.mergeActiveTabIntoPrevious).toHaveBeenCalledOnce();
+        await h.source.execute('cmd:split-tab-panes', {});
+        expect(h.actions.splitActiveTabPanes).toHaveBeenCalledOnce();
+        expect(JSON.stringify(h.source.snapshot())).toContain('Move Tab to ops');
+        await h.source.execute('cmd:move-tab-to:W-OPS', {});
+        expect(h.actions.moveActiveTabToWorkspace).toHaveBeenCalledExactlyOnceWith('W-OPS');
     });
 
     it('re-resolves a contribution at activation and refuses one whose enablement turned false', async () => {

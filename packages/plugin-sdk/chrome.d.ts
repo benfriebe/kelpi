@@ -5,8 +5,11 @@ export interface ChromeSnapshot {
     /** Window chrome belongs to the primary daemon even while its grid shows a remote. */
     readonly remoteWorkspaceSelected: boolean;
     readonly workspace: {
-        readonly id: string; readonly name: string; readonly color: string; readonly paneCount: number;
+        /** `paneCount` counts every tab's panes; `onScreenPaneCount` the tab on screen's. */
+        readonly id: string; readonly name: string; readonly color: string; readonly paneCount: number; readonly onScreenPaneCount: number;
         readonly layout: string | null; readonly syncInputActive: boolean; readonly syncedPaneCount: number;
+        /** The workspace's tabs in bar order, as the bundled title bar draws them; run `kelpi.tab.*` on them. */
+        readonly tabs: readonly ChromeTab[];
     } | null;
     readonly focusedPane: {
         readonly id: string; readonly title: string; readonly type: string;
@@ -75,6 +78,19 @@ export interface ChromeKeymapCommand {
      */
     readonly currently: { readonly by: string; readonly plugin: string } | null;
 }
+export interface ChromeTab {
+    readonly id: string;
+    /** The tab's name, or its focused pane's when it has none. */
+    readonly title: string;
+    readonly active: boolean;
+    readonly paneCount: number;
+    /** The busiest pane's status. */
+    readonly status: 'running' | 'waitingForInput' | 'idle';
+    /** A background tab with a pane waiting for input, in a workspace that is not muted. */
+    readonly attention: boolean;
+    readonly unvisited: boolean;
+    readonly zoomed: boolean;
+}
 export interface ChromeCommand {
     readonly id: string; readonly title: string; readonly enabled: boolean;
     readonly checked?: boolean;
@@ -93,6 +109,8 @@ export interface ChromeCommandTarget {
     readonly workspaceID?: string;
     /** Required, with workspaceID, by kelpi.pane.focus. */
     readonly paneID?: string;
+    /** Required, with workspaceID, by kelpi.tab.select. */
+    readonly tabID?: string;
 }
 export interface WindowChromeAPI {
     getChrome(): Promise<ChromeSnapshot>;

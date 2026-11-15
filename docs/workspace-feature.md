@@ -712,11 +712,18 @@ if (state.savedLayout !== null):
 
 i.e. any structural operation first exits zoom by restoring the pre-zoom layout. Actions
 that DO run this preamble: `splitPaneAtPath`, `splitPane`, `closePane`,
-`openMarkdownFile` (reuse branch only, see caveat in 7.4), `openDiffPane` (both
-branches), `openWebPane` (both branches), `createScratchpad`, `cycleLayout`,
-`selectLayout`. Actions that deliberately do NOT: `createPane` (empty-workspace path),
-`movePane`, `movePaneInDirection` (guards `zoomedPaneID == null` instead and no-ops),
-`updateSplitRatio`, `toggleZoomPane` (it IS the zoom toggle).
+`openMarkdownFile` (both branches), `openDiffPane` (both branches), `openWebPane` (both
+branches), `createScratchpad`, the plugin pane open, `reopenClosedPane`, `movePane`,
+`movePaneToWorkspace` (on the target), `cycleLayout`, `selectLayout`. Actions that
+deliberately do NOT: `createPane` (empty-workspace path), `movePaneInDirection` (guards
+`zoomedPaneID == null` instead and no-ops), `updateSplitRatio`, `toggleZoomPane` (it IS the
+zoom toggle).
+
+With workspace tabs (§12.4) this is also what keeps a tab's panes whole: a tab holds the
+panes of its un-zoomed tree (`savedLayout ?? layout`), so an action that put a pane into the
+zoomed tree alone would leave it in no tab, drawn by nothing and dropped by the next
+un-zoom. Every action that adds a pane to a tree, or moves one within it, runs the preamble
+first.
 
 ### 5.2 clearSearchIfTargets(paneID)
 
@@ -949,12 +956,10 @@ panes.push(pane); setFocus(id); currentLayoutIndex = null
 return branchEffect
 ```
 
-Caveat (faithful to current behavior): the split branch does NOT run
-restoreZoomIfNeeded(). Opening a markdown file while zoomed splits the zoomed leaf; the
-stale `savedLayout` (which lacks the markdown pane) is still restored by the next
-un-zoom-restoring action, which silently drops the markdown pane from the layout while
-leaving it in `panes`. Kelpi keeps this behavior (flagged QUIRK in
-`packages/daemon/src/store/reducers/panes.ts`; see Compatibility rationale 5).
+The split branch runs restoreZoomIfNeeded() first, as the reuse branch does. The shipped
+app did not: it split the zoomed leaf and kept the stale `savedLayout`, so the next un-zoom
+dropped the markdown pane from the layout while leaving it in `panes`. Kelpi kept that until
+workspace tabs, where such a pane belongs to no tab (§5.1, §12.4).
 
 **toggleMarkdownEdit(paneID)** (⌘E, markdown panes only)
 
@@ -1350,6 +1355,7 @@ pane = { id, label: snapshot.label, type: snapshot.type,
          markdownFontSize: snapshot.markdownFontSize }
 // note: agentSessionID is NOT restored onto the pane; title/gitBranch/status reset.
 
+restoreZoomIfNeeded()                          // a split, so it un-zooms (5.1)
 layout = splitting(layout, focusedPaneID, "horizontal", id)
 panes.push(pane)
 if (snapshot.type === "web" AND snapshot.webState != null):
@@ -1521,6 +1527,8 @@ resolves to null, never to an error.
 --above/--below/--left-of/--right-of Y` maps its edge flags to zones
 above->top, below->bottom, left-of->left, right-of->right)
 - Guard BOTH ids name visible panes, else no-op.
+- restoreZoomIfNeeded() (5.1): zoomed, the target may be outside the zoomed tree, and
+  moving there would empty it while the saved tree still held both panes.
 - `layout = movingPane(layout, paneID, targetPaneID, zone)` (1.6).
 - `setFocus(paneID)` unless the action carries `focus: false` (issue #295: an agent's
   `kelpi pane move` without `--focus` docks the pane in the background); `currentLayoutIndex = null`.
@@ -1698,9 +1706,9 @@ socket-handlers.md §4.11)
   pane's sidecar across (delete it from the source); `currentLayoutIndex = null`; scrub
   and, if it was focused, refocus via popFocusFromHistory / layout order; clear a search
   on it; if it was the zoomed pane, un-zoom onto `savedLayout` minus the pane.
-- Target: append the pane; split the focused pane (falling back to the first in layout
-  order) horizontally with the moved pane second, or make it the root leaf of an empty
-  layout; restore the sidecar; `currentLayoutIndex = null`; `setFocus(paneID)`, or with
+- Target: restoreZoomIfNeeded() (5.1); append the pane; split the focused pane (falling
+  back to the first in layout order) horizontally with the moved pane second, or make it
+  the root leaf of an empty layout; restore the sidecar; `currentLayoutIndex = null`; `setFocus(paneID)`, or with
   `focus: false` (issue #298, a background move) `focusCreatedPane`, which keeps the
   target's own focused pane unless it has none.
 - `lastActiveWorkspaceID = toWorkspaceID`, unless `focus: false`, which leaves it alone.
@@ -1844,8 +1852,7 @@ is not obvious from the rules above.
 
 5. **Bugs/quirks preserved deliberately** (each flagged QUIRK in
    `packages/daemon/src/store/reducers/panes.ts`, so the pre-port CLI and saved state
-   see the same behavior): openMarkdownFile's missing un-zoom restore in the split
-   branch (7.4); reopenClosedPane consuming the snapshot before the focus guard (7.9;
+   see the same behavior): reopenClosedPane consuming the snapshot before the focus guard (7.9;
    the wire reply is an error rather than a phantom pane id); reopened private web
    panes lacking a sidecar (the UI treats a missing sidecar as a blank tab);
    `createPane`'s unconditional layout replacement (the caller contract, not a guard,
@@ -2118,9 +2125,12 @@ A window asks before it closes tabs with agents in them (`chrome/TabCloseGate.ts
 tabs' panes, and the shells parked behind them, hold any agent session (running, waiting or
 inactive, as the workspace gate counts them) and `confirm-workspace-delete` is on, Close Tab, ×,
 middle-click, ⌥⌘W and Close Other Tabs raise an alert whose default is Cancel. Its "Don't ask
-again" turns that setting off, for workspaces and tabs alike. The WS verbs themselves never ask. The
-control socket (`kelpi tab close`, `close-others`) refuses such a close with the counts unless
-`force`, as `workspace-delete` does, leaving out the calling pane (socket-handlers.md §4.17.1).
+again" turns that setting off, for workspaces and tabs alike. The setting is the one of the daemon
+the tabs belong to: a paired daemon's workspace (in the desktop title bar or on the phone) asks
+under that daemon's `confirm-workspace-delete`, and "Don't ask again" turns that one off. The WS
+verbs themselves never ask. The control socket (`kelpi tab close`, `close-others`) refuses such a
+close with the counts unless `force`, as `workspace-delete` does, leaving out the calling pane
+(socket-handlers.md §4.17.1).
 
 ### 12.6 What only the tab on screen does
 
@@ -2146,11 +2156,14 @@ control socket (`kelpi tab close`, `close-others`) refuses such a close with the
 - **Notification suppression.** A pane in a background tab is never attended, whatever a window
   last reported (`ws/sync.ts` `attends`); a window reports focus again on every tab switch and
   reports only the tab on screen's panes as visible.
-- **Reconnect.** A reconnecting client re-sends its last `focus-report` before it has the new
-  snapshot, marked `replay: true`. The daemon records it as that connection's focus and
-  dispatches nothing: a live report follows its pane into its tab (12.3), and a stale one would
-  pull every client back onto a tab someone has since left. The client reports again once its
-  snapshot lands.
+- **Reconnect, and focus a client only observed.** A reconnecting client re-sends its last
+  `focus-report` before it has the new snapshot, marked `replay: true`, and a client that
+  reports focus because it SAW it move (it now shows another tab or workspace, its own or a
+  paired daemon's) marks that report the same way. The daemon records it as that connection's
+  focus and dispatches nothing: a live report (a click, a palette jump) follows its pane into
+  its tab (12.3), and a late echo of a tab the user has since left would pull every client back
+  onto it. A window showing a paired daemon's workspace makes both reports to that daemon, its
+  visible panes too, whenever its tab on screen changes.
 - **Reads.** `layoutPaneOrder` is the on-screen tab's; `workspacePaneOrder` is every tab's,
   tab by tab. `pane-list` lists every tab's panes in that order, with `tab_id`, `tab_number`
   and `is_active_tab` once there are two tabs, and `is_focused` only for the user's focus in

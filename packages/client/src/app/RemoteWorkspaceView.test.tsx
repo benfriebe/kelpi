@@ -171,7 +171,10 @@ function remoteRuntime(shape: Shape = SIDE_BY_SIDE): { runtime: KelpiRuntime; ca
         }),
         focusPane: vi.fn((workspaceID: string, paneID: string | null) => {
             calls.push(`focus:${workspaceID}:${String(paneID)}`);
-        })
+        }),
+        // What it shows, and where it is (record-only), reported to its own daemon (§12.6).
+        reportVisiblePanes: vi.fn(),
+        reportObservedFocus: vi.fn()
     };
     return { runtime: runtime as unknown as KelpiRuntime, calls };
 }

@@ -25,6 +25,7 @@ import {
     holdGestureChords,
     setForwardedKeybindLines,
     startsHeldGesture,
+    tabChordNeeds,
     type ChordInput
 } from './keys.js';
 
@@ -420,5 +421,45 @@ describe('the chords that start a held gesture', () => {
             setForwardedKeybindLines([]);
         }
         expect(startsHeldGesture(chord('Tab', { ctrl: true }))).toBe(true);
+    });
+});
+
+/** workspace-feature.md §12: a tab chord the window's workspace could not use stays with the page. */
+describe('the workspace-tab chords', () => {
+    const needs = tabChordNeeds(DEFAULT_KEYBINDINGS);
+    const altMeta = { alt: true, meta: true };
+    const forward = (code: string, count: number | null): boolean =>
+        forwardedChord(input(code, altMeta), DEFAULTS, { needs, count }) !== null;
+
+    it('knows what each tab chord needs', () => {
+        expect(needs.get('alt+meta+Digit3')).toEqual({ kind: 'tab', number: 3 });
+        expect(needs.get('alt+meta+BracketRight')).toEqual({ kind: 'second-tab' });
+        expect(needs.get('alt+meta+KeyW')).toEqual({ kind: 'second-tab' });
+        // ⌥⌘T opens a tab whatever the count: not a chord the page gets back.
+        expect(needs.has('alt+meta+KeyT')).toBe(false);
+    });
+
+    it('takes ⌥⌘N only while the window has an Nth tab', () => {
+        expect(forward('Digit2', 3)).toBe(true);
+        expect(forward('Digit3', 3)).toBe(true);
+        expect(forward('Digit4', 3)).toBe(false);
+        expect(forward('Digit1', 0)).toBe(false);
+    });
+
+    it('takes ⌥⌘[ ⌥⌘] ⌥⌘W only with a second tab', () => {
+        for (const code of ['BracketLeft', 'BracketRight', 'KeyW']) {
+            expect(forward(code, 1)).toBe(false);
+            expect(forward(code, 2)).toBe(true);
+        }
+    });
+
+    it('takes every tab chord before the window has reported, as before tabs', () => {
+        expect(forward('Digit9', null)).toBe(true);
+        expect(forward('BracketLeft', null)).toBe(true);
+    });
+
+    it('leaves every other chord as it was', () => {
+        expect(forwardedChord(input('KeyD'), DEFAULTS, { needs, count: 1 })).not.toBeNull();
+        expect(forwardedChord(input('KeyT', altMeta), DEFAULTS, { needs, count: 1 })).not.toBeNull();
     });
 });

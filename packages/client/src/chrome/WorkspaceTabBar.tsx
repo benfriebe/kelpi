@@ -54,6 +54,16 @@ const KIND_ICON: Readonly<Record<WorkspaceTabKind, ChromeIconName>> = {
     image: 'image'
 };
 
+/** What a screen reader hears for a tab: its title, then what the dot and the badges show. */
+export function tabAccessibleName(tab: WorkspaceTabView): string {
+    const parts = [tab.title];
+    if (tab.paneCount > 1) parts.push(`${String(tab.paneCount)} panes`);
+    if (tab.status === 'waitingForInput') parts.push('an agent is waiting for input');
+    else if (tab.status === 'running') parts.push('running');
+    if (tab.zoomed) parts.push('zoomed');
+    return parts.join(', ');
+}
+
 function statusColor(status: WorkspaceTabStatus): string {
     if (status === 'waitingForInput') return tokens.statusWaiting;
     if (status === 'running') return tokens.statusRunning;
@@ -85,6 +95,13 @@ export interface WorkspaceTabBarProps {
      * paired daemon (its name) whose workspace these tabs are.
      */
     readonly rowDaemon?: string | undefined;
+    /** The workspace these tabs belong to: its own row is no target (a drop there moves nothing). */
+    readonly workspaceID?: string | undefined;
+    /**
+     * Show a tab of a workspace that is no longer the one drawn: a spring going home after a
+     * workspace switch ended its drag. Absent, such a spring leaves its old workspace as it is.
+     */
+    readonly onSelectInWorkspace?: ((workspaceID: string, tabID: string) => void) | undefined;
     /** A tab is being dragged: the title bar stops being the window's drag handle meanwhile. */
     readonly onDraggingChange?: ((dragging: boolean) => void) | undefined;
     /**
@@ -185,7 +202,7 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
     const [room, setRoom] = useState<number | null>(null);
     const [hovered, hover] = useHoverKey();
     const [menu, setMenu] = useState<
-        | { readonly kind: 'tab'; readonly tab: WorkspaceTabView; readonly x: number; readonly y: number }
+        | { readonly kind: 'tab'; readonly tab: WorkspaceTabView; readonly x: number; readonly y: number; readonly keyboard?: boolean }
         | { readonly kind: 'new' | 'overflow'; readonly x: number; readonly y: number }
         | null
     >(null);
@@ -243,6 +260,8 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
             const current = latest.current;
             const origin = tabSpring()?.originTabID ?? current.tabs.find((tab) => tab.active)?.id;
             if (origin === undefined) return;
+            // Home is a tab of THIS workspace, even if another is on screen by the time it is asked for.
+            const home = current.workspaceID;
             // Back over the tab it started in is home again, not another spring.
             setTabSpring(
                 springCandidate === origin
@@ -251,7 +270,11 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                           originTabID: origin,
                           tabID: springCandidate,
                           shown: false,
-                          returnHome: () => latest.current.onSelect(origin, { force: true })
+                          returnHome: () => {
+                              const now = latest.current;
+                              if (home === undefined || now.workspaceID === home) now.onSelect(origin, { force: true });
+                              else now.onSelectInWorkspace?.(home, origin);
+                          }
                       }
             );
             current.onSelect(springCandidate);
@@ -310,7 +333,8 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
         // The tab can go while it is in flight (its agent pane exited): then nothing moves.
         const from = current.tabs.findIndex((tab) => tab.id === drag.tabID);
         if (from < 0) return;
-        const workspaceID = current.onMoveToWorkspace === undefined ? null : workspaceRowAt(x, y, current.rowDaemon ?? null);
+        const row = current.onMoveToWorkspace === undefined ? null : workspaceRowAt(x, y, current.rowDaemon ?? null);
+        const workspaceID = row === current.workspaceID ? null : row;
         if (workspaceID !== null) {
             current.onMoveToWorkspace?.(drag.tabID, workspaceID);
             return;
@@ -359,7 +383,9 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                 latest.current.onDraggingChange?.(true);
             }
             const daemon = latest.current.rowDaemon ?? null;
-            const workspaceID = latest.current.onMoveToWorkspace === undefined ? null : workspaceRowAt(moved.clientX, moved.clientY, daemon);
+            const row = latest.current.onMoveToWorkspace === undefined ? null : workspaceRowAt(moved.clientX, moved.clientY, daemon);
+            // Its own workspace's row takes no drop, so it does not light up either.
+            const workspaceID = row === latest.current.workspaceID ? null : row;
             setTabDragWorkspace(workspaceID === null ? null : { daemon, workspaceID });
             setDragSlot({
                 tabID: drag.tabID,
@@ -457,6 +483,20 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                         event.preventDefault();
                         setRenaming((tabs[at] as WorkspaceTabView).id);
                         return;
+                    } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+                        // The tab menu from the keyboard: the focused tab's, under it, taking the keyboard.
+                        const focusedID = (document.activeElement as HTMLElement | null)?.getAttribute('data-workspace-tab-id');
+                        const target = tabs.find((tab) => tab.id === focusedID) ?? tabs[at];
+                        if (target === undefined) return;
+                        event.preventDefault();
+                        const box = stripRef.current?.querySelector<HTMLElement>(`[data-workspace-tab-id="${target.id}"]`)?.getBoundingClientRect();
+                        setMenu({
+                            kind: 'tab',
+                            tab: target,
+                            keyboard: true,
+                            ...(box === undefined ? { x: 8, y: 32 } : { x: Math.round(box.left), y: Math.round(box.bottom + 4) })
+                        });
+                        return;
                     } else return;
                     event.preventDefault();
                     if (next === undefined) return;
@@ -489,7 +529,10 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                             data-attention={tab.attention ? 'true' : 'false'}
                             data-unvisited={tab.unvisited ? 'true' : 'false'}
                             title={tab.title}
-                            className="relative flex h-6 shrink items-center gap-[7px] rounded-[3px] pl-2.5 pr-1 text-[12px] outline-none"
+                            aria-label={tabAccessibleName(tab)}
+                            // No `outline-none`: Tab focus gets the app's keyboard ring (a press never
+                            // focuses a tab, its mousedown is prevented, so the mouse never shows it).
+                            className="relative flex h-6 shrink items-center gap-[7px] rounded-[3px] pl-2.5 pr-1 text-[12px]"
                             style={{
                                 flex: '0 1 auto',
                                 minWidth: TAB_MIN_WIDTH_PX,
@@ -710,6 +753,7 @@ export function WorkspaceTabBar(props: WorkspaceTabBarProps): ReactElement {
                     // A dropdown's own button closes it on a second click, rather than the
                     // dismissal closing it on mousedown and the click opening it again.
                     anchorRef={menu.kind === 'new' ? chevronRef : menu.kind === 'overflow' ? overflowRef : undefined}
+                    autoFocus={menu.kind === 'tab' && menu.keyboard === true}
                     label={menu.kind === 'tab' ? 'Tab' : menu.kind === 'new' ? 'New tab' : 'More tabs'}
                     items={
                         menu.kind === 'tab'
@@ -771,8 +815,26 @@ function RenameField(props: {
     readonly onCancel: () => void;
 }): ReactElement {
     const done = useRef(false);
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const latestProps = useRef(props);
+    latestProps.current = props;
+    /*
+     * Taken away mid-edit (a workspace switch, the tab gone elsewhere): what was typed is kept, as
+     * a pane rename keeps it when its field goes. A removed field gets no blur, so the unmount is
+     * the last word. A node still in the document is a test renderer's double mount, not an unmount.
+     */
+    useEffect(() => {
+        // Held here: React has already cleared the ref by the time an unmount's cleanup runs.
+        const input = inputRef.current;
+        return () => {
+            if (done.current || input === null || input.isConnected) return;
+            done.current = true;
+            latestProps.current.onCommit(input.value, false);
+        };
+    }, []);
     return (
         <input
+            ref={inputRef}
             data-testid="workspace-tab-rename"
             aria-label="Tab name"
             autoFocus

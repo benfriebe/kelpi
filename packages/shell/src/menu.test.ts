@@ -57,7 +57,11 @@ import {
     TOGGLE_SIDEBAR_LABEL,
     VIEW_MENU_LOG_FRAGMENT,
     appMenuTemplate,
+    applyWindowTabs,
     applyWorkspaceSelection,
+    CLOSE_TAB_MENU_ID,
+    NEXT_TAB_MENU_ID,
+    PREVIOUS_TAB_MENU_ID,
     closeRouteLogLine,
     debugMenuLogFragment,
     debugMenuSection,
@@ -551,6 +555,16 @@ describe('File menu (§APP-018 / §WS-151)', () => {
 
         expect(workspaceSelectionLogLine(2)).toBe('menu: Deselect All Workspaces enabled (2 selected)');
         expect(workspaceSelectionLogLine(0)).toBe('menu: Deselect All Workspaces disabled (0 selected)');
+    });
+
+    it('greys Close Tab and Show Next / Previous Tab while the window has one tab', () => {
+        const items = new Map([CLOSE_TAB_MENU_ID, NEXT_TAB_MENU_ID, PREVIOUS_TAB_MENU_ID].map((id) => [id, { enabled: true }]));
+        const menu = { getMenuItemById: (id: string) => items.get(id) ?? null };
+        expect(applyWindowTabs(menu, 1)).toBe(false);
+        expect([...items.values()].map((item) => item.enabled)).toEqual([false, false, false]);
+        expect(applyWindowTabs(menu, 2)).toBe(true);
+        expect([...items.values()].map((item) => item.enabled)).toEqual([true, true, true]);
+        expect(applyWindowTabs(null, 0)).toBe(false);
     });
 
     it('names the `switch-workspace-N` commands the client parses back', () => {

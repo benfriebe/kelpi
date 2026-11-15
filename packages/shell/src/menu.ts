@@ -548,8 +548,8 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
         relayRow(deps, TOGGLE_STATUS_BAR_LABEL, accel.toggle_status_bar, TOGGLE_STATUS_BAR_COMMAND),
         relayRow(deps, TOGGLE_BOTTOM_PANEL_LABEL, accel.toggle_bottom_panel, TOGGLE_BOTTOM_PANEL_COMMAND),
         { type: 'separator' },
-        relayRow(deps, NEXT_TAB_LABEL, accel.next_tab, NEXT_TAB_COMMAND),
-        relayRow(deps, PREVIOUS_TAB_LABEL, accel.previous_tab, PREVIOUS_TAB_COMMAND),
+        { ...relayRow(deps, NEXT_TAB_LABEL, accel.next_tab, NEXT_TAB_COMMAND), id: NEXT_TAB_MENU_ID },
+        { ...relayRow(deps, PREVIOUS_TAB_LABEL, accel.previous_tab, PREVIOUS_TAB_COMMAND), id: PREVIOUS_TAB_MENU_ID },
         { type: 'separator' },
         relayRow(deps, TOGGLE_ZEN_MODE_LABEL, accel.toggle_zen_mode, TOGGLE_ZEN_MODE_COMMAND),
         relayRow(deps, RESET_WINDOW_ARRANGEMENT_LABEL, undefined, RESET_WINDOW_ARRANGEMENT_COMMAND),
@@ -628,6 +628,29 @@ export function applyWorkspaceSelection(
     const enabled = selectedCount > 0;
     const item = menu?.getMenuItemById(DESELECT_ALL_WORKSPACES_MENU_ID);
     if (item !== null && item !== undefined) item.enabled = enabled;
+    return enabled;
+}
+
+/** The tab rows that need a second tab to do anything (workspace-feature.md §12). */
+export const CLOSE_TAB_MENU_ID = 'close-tab';
+export const NEXT_TAB_MENU_ID = 'next-tab';
+export const PREVIOUS_TAB_MENU_ID = 'previous-tab';
+
+/**
+ * Grey Close Tab and Show Next / Previous Tab while the window's workspace has one tab (or none
+ * is drawn), as `applyWorkspaceSelection` greys Deselect All. Greyed, a row's accelerator is not
+ * taken either, so ⌥⌘W, ⌥⌘[ and ⌥⌘] reach a focused web page that binds them. Returns whether
+ * the rows are enabled.
+ */
+export function applyWindowTabs(
+    menu: { getMenuItemById(id: string): { enabled: boolean } | null } | null | undefined,
+    tabCount: number
+): boolean {
+    const enabled = tabCount > 1;
+    for (const id of [CLOSE_TAB_MENU_ID, NEXT_TAB_MENU_ID, PREVIOUS_TAB_MENU_ID]) {
+        const item = menu?.getMenuItemById(id);
+        if (item !== null && item !== undefined) item.enabled = enabled;
+    }
     return enabled;
 }
 
@@ -715,7 +738,7 @@ export function fileMenuTemplate(deps: FileMenuDeps): MenuItemConstructorOptions
         relayRow(deps, NEW_TAB_LABEL, accel.new_tab, NEW_TAB_COMMAND),
         relayRow(deps, MOVE_PANE_TO_NEW_TAB_LABEL, accel.move_pane_to_new_tab, MOVE_PANE_TO_NEW_TAB_COMMAND),
         { type: 'separator' },
-        relayRow(deps, CLOSE_TAB_LABEL, accel.close_tab, CLOSE_TAB_COMMAND),
+        { ...relayRow(deps, CLOSE_TAB_LABEL, accel.close_tab, CLOSE_TAB_COMMAND), id: CLOSE_TAB_MENU_ID },
         /*
          * N14: the macOS Close row, routed rather than native. See `CLOSE_LABEL` above for the
          * race it removes; the row keeps its label and its ⌘W so the menu still reads like a

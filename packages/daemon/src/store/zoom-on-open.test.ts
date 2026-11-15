@@ -10,11 +10,14 @@
  * shipped app leaves a zoomed workspace zoomed. `store/reducers/panes.ts:414` preserves exactly
  * that, with the quirk named in a comment.
  *
- * So the rule the port implements — and the rule these tests pin — is:
+ * The port kept that quirk until workspace tabs (workspace-feature.md §12): a pane split into
+ * the zoomed tree alone is in no tab's tree, so the grid never draws it and the next un-zoom
+ * drops it. An ordinary markdown open now un-zooms first like every other open, so the rule
+ * these tests pin is:
  *
  *   un-zooms:  split, split-at-path, diff open, scratchpad, web open, layout cycle,
- *              layout select, and markdown open **with `--here`**
- *   does not:  markdown open without `--here`
+ *              layout select, markdown open (with or without `--here`), reopen
+ *   does not:  a plain create-pane
  *
  * Every case is asserted the same way: zoom, act, then read `zoomedPaneID`/`savedLayout` and
  * check the layout the workspace came back with is the pre-zoom one — because "un-zoomed" is
@@ -111,8 +114,8 @@ describe('§TERM-090 — opening anything un-zooms first', () => {
      * so a checklist that reads TERM-090 as covering the ordinary markdown open is reading the
      * `--here` arm's lines and attributing them to its neighbour.
      */
-    it('an ordinary markdown open leaves a zoomed workspace zoomed (Swift parity)', () => {
-        const { h } = zoomedPair();
+    it('an ordinary markdown open un-zooms first (the pane must join the tree the tab keeps)', () => {
+        const { h, before } = zoomedPair();
         h.dispatch({
             type: 'open-markdown-pane',
             workspaceID: W1,
@@ -121,8 +124,9 @@ describe('§TERM-090 — opening anything un-zooms first', () => {
             now: NOW
         });
         const workspace = h.state().workspaces[0];
-        expect(workspace?.zoomedPaneID).toBe(PANE_B);
-        expect(workspace?.savedLayout).not.toBeNull();
+        expect(workspace?.zoomedPaneID).toBeNull();
+        expect(workspace?.savedLayout).toBeNull();
+        expect(before).toBeDefined();
     });
 
     /**

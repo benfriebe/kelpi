@@ -14,7 +14,7 @@ async function settle(): Promise<void> { for (let index = 0; index < 12; index++
 function chrome(overrides: Partial<ChromeSnapshot> = {}): ChromeSnapshot {
     return {
         connection: 'connected', ready: true, remoteWorkspaceSelected: false,
-        workspace: { id: 'original-workspace', name: 'Workspace', color: 'blue', paneCount: 1, layout: 'tiled', syncInputActive: false, syncedPaneCount: 1 },
+        workspace: { id: 'original-workspace', name: 'Workspace', color: 'blue', paneCount: 1, onScreenPaneCount: 1, layout: 'tiled', syncInputActive: false, syncedPaneCount: 1, tabs: [] },
         focusedPane: null, sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
         sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, muted: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [], keymap: { sections: [], plugins: [], withheld: 0 }, ...overrides
     };

@@ -7,6 +7,7 @@ import {
     isForwardableOpenPath,
     parseShellAction,
     parseWindowChrome,
+    parseWindowTabs,
     parseWorkspaceSelection,
     scriptedFolderAnswer,
     shellActionAppliesHere
@@ -274,5 +275,20 @@ describe('isForwardableOpenPath (CONT-124)', () => {
         expect(isForwardableOpenPath('/a/README')).toBe(false);
         expect(isForwardableOpenPath('/a/.md')).toBe(false);
         expect(isForwardableOpenPath('')).toBe(false);
+    });
+});
+
+/** workspace-feature.md §12: the window's tab count, for the tab rows and the web relay. */
+describe('parseWindowTabs', () => {
+    it('decodes the count, with and without a window scope', () => {
+        expect(parseWindowTabs({ type: 'window-tabs', tabs: 3, windowID: 'w1' })).toEqual({ tabs: 3, windowID: 'w1' });
+        expect(parseWindowTabs({ type: 'window-tabs', tabs: 0 })).toEqual({ tabs: 0, windowID: null });
+    });
+
+    it('refuses a count it would have to guess, and another message type', () => {
+        for (const tabs of [undefined, -1, 2.5, '2']) {
+            expect(parseWindowTabs({ type: 'window-tabs', tabs })).toBeNull();
+        }
+        expect(parseWindowTabs({ type: 'window-chrome', tabs: 2 })).toBeNull();
     });
 });

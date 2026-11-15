@@ -387,7 +387,12 @@ export function normalizeTabs(workspace: WorkspaceState): WorkspaceState {
         return { ...tab, stash: pruned };
     });
 
-    const kept = tabs.filter((tab) => tab.id === activeID || allPaneIDs((tab.stash as TabLayoutStash).layout).length > 0);
+    // A zoomed tab's whole tree is its saved one; its zoomed tree can be a single leaf (or none).
+    const kept = tabs.filter((tab) => {
+        if (tab.id === activeID) return true;
+        const stash = tab.stash as TabLayoutStash;
+        return allPaneIDs(stash.savedLayout ?? stash.layout).length > 0;
+    });
     if (kept.length !== tabs.length) changed = true;
     tabs = kept;
 

@@ -10,7 +10,6 @@
  *    workspace; the caller contract routes populated workspaces to split instead).
  *  - `split-pane-at-path` does not verify the focused pane still exists (stale focus appends an
  *    orphan pane).
- *  - the markdown split branch does NOT un-zoom first.
  *  - `reopen-closed-pane` pops the snapshot BEFORE the focus guard, so it can be consumed and
  *    lost.
  *  - a reopened PRIVATE web pane gets no sidecar entry.
@@ -380,11 +379,14 @@ function reopenClosedPane(
         markdownFontSize: snapshot.markdownFontSize
     };
 
+    // Un-zoomed first, as every split is: a pane split into the zoomed tree alone would be in
+    // no tab's tree (workspace-feature.md §12.4), drawn nowhere and dropped by the next un-zoom.
+    const unzoomed = restoreZoomIfNeeded(workspace);
     let next: WorkspaceState = {
-        ...workspace,
+        ...unzoomed,
         recentlyClosedPanes: snapshots,
-        panes: [...workspace.panes, restored],
-        layout: splitting(workspace.layout, workspace.focusedPaneID, 'horizontal', newPaneID)
+        panes: [...unzoomed.panes, restored],
+        layout: splitting(unzoomed.layout, workspace.focusedPaneID, 'horizontal', newPaneID)
             .layout,
         currentLayoutIndex: null
     };
@@ -447,19 +449,21 @@ function openMarkdownPane(
         // A reusePaneID naming no visible pane falls through to the split path.
     }
 
-    // QUIRK (§7.4): no restoreZoomIfNeeded() on this branch.
+    // Un-zoomed first (§7.4), as the diff, web, scratchpad and plugin opens are. The shipped
+    // app split the zoomed leaf instead, which with tabs left the pane in no tab's tree.
+    const base = restoreZoomIfNeeded(workspace);
     // #295: a background open names the caller as its source rather than focusing it first.
     const named =
-        action.sourcePaneID !== undefined && findVisiblePane(workspace, action.sourcePaneID) !== null
+        action.sourcePaneID !== undefined && findVisiblePane(base, action.sourcePaneID) !== null
             ? action.sourcePaneID
             : null;
-    const sourceID = named ?? workspace.focusedPaneID ?? allPaneIDs(workspace.layout)[0] ?? null;
+    const sourceID = named ?? base.focusedPaneID ?? allPaneIDs(base.layout)[0] ?? null;
     const next: WorkspaceState = {
-        ...appendPane(workspace, pane),
+        ...appendPane(base, pane),
         layout:
             sourceID === null
                 ? leaf(pane.id)
-                : splitting(workspace.layout, sourceID, 'horizontal', pane.id).layout,
+                : splitting(base.layout, sourceID, 'horizontal', pane.id).layout,
         currentLayoutIndex: null
     };
     return focusCreatedPane(next, pane.id, action.focus);
@@ -628,15 +632,18 @@ function movePaneToWorkspace(
         nextSource = { ...nextSource, savedLayout: removing(nextSource.savedLayout, action.paneID) };
     }
 
-    const anchor = target.focusedPaneID ?? allPaneIDs(target.layout)[0] ?? null;
+    // A zoomed target un-zooms first, as a split there would: the moved pane joins the tree the
+    // tab keeps, not only the zoomed one (workspace-feature.md §12.4).
+    const unzoomedTarget = restoreZoomIfNeeded(target);
+    const anchor = unzoomedTarget.focusedPaneID ?? allPaneIDs(unzoomedTarget.layout)[0] ?? null;
     let nextTarget: WorkspaceState = {
-        ...target,
-        panes: [...target.panes, pane],
-        parkedPanes: cargo.parked.length === 0 ? target.parkedPanes : [...target.parkedPanes, ...cargo.parked],
+        ...unzoomedTarget,
+        panes: [...unzoomedTarget.panes, pane],
+        parkedPanes: cargo.parked.length === 0 ? unzoomedTarget.parkedPanes : [...unzoomedTarget.parkedPanes, ...cargo.parked],
         layout:
-            target.layout.kind === 'empty' || anchor === null
+            unzoomedTarget.layout.kind === 'empty' || anchor === null
                 ? leaf(action.paneID)
-                : splitting(target.layout, anchor, 'horizontal', action.paneID).layout,
+                : splitting(unzoomedTarget.layout, anchor, 'horizontal', action.paneID).layout,
         currentLayoutIndex: null
     };
     if (Object.keys(cargo.sidecars).length > 0) {
@@ -692,10 +699,13 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                 // Both ids must name VISIBLE panes (§7.12).
                 if (findVisiblePane(workspace, action.paneID) === null) return workspace;
                 if (findVisiblePane(workspace, action.targetPaneID) === null) return workspace;
+                // Moved in the whole tree: zoomed, the target may not be in the zoomed one, and
+                // moving there would empty it while the saved tree still holds both panes.
+                const unzoomed = restoreZoomIfNeeded(workspace);
                 const next: WorkspaceState = {
-                    ...workspace,
+                    ...unzoomed,
                     layout: movingPane(
-                        workspace.layout,
+                        unzoomed.layout,
                         action.paneID,
                         action.targetPaneID,
                         action.zone

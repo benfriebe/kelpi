@@ -304,7 +304,7 @@ describe('close-pane', () => {
 });
 
 describe('content panes', () => {
-    it('QUIRK: opening markdown while zoomed does NOT un-zoom (Swift behaviour kept)', () => {
+    it('opening markdown while zoomed un-zooms first, so the pane joins the tree the tab keeps', () => {
         const h = harness(seededState());
         h.dispatch(
             { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
@@ -318,9 +318,11 @@ describe('content panes', () => {
             }
         );
         const workspace = ws(h.state());
-        expect(workspace.zoomedPaneID).toBe(PA); // still "zoomed" over a two-leaf layout
-        expect(workspace.savedLayout).not.toBeNull();
-        expect(allPaneIDs(workspace.layout)).toEqual([PA, PB]);
+        // The shipped app split the zoomed leaf and kept the zoom; with tabs that left the pane
+        // in no tab's tree (workspace-feature.md §7.4, §12.4).
+        expect(workspace.zoomedPaneID).toBeNull();
+        expect(workspace.savedLayout).toBeNull();
+        expect(allPaneIDs(workspace.layout)).toEqual([P0, PA, PB]);
     });
 
     it('names markdown panes after the file and diff panes after the scope', () => {

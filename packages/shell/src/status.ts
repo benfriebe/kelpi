@@ -82,6 +82,7 @@ import {
     droppedFilesAnswer,
     parseShellAction,
     parseWindowChrome,
+    parseWindowTabs,
     parseWorkspaceSelection,
     shellActionAppliesHere
 } from './shell-actions.js';
@@ -236,6 +237,11 @@ export interface StatusHost {
      * that are centred in it should follow (`titlebar.ts` ▸ `windowButtonsVisible`).
      */
     windowChromeChanged?(titleBarHidden: boolean): void;
+    /**
+     * This window's page reported how many tabs its workspace has (workspace-feature.md §12), so
+     * the tab rows can grey and the web relay can leave unused tab chords to the page.
+     */
+    windowTabsChanged?(tabCount: number): void;
     /**
      * The status connection to the daemon dropped. Nothing the page reports can arrive until it
      * is back, so a window showing no traffic lights for a toolbar the page has since restored
@@ -1122,6 +1128,13 @@ export function createStatusController(options: StatusOptions): StatusController
                 const report = parseWindowChrome(parsed);
                 if (report === null || !shellActionAppliesHere(report.windowID, options.windowID)) break;
                 host.windowChromeChanged?.(report.titleBarHidden);
+                break;
+            }
+            case 'window-tabs': {
+                // Scoped as `window-chrome` is: each window draws its own workspace's tabs.
+                const report = parseWindowTabs(parsed);
+                if (report === null || !shellActionAppliesHere(report.windowID, options.windowID)) break;
+                host.windowTabsChanged?.(report.tabs);
                 break;
             }
             case 'rejected': {

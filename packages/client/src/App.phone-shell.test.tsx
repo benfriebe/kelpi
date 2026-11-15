@@ -262,6 +262,7 @@ function fakeRemoteRuntime(target: string, options: { readonly tabs?: boolean } 
             calls.push(`focus:${workspaceID}:${String(paneID)}`);
         }),
         reportVisiblePanes: vi.fn(),
+        reportObservedFocus: vi.fn(),
         setDocumentVisible: vi.fn()
     };
     return { runtime: runtime as unknown as KelpiRuntime, calls };

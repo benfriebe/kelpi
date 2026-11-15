@@ -42,6 +42,23 @@ describe('the phone tab chips', () => {
         vi.useFakeTimers();
     });
 
+    it('keep the + beside the tablist rather than in it, and scroll the tab on screen into view', () => {
+        const scrolled: string[] = [];
+        const original = HTMLElement.prototype.scrollIntoView;
+        HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+            scrolled.push(this.getAttribute('data-testid') ?? '');
+        };
+        try {
+            const view = render(<PhoneTabChips tabs={TWO} onSelect={vi.fn()} onNewTab={vi.fn()} />);
+            expect(screen.getByRole('tablist').contains(screen.getByTestId('phone-tab-new'))).toBe(false);
+            expect(scrolled.at(-1)).toBe('phone-tab-chip-main');
+            view.rerender(<PhoneTabChips tabs={[tab('main', 0, { active: false }), tab('workers', 1, { active: true })]} onSelect={vi.fn()} onNewTab={vi.fn()} />);
+            expect(scrolled.at(-1)).toBe('phone-tab-chip-workers');
+        } finally {
+            HTMLElement.prototype.scrollIntoView = original;
+        }
+    });
+
     it('draw nothing with one tab, and a + after the chips with two', () => {
         const onNewTab = vi.fn();
         const one = render(<PhoneTabChips tabs={[tab('main', 0)]} onSelect={vi.fn()} onNewTab={onNewTab} />);

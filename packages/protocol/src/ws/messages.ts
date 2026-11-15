@@ -128,10 +128,12 @@ export interface WsFocusReportMessage {
     readonly workspaceID: string;
     readonly paneID: string | null;
     /**
-     * The client re-asserting its last report after a reconnect, before it has the new
-     * snapshot. The daemon records it as this connection's focus and dispatches nothing: the
-     * report predates whatever other clients did meanwhile (another pane focused, another tab
-     * shown), and a stale one must not pull every client back (workspace-feature.md §12.6).
+     * Record-only: the daemon records it as this connection's focus and dispatches nothing.
+     * Sent for focus the client did not choose: its last report re-asserted after a reconnect,
+     * before it has the new snapshot, and the report it makes because it SAW focus move (it now
+     * shows another tab or workspace). Either can predate what other clients did meanwhile
+     * (another pane focused, another tab shown), and a stale one must not pull every client back
+     * (workspace-feature.md §12.6).
      */
     readonly replay?: true;
 }
@@ -396,6 +398,24 @@ export interface WsWindowChromeMessage {
 }
 
 /**
+ * How many workspace tabs the window draws (workspace-feature.md §12), for the shell that owns
+ * it: Close Tab and Show Next / Previous Tab grey out with one tab, and a web page keeps the
+ * tab chords the window would not use (⌥⌘N past the last tab, ⌥⌘[ / ⌥⌘] with one tab), since
+ * the shell takes a chord from the page before the window is asked (`shell/src/webhost/keys.ts`).
+ * Routed and not remembered exactly as `window-chrome` is; the page re-reports on every
+ * (re)connect and whenever the count changes. 0 = no workspace is drawn.
+ */
+export const WS_WINDOW_TABS_MESSAGE = 'window-tabs';
+
+export interface WsWindowTabsMessage {
+    readonly type: typeof WS_WINDOW_TABS_MESSAGE;
+    /** The number of tabs in the workspace the window draws; 0 when it draws none. */
+    readonly tabs: number;
+    /** The shell window this is about; absent = every shell. */
+    readonly windowID?: string;
+}
+
+/**
  * #283: the generic "choose a folder" round trip, the one desktop gesture that needs an ANSWER.
  *
  * The shell has no preload, so the page cannot open a native panel itself and the main process
@@ -582,6 +602,7 @@ export type WsClientMessage =
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
+    | WsWindowTabsMessage
     | WsChooseFolderAnswerMessage
     | WsDroppedFilesAnswerMessage
     | WsUpdateStateMessage;
@@ -1234,6 +1255,7 @@ export type WsServerMessage =
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
+    | WsWindowTabsMessage
     | WsChooseFolderResultMessage
     | WsDroppedFilesResultMessage
     | WsUpdateStateMessage;

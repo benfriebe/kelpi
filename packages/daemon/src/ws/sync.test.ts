@@ -1330,6 +1330,42 @@ describe('window-chrome relay', () => {
     });
 });
 
+/** The window's `window-tabs` report: how many tabs it draws, for its shell's menu and web relay. */
+describe('window-tabs relay', () => {
+    it('fans a report out to every attached party, windowID intact, and replays nothing', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs: 3, windowID: 'WIN-1' }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs: 0 }));
+        expect(shell.transport.ofType('window-tabs')).toEqual([
+            { type: 'window-tabs', tabs: 3, windowID: 'WIN-1' },
+            { type: 'window-tabs', tabs: 0 }
+        ]);
+
+        const late = f.connect();
+        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        expect(late.transport.ofType('window-tabs')).toHaveLength(0);
+    });
+
+    it('drops a report whose count is not a whole number, or whose window id is unusable', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        for (const tabs of [-1, 1.5, '2', null]) {
+            window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs }));
+        }
+        window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs: 2, windowID: '' }));
+        expect(shell.transport.ofType('window-tabs')).toHaveLength(0);
+    });
+});
+
 describe('workspace-selection relay', () => {
     it('fans a client report out to every attached party, windowID intact', () => {
         const f = fixture();

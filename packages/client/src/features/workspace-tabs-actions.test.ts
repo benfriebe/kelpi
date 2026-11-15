@@ -1,7 +1,7 @@
 import { createStore, emptyDaemonState, type DaemonState, type WorkspaceState } from '@kelpi/daemon/store';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createWorkspaceTabActions, type WorkspaceTabActionHost } from './workspace-tabs-actions';
+import { createWorkspaceTabActions, tabCloseOwner, type TabCloseOwner, type WorkspaceTabActionHost } from './workspace-tabs-actions';
 
 const W = 'AAAAAAAA-0000-4000-8000-000000000001';
 const P0 = 'DDDDDDDD-0000-4000-8000-000000000100';
@@ -106,5 +106,52 @@ describe('selecting a tab', () => {
         expect(h.raw.mock.calls.map(([payload]) => payload)).toEqual([
             expect.objectContaining({ command: 'workspace-tab-select', workspace_id: W, tab_id: T2 })
         ]);
+    });
+});
+
+describe("a paired daemon's close-tab setting", () => {
+    it("asks under the tabs' own daemon's setting, and turns that one off", () => {
+        const setGeneralSetting = vi.fn(() => Promise.resolve({ ok: true }));
+        const paired = {
+            store: { getState: () => ({ settings: { value: { general: { confirmWorkspaceDeleteWhenActive: false } } } }) },
+            commands: { setGeneralSetting }
+        } as unknown as Parameters<typeof tabCloseOwner>[0];
+        const owner = tabCloseOwner(paired);
+        const confirmClose = vi.fn((_workspace: WorkspaceState, _tabIDs: readonly string[], close: () => boolean, _owner?: TabCloseOwner) => close());
+        const h = host({ confirmClose, closeOwner: () => owner });
+        createWorkspaceTabActions(h).closeTab(T1);
+        expect(confirmClose.mock.calls[0]?.[3]).toBe(owner);
+        expect(owner.confirmWhenActive()).toBe(false);
+        owner.suppress();
+        expect(setGeneralSetting).toHaveBeenCalledExactlyOnceWith({ key: 'confirm-workspace-delete', value: 'false' });
+    });
+});
+
+describe('renaming a tab', () => {
+    it("names the tab's own workspace, even when another one is on screen by then", () => {
+        const owner = threeTabs();
+        const elsewhere = { ...owner, id: 'AAAAAAAA-0000-4000-8000-000000000002', tabs: [] } as unknown as WorkspaceState;
+        const h = host({ activeWorkspace: () => elsewhere, workspaces: () => [elsewhere, owner] });
+        createWorkspaceTabActions(h).renameTab(T1, 'api');
+        expect(h.raw.mock.calls.map(([payload]) => payload)).toEqual([
+            expect.objectContaining({ command: 'workspace-tab-rename', workspace_id: W, tab_id: T1, name: 'api' })
+        ]);
+        // A tab no workspace holds names nothing.
+        expect(createWorkspaceTabActions(h).renameTab('FFFFFFFF-0000-4000-8000-0000000000ff', 'x')).toBe(false);
+    });
+});
+
+describe('the palette rows for the tab on screen', () => {
+    it("offers the daemon's other workspaces as Move Tab targets, and acts on the tab on screen", () => {
+        const owner = threeTabs();
+        const other = { ...owner, id: 'AAAAAAAA-0000-4000-8000-000000000003', name: 'ops' } as WorkspaceState;
+        const h = host({ workspaces: () => [owner, other] });
+        const actions = createWorkspaceTabActions(h);
+        expect(actions.moveTabTargets()).toEqual([{ id: other.id, name: 'ops' }]);
+        expect(actions.moveActiveTabToWorkspace(owner.id)).toBe(false);
+        actions.moveActiveTabToWorkspace(other.id);
+        expect(h.raw.mock.calls.at(-1)?.[0]).toEqual(
+            expect.objectContaining({ command: 'workspace-tab-move-to-workspace', workspace_id: W, to_workspace_id: other.id })
+        );
     });
 });

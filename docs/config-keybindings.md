@@ -612,6 +612,16 @@ matcher applies the same rule by **canonicalization**
   bound), the LAST one in map order wins. Overrides are applied after defaults, so a
   user's explicit `ctrl+x` line beats a shipped `super+x` default deterministically.
 
+**AltGr is text, never a chord.** Windows reports AltGr as Ctrl+Alt, so on a Ctrl-primary
+platform a `super+alt` default (the tab chords: ⌥⌘T, ⌥⌘W, ⌥⌘[ / ⌥⌘], ⌥⌘1 to ⌥⌘9) would
+otherwise fire whenever a Czech user types `|` (AltGr+W) or a German one types `{ [ ]`
+(AltGr+7, 8, 9). The client dispatcher skips a keystroke whose AltGraph modifier state is set,
+and, as a backstop, a letter or digit key that typed a symbol under Ctrl+Alt
+(`typesAltGraphText` in `packages/client/src/chrome/keys.ts`). A real Ctrl+Alt chord still
+fires, a symbol key's included (US Ctrl+Alt+[ is Previous Tab). Linux desktops that reserve a
+Ctrl+Alt chord (GNOME opens a terminal on Ctrl+Alt+T) take it before Kelpi sees it; rebind
+`new_tab` there.
+
 Display follows the platform too (`keyTriggerDisplayStringForPlatform`): the §3.3 glyph
 form (`⇧⌘D`) on macOS, `+`-joined text names (`Ctrl+Shift+D`, `MODIFIER_TEXT_NAMES`, in
 `MODIFIER_DISPLAY_ORDER`) elsewhere. The config-file serialization (§3.3 `configString`)
@@ -683,8 +693,14 @@ Legend:
 The tabs of the workspace in the pane area (workspace-feature.md §12, shell-ui.md §3.3), a
 paired daemon's included (section 1.7), not a web pane's,
 which are the `web_tab_*` actions and section 7.3's ⌘T / ⌘⇧[ / ⌘⇧]. All of them are on ⌥⌘
-because those chords, and ⌘1…⌘9, were taken; a web page hands them to the window like its
-other claimed chords.
+because those chords, and ⌘1…⌘9, were taken. A web page hands them to the window like its
+other claimed chords, with one exception: a tab chord the window could not use stays with the
+page, because the shell takes a chord from a page before the window is asked. So ⌥⌘N past the
+last tab, and ⌥⌘[, ⌥⌘] and ⌥⌘W while the workspace has one tab, reach the page (a document
+editor's heading shortcuts, an editor's folding). The window tells its shell how many tabs it
+draws (`window-tabs`, on every connect and every change); the shell greys Close Tab and Show
+Next / Previous Tab with one tab, which also frees their accelerators, and its web relay
+(`shell/src/webhost/keys.ts`, `tabChordNeeds`) hands the rest back.
 
 | raw value | display name | default | layer | condition / effect |
 |---|---|---|---|---|

@@ -57,7 +57,7 @@ The standalone [SDK declarations](../packages/plugin-sdk/chrome.d.ts) define the
 | Field | Meaning |
 | --- | --- |
 | `connection`, `ready` | Primary daemon transport and usable snapshot state. No connection URLs, tokens or raw connection error details. |
-| `workspace`, `focusedPane` | Primary selection, layout, input sync and focused pane identity, directory, branch and agent status. |
+| `workspace`, `focusedPane` | Primary selection, layout, input sync and focused pane identity, directory, branch and agent status. `workspace.tabs` lists the workspace's tabs in bar order (`id`, `title`, `active`, `paneCount`, the busiest `status`, `attention`, `unvisited`, `zoomed`), as the bundled title bar draws them (workspace-feature.md §12); `workspace.paneCount` counts every tab's panes and `workspace.onScreenPaneCount` the tab on screen's. |
 | `sidebars.left/right` | Selected view ID/title and logical visibility on each physical side, including swapped native sidebars. |
 | `sizeControl` | `unclaimed`, `this-window`, or `other-window`; no foreign client identifiers. |
 | `commands` | Current command IDs, labels, enablement, checked state and menu sections. |
@@ -129,6 +129,8 @@ workspace-scoped actions. The host validates current state again when invoked.
 | `kelpi.layout.cycle` | Requires the currently selected `workspaceID`; uses its current focused pane. |
 | `kelpi.layout.select.<layout>` | Same target; layout IDs come from `snapshot.layouts`. |
 | `kelpi.input.toggleSync` | Requires the currently selected `workspaceID`. |
+| `kelpi.tab.new`, `kelpi.tab.close`, `kelpi.tab.next`, `kelpi.tab.previous` | Require the currently selected `workspaceID`. New Tab opens the "A new tab opens" kind; Close Tab (which asks first when the tab holds agents) and the steps are disabled with one tab. |
+| `kelpi.tab.select` | Requires the selected `workspaceID` and a `tabID` from `workspace.tabs`; shows that tab. |
 | `kelpi.sidebar.left`, `kelpi.sidebar.right` | Toggle the view host on that physical side. |
 | `kelpi.inspector.toggle` | Toggle Inspector's native host, wherever placed. |
 | `kelpi.zenMode.toggle` | Enter or leave Zen Mode: hide the toolbar, status bar, bottom panel and both sidebars, or restore the ones Zen Mode hid. Titled "Enter Zen Mode" or "Exit Zen Mode", `checked` while it is on. Always enabled. |
@@ -146,6 +148,10 @@ when `sizeControl === 'other-window'`. The bundled terminal may clip a larger ow
 this gives the user a way to fit their window again. Observe the subsequent ownership update
 before treating the request as effective. Native desktop and phone controls provide this
 route; the desktop chrome API remains unavailable on phone.
+
+The tab commands, like the layout and input ones, act on this window's daemon only: while a
+paired daemon's workspace is selected (`remoteWorkspaceSelected`) they are disabled, and
+`workspace.tabs` still lists the primary selection's tabs.
 
 Layout/input requests await their daemon command reply and reject failures; they never retry
 a mutation. Other commands retain native dispatch semantics: a successful call does not mean

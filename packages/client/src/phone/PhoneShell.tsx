@@ -102,7 +102,7 @@ import { PhonePaneHeader, PhonePaneStrip } from './PhonePaneChrome';
 import { PhoneTabChips } from './PhoneTabChips';
 import { onScreenPanes, workspaceTabViews, type WorkspaceTabView } from '../chrome/workspace-tabs';
 import type { CommandReply } from '../connection/commands';
-import { createWorkspaceTabActions } from '../features/workspace-tabs-actions';
+import { createWorkspaceTabActions, tabCloseOwner, type TabCloseOwner } from '../features/workspace-tabs-actions';
 import { PhonePicker } from './PhonePicker';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
@@ -132,7 +132,7 @@ export interface PhoneShellActions {
      * failed command is reported, and the close-tab gate that asks before closing agents.
      */
     runTabCommand(label: string, command: Promise<CommandReply>): boolean;
-    confirmTabClose(workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean): boolean;
+    confirmTabClose(workspace: WorkspaceState, tabIDs: readonly string[], close: () => boolean, owner?: TabCloseOwner): boolean;
 }
 
 /** The desktop grid's props that are NOT the workspace itself: assembly's bindings pass through. */
@@ -417,7 +417,9 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 activeWorkspace: () => tabWorkspaceRef.current,
                 focusedPaneID: () => tabFocusRef.current,
                 run: actions.runTabCommand,
-                confirmClose: actions.confirmTabClose
+                confirmClose: actions.confirmTabClose,
+                // A paired host's tabs ask under that host's own setting.
+                closeOwner: () => (remoteHost === null || remoteHost === undefined ? undefined : tabCloseOwner(remoteHost.runtime))
             }),
         [remoteHost, props.runtime, actions]
     );
@@ -1090,7 +1092,8 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 />
             )}
 
-            {atLanding || workspace === null ? null : (
+            {/* Out of the way while the keyboard is up, as the strip and the bar are. */}
+            {atLanding || workspace === null || keyboardUp ? null : (
                 <PhoneTabChips
                     tabs={tabViews}
                     onSelect={(tabID) => {

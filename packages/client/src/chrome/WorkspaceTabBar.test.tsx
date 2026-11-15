@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { TAB_SPRING_MS, setTabDropState, setTabSpring, tabSpring } from './tab-drop';
+import { TAB_SPRING_MS, currentTabDragWorkspace, setTabDropState, setTabSpring, tabSpring } from './tab-drop';
 import { TopBar } from './TopBar';
 import { fitTabs, TAB_MIN_WIDTH_PX, WorkspaceTabBar, type WorkspaceTabBarProps } from './WorkspaceTabBar';
 import type { WorkspaceTabView } from './workspace-tabs';
@@ -95,12 +95,45 @@ describe('the tabs', () => {
         expect(screen.queryByTestId('workspace-tab-rename')).toBeNull();
     });
 
+    it('keeps a rename typed into a tab that leaves the bar mid-edit (a workspace switch)', () => {
+        const p = props(TWO);
+        const view = render(<WorkspaceTabBar {...p} />);
+        fireEvent.doubleClick(screen.getByTestId('workspace-tab-workers'));
+        fireEvent.change(screen.getByTestId('workspace-tab-rename'), { target: { value: 'api' } });
+        view.rerender(<WorkspaceTabBar {...p} tabs={[tab('elsewhere', 0)]} />);
+        expect(p.onRename).toHaveBeenCalledExactlyOnceWith('workers', 'api');
+        // Back again, no stale field reopens.
+        view.rerender(<WorkspaceTabBar {...p} />);
+        expect(screen.queryByTestId('workspace-tab-rename')).toBeNull();
+    });
+
     it('opens the tab menu on right-click, Rename Tab… first', () => {
         render(<WorkspaceTabBar {...props(TWO)} />);
         fireEvent.contextMenu(screen.getByTestId('workspace-tab-workers'));
         const items = screen.getAllByRole('menuitem').map((item) => item.textContent);
         expect(items[0]).toContain('Rename Tab…');
         expect(items.some((text) => text?.includes('Close Tab'))).toBe(true);
+    });
+
+    it('opens the tab menu from the keyboard (Shift+F10 or the menu key) on the focused tab', () => {
+        render(<WorkspaceTabBar {...props(TWO)} />);
+        const main = screen.getByTestId('workspace-tab-main');
+        main.focus();
+        fireEvent.keyDown(main, { key: 'F10', shiftKey: true });
+        expect(screen.getAllByRole('menuitem')[0]?.textContent).toContain('Rename Tab…');
+        fireEvent.keyDown(document.activeElement ?? main, { key: 'Escape' });
+        cleanup();
+        render(<WorkspaceTabBar {...props(TWO)} />);
+        const again = screen.getByTestId('workspace-tab-main');
+        again.focus();
+        fireEvent.keyDown(again, { key: 'ContextMenu' });
+        expect(screen.getAllByRole('menuitem').length).toBeGreaterThan(0);
+    });
+
+    it('names a tab with what its dot and badges show, for a screen reader', () => {
+        render(<WorkspaceTabBar {...props([tab('main', 0), tab('workers', 1, { paneCount: 2, status: 'waitingForInput', zoomed: true })])} />);
+        expect(screen.getByRole('tab', { name: 'workers, 2 panes, an agent is waiting for input, zoomed' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'main' })).toBeTruthy();
     });
 
     it('opens a tab from + and offers the kinds on its chevron', () => {
@@ -323,6 +356,32 @@ describe('a tab dropped on a sidebar row', () => {
         }
     });
 
+    it("neither lights up nor moves onto the tabs' own workspace's row", () => {
+        const rows = sidebar();
+        try {
+            const onMoveToWorkspace = vi.fn();
+            render(<WorkspaceTabBar {...props(TWO, { onMoveToWorkspace, workspaceID: 'W-LOCAL' })} />);
+            act(() => {
+                screen.getByTestId('workspace-tab-workers').dispatchEvent(
+                    new MouseEvent('pointerdown', { clientX: 10, clientY: 10, button: 0, buttons: 1, bubbles: true })
+                );
+            });
+            act(() => {
+                window.dispatchEvent(new MouseEvent('pointermove', { clientX: 40, clientY: 10, buttons: 1 }));
+            });
+            act(() => {
+                window.dispatchEvent(new MouseEvent('pointermove', { clientX: 600, clientY: 300, buttons: 1 }));
+            });
+            expect(currentTabDragWorkspace()).toBeNull();
+            act(() => {
+                window.dispatchEvent(new MouseEvent('pointerup', { clientX: 600, clientY: 300 }));
+            });
+            expect(onMoveToWorkspace).not.toHaveBeenCalled();
+        } finally {
+            rows.restore();
+        }
+    });
+
     it("moves a paired daemon's tab onto that daemon's row only", () => {
         const rows = sidebar();
         try {
@@ -423,6 +482,21 @@ describe('a pane held over a tab (spring-loading)', () => {
         // may not show the opened tab yet (its request can still be on the way).
         tabSpring()?.returnHome();
         expect(p.onSelect).toHaveBeenLastCalledWith('main', { force: true });
+    });
+
+    it('sends a spring home to its own workspace when another one is on screen by then', () => {
+        vi.useFakeTimers();
+        const onSelectInWorkspace = vi.fn();
+        const p = props(TWO, { workspaceID: 'W1', onSelectInWorkspace });
+        const view = render(<WorkspaceTabBar {...p} />);
+        hover({ kind: 'tab', tabID: 'workers' });
+        act(() => {
+            vi.advanceTimersByTime(TAB_SPRING_MS);
+        });
+        view.rerender(<WorkspaceTabBar {...p} tabs={[tab('other', 0)]} workspaceID="W2" />);
+        tabSpring()?.returnHome();
+        expect(onSelectInWorkspace).toHaveBeenCalledExactlyOnceWith('W1', 'main');
+        expect(p.onSelect).not.toHaveBeenCalledWith('main', { force: true });
     });
 
     it('starts over when the pointer leaves the tab before the hold is up', () => {

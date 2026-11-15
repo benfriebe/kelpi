@@ -3,6 +3,7 @@ import { armCaretClaim, mayClaimPaneCaret } from '../app/pane-focus';
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import { PluginEventBuffer, type PluginEvent, pluginJSON, pluginObject, pluginRecord, type JsonObject, type PluginPaneDescriptor } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
+import { usePaneInFlight } from '../chrome/tab-drop';
 import { tokens } from '../chrome/tokens';
 import { pluginRequest, usePlugins } from './client';
 import { pluginDocument } from './document';
@@ -88,6 +89,9 @@ export function PluginView(props: PluginViewProps): ReactElement {
      * finds the frame once it is marked as the pane's surface.
      */
     const [frameReady, setFrameReady] = useState(false);
+    // A pane in flight keeps the keyboard in the window's document, where Escape cancels it
+    // (§12): the frame's caret claim waits for the drop.
+    const paneInFlight = usePaneInFlight();
     const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
     const [terminalAttachment, setTerminalAttachment] = useState(0);
@@ -428,7 +432,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
         port.current?.postMessage({ type: 'context', value: { visible: props.visible ?? true, chords: props.visible === false ? [] : props.claimedChords ?? [], ...(props.descriptor ? { state: props.descriptor.state, stateVersion: props.descriptor.stateVersion } : {}) } });
     }, [props.visible, props.claimedChords, props.descriptor]);
     useEffect(() => {
-        if (!props.focused || props.visible === false || !frameReady || !mayClaimPaneCaret()) return;
+        if (!props.focused || props.visible === false || !frameReady || paneInFlight || !mayClaimPaneCaret()) return;
         if (props.browser && browserUserFocus.current) { browserUserFocus.current = false; return; }
         if (props.browser && browserExplicitFocus.current) { browserExplicitFocus.current = false; return; }
         if (props.browser && chromeTextIsFocused(frame.current?.ownerDocument.activeElement)) return;
@@ -439,7 +443,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 void browser.current.action({ type: tab?.url ? 'focus' : 'focusAddress' }).catch(() => {});
             } else { frame.current?.focus(); void terminal.current?.action({ type: 'focus' }).catch(() => {}); }
         });
-    }, [props.focused, props.visible, frameReady, terminalAttachment, props.browser?.available]);
+    }, [props.focused, props.visible, frameReady, paneInFlight, terminalAttachment, props.browser?.available]);
     const problem = unavailable ?? error;
     /*
      * A pane body paints its surface colour so the grid never shows through a loading view. An

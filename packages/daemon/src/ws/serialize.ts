@@ -145,7 +145,9 @@ export function serializeDomainEvent(event: DomainEvent): JsonObject {
                 layout: event.layout as JsonValue,
                 zoomedPaneID: event.zoomedPaneID,
                 savedLayout: event.savedLayout as JsonValue,
-                currentLayoutIndex: event.currentLayoutIndex
+                currentLayoutIndex: event.currentLayoutIndex,
+                ...(event.tabs === undefined ? {} : { tabs: asJson(event.tabs.map((tab) => ({ ...tab }))) }),
+                ...(event.activeTabID === undefined ? {} : { activeTabID: event.activeTabID })
             };
         case 'label-presets-changed':
             return { kind: event.kind, presets: event.presets.map(serializeLabelPreset) };

@@ -159,4 +159,21 @@ export interface PaneHandlerContext
      * test, `pane-move-to-workspace` falls back to the focused pane of the active workspace.
      */
     readonly isPaneAttended?: ((workspaceID: string, paneID: string) => boolean) | undefined;
+    /**
+     * workspace-feature.md §12 / Settings ▸ Workspaces "Panes an agent creates go": where a
+     * BACKGROUND create (an agent's `kelpi pane split`, without `--focus`) puts its pane. Read
+     * per command, like the other settings getters. Unset = `own-tab`, the tab the agent is in.
+     */
+    readonly agentPanePlacement?: (() => 'own-tab' | 'new-tab') | undefined;
+    /** Settings ▸ Workspaces "New tabs go": after the tab on screen, or at the end. Unset = after. */
+    readonly newTabPosition?: (() => 'after-current' | 'end') | undefined;
+    /** Pre-minted workspace tab ids; defaults to `newUUID`. */
+    readonly mintTabID?: (() => string) | undefined;
+    /**
+     * Settings ▸ Workspaces "A new tab opens", for a `workspace-tab-new` naming no kind (the tab
+     * verbs on the control socket, `handlers/pane/tabs.ts`). Unset = a terminal.
+     */
+    readonly newTabOpens?: (() => 'terminal' | 'same' | 'agent') | undefined;
+    /** Start the configured agent in a new tab's terminal. Unset = no agent tabs. */
+    readonly startAgent?: ((paneID: string, workspaceID: string) => void) | undefined;
 }

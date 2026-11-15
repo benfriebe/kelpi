@@ -21,8 +21,9 @@ const documentErrorCodes = ['DOCUMENT_CONFLICT', 'CSV_STALE', 'CSV_GONE', 'CSV_R
 const commandErrorCodes = ['SCREEN_CHANGED'];
 // Built-in command DTOs use snake_case; the public facade uses the same camelCase/ID
 // convention as context and snapshots. Never apply this to arbitrary plugin data/settings.
+// `ids` is `IDs` (`workspace_ids` → `workspaceIDs`), the spelling the typings have always used.
 const camelKey = key => key.replace(/_([a-z]+)(?=_|$)/g, (_, word) =>
-    ['id', 'ids', 'url'].includes(word) ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1));
+    word === 'ids' ? 'IDs' : ['id', 'url'].includes(word) ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1));
 const camel = value => Array.isArray(value) ? value.map(camel) : value !== null && typeof value === 'object'
     ? Object.fromEntries(Object.entries(value).map(([key, item]) => [camelKey(key), camel(item)])) : value;
 const target = value => typeof value === 'string' ? { target: value }
@@ -152,6 +153,43 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         const { ok, ...result } = reply;
         return camel(result);
     };
+    // Workspace tabs (workspace-feature.md §12) by id: a `tabs.list` entry, or `{ workspaceID, tabID }`.
+    // These are the window's verbs, so a missing id is refused here rather than sent.
+    const tabID = (tab, method) => {
+        const id = typeof tab === 'string' ? tab : tab?.tabID ?? tab?.id;
+        if (typeof id !== 'string' || id === '') throw new KelpiError(`${method} requires a tab id`, { code: 'INVALID_ARGUMENT', method });
+        return id;
+    };
+    const tabRef = (tab, method) => {
+        if (typeof tab?.workspaceID !== 'string' || tab.workspaceID === '') throw new KelpiError(`${method} requires the tab's workspaceID`, { code: 'INVALID_ARGUMENT', method });
+        return { workspace_id: tab.workspaceID, tab_id: tabID(tab, method) };
+    };
+    const tabWorkspace = (workspaceID, method) => {
+        const id = workspaceID ?? getContext().workspaceID;
+        if (!id) throw unavailableContext(method);
+        return id;
+    };
+    const tabs = Object.freeze({
+        list: async (options = {}) => list('workspace-tab-list', 'tabs', options.all === true ? { all: true } : clean({ workspace: options.workspaceID ?? getContext().workspaceID })),
+        // As for panes: a new tab, a copy and a moved tab are shown unless the plugin passes
+        // `focus: false`, because a plugin usually acts on a click.
+        create: async (options = {}) => {
+            const workspaceID = tabWorkspace(options.workspaceID, 'workspace-tab-new');
+            const result = await run('workspace-tab-new', { workspace_id: workspaceID, kind: options.kind, url: options.url, index: options.index, focus: options.focus ?? true });
+            if (options.name !== undefined) await done('workspace-tab-rename', { workspace_id: workspaceID, tab_id: result.tabID, name: options.name });
+            return result;
+        },
+        // `async`, so a bad reference rejects like any other failure rather than throwing.
+        select: async tab => run('workspace-tab-select', tabRef(tab, 'workspace-tab-select')),
+        rename: async (tab, name) => run('workspace-tab-rename', { ...tabRef(tab, 'workspace-tab-rename'), name }),
+        move: async (tab, index) => run('workspace-tab-move', { ...tabRef(tab, 'workspace-tab-move'), index }),
+        close: async tab => run('workspace-tab-close', tabRef(tab, 'workspace-tab-close')),
+        closeOthers: async tab => run('workspace-tab-close-others', tabRef(tab, 'workspace-tab-close-others')),
+        duplicate: async (tab, options = {}) => run('workspace-tab-duplicate', { ...tabRef(tab, 'workspace-tab-duplicate'), focus: options.focus ?? true }),
+        merge: async tab => run('workspace-tab-merge-previous', tabRef(tab, 'workspace-tab-merge-previous')),
+        split: async tab => run('workspace-tab-split-panes', tabRef(tab, 'workspace-tab-split-panes')),
+        moveToWorkspace: async (tab, workspaceID, options = {}) => run('workspace-tab-move-to-workspace', { ...tabRef(tab, 'workspace-tab-move-to-workspace'), to_workspace_id: workspaceID, focus: options.focus ?? true }),
+    });
     const panes = Object.freeze({
         list: async (options = {}) => list('pane-list', 'panes', paneListScope(options)),
         // #295: the wire's absent `focus` is a background open (the CLI/agent default). A plugin
@@ -168,6 +206,10 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
         move: (paneID, direction, options = {}) => done('pane-move', { pane_id: paneID, direction, focus: options.focus ?? true }),
         // #298: as create/split above, the view follows the moved pane by default.
         moveToWorkspace: (paneID, workspaceID, options = {}) => done('pane-move-to-workspace', { pane_id: paneID, name: workspaceID, text: options.create ? 'true' : 'false', focus: options.focus ?? true }),
+        // workspace-feature.md §12: into another tab (beside `anchorID` on `zone`, else beside its
+        // focused pane), or out into a new tab of its own. A gesture by default, like the rest.
+        moveToTab: async (paneID, tab, options = {}) => run('pane-move-to-tab', { pane_id: paneID, tab_id: tabID(tab, 'pane-move-to-tab'), target_pane_id: options.anchorID, zone: options.zone, focus: options.focus ?? true }),
+        moveToNewTab: (paneID, options = {}) => run('pane-move-to-new-tab', { pane_id: paneID, index: options.index, focus: options.focus ?? true }),
         reopen: workspaceID => run('reopen-closed-pane', { workspace_id: workspaceID }),
         scratchpad: workspaceID => run('create-scratchpad', { workspace_id: workspaceID }),
     });
@@ -247,6 +289,7 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
             showNotification: (options, to) => prompt('ui.showNotification', options, to),
         }),
         panes,
+        tabs,
         documents: Object.freeze({
             get: (paneID = getContext().paneID) => documentCall('get', { paneID }),
             edit: (paneID, text, revision) => documentCall('edit', { paneID, text, revision }),

@@ -6,6 +6,7 @@
  * keeps the grid renderable from a fixture in tests and reusable by the Electron shell.
  */
 
+import type { TabDropTarget } from '../chrome/tab-drop';
 import type { DropZone, Pane, Rect, SplitDirection } from '@kelpi/core/layout';
 import type { MouseEvent, ReactNode } from 'react';
 
@@ -130,6 +131,8 @@ export interface PaneActions {
     readonly onRestartAgent?: ((paneID: string) => void) | undefined;
     /** New web pane split off this one (shift-click splits down) — shell-ui.md §4.2 item 12. */
     readonly onNewWebPane?: ((paneID: string, direction: SplitDirection) => void) | undefined;
+    /** workspace-feature.md §12: take the pane out into a tab of its own (header and menu). */
+    readonly onMovePaneToNewTab?: ((paneID: string) => void) | undefined;
     /** Right-click on the header; assembly owns the context menu (shell-ui.md §4.2). */
     readonly onPaneContextMenu?: ((paneID: string, event: MouseEvent<HTMLElement>) => void) | undefined;
 }
@@ -146,6 +149,17 @@ export interface GridLayoutCallbacks {
         | undefined;
     /** Header drag-drop → `movePane(paneID, anchorID, zone)`. */
     readonly onMovePane?: ((paneID: string, anchorID: string, zone: DropZone) => void) | undefined;
+    /**
+     * workspace-feature.md §12: a pane dropped on the title bar's tabs (`chrome/tab-drop.ts`),
+     * into a tab or into a new tab at a bar position. Absent, the bar is not a drop target.
+     */
+    readonly onMovePaneToTab?: ((paneID: string, target: TabDropTarget) => void) | undefined;
+    /**
+     * A pane press crossed the drag threshold. The window takes its keyboard back from a web
+     * page here, so Escape reaches the drag (a press on a web pane's header has just given the
+     * page the keyboard).
+     */
+    readonly onPaneDragStart?: ((paneID: string) => void) | undefined;
     /**
      * The focus-dwell timer expired for a pane whose status is non-idle: the daemon-side
      * `clearPaneStatus` mutation happens upstream (agent-lifecycle.md §5.8).

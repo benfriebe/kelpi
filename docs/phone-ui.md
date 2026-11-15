@@ -11,11 +11,13 @@ window never mounts any of it. The code is `packages/client/src/phone/`, assembl
 | --- | --- | --- |
 | Home | Needs you (or All clear, or "Can't reach any host"), a pager with a card per host, and the workspaces of the host the pager is on as tiles | `PhoneHome.tsx` |
 | Pane | The pane's header (name, status, view toggle, actions), the pane itself, the key bar for a terminal, the strip (pane pager, reply chips, attention pill) and the location bar | `PhoneShell.tsx`, `PhonePaneChrome.tsx` |
+| Tab chips | Once the workspace has a second tab, a row of chips under the pane header, one per tab in bar order with its status dot, then a +; a tap shows that tab (workspace-feature.md §12) and the pane follows the daemon's focus into it, + opens a new tab (the host's "A new tab opens"), and a long press opens the tab sheet. Every tab verb goes over the connection of the host on screen, the origin or a paired one (`createWorkspaceTabActions` per host). The row scrolls the tab on screen into view, steps aside while the software keyboard is up (as the strip and the bar do), and keeps + beside the `tablist` rather than in it | `PhoneTabChips.tsx` |
+| Tab sheet | A chip's long press (or right-click): Rename tab (the one-field prompt), Duplicate tab, Move to workspace (that host's other workspaces), Close tab (asks first when the tab holds agents, the desktop's close-tab gate) | `PhoneShell.tsx`, `PhoneMenuSheet.tsx`, `PhonePromptSheet.tsx` |
 | Location bar | `host › workspace › pane` at the bottom; each segment opens the picker at its level. On Home: the host and Jump to… | `PhoneLocationBar.tsx` |
 | Picker | One card above the bar with three levels: Hosts (with Scan code, Paste URL, Notifications, Settings), Workspaces (groups fold as the daemon has them; New workspace), Panes (New pane: Terminal, Claude, Codex, Web, Scratch, Diff, and any plugin pane views) | `PhonePicker.tsx` |
 | Needs you | Every waiting agent, grouped by host, filterable by host, with Running folded at the foot | `PhoneNeedsYouSheet.tsx` |
 | Jump to… | Find a workspace or pane on any host by name | `PhoneJumpSheet.tsx` |
-| Pane actions | New terminal, Rename, Sync input, Take size control, Command palette, Settings, Close pane | `PhoneMenuSheet.tsx` |
+| Pane actions | New terminal, New tab (the way to a second tab, before the chips appear), Rename, Sync input, Take size control, Command palette, Settings, Close pane | `PhoneMenuSheet.tsx` |
 | Add host | Paste a pairing URL or scan the Mac's pairing code | `PhoneHostSheet.tsx`, `PhoneQrScanSheet.tsx` |
 | Notifications | Turn push on or off for this phone, each host's registration, Send a test notification | `PhoneNotificationsSheet.tsx` |
 

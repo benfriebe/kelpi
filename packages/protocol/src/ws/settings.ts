@@ -196,6 +196,15 @@ export interface WsGeneralSettings {
      * starts checked (send the prompt on the launch line, rather than prefill it). CLIENT-side.
      */
     readonly newWorkspaceSendPrompt: boolean;
+    /**
+     * workspace-feature.md §12's tab rules, all three read by the DAEMON (it opens the tab):
+     * `new-tab-opens` (what ⌥⌘T and + open), `new-tab-position` (after the tab on screen, or
+     * at the end) and `agent-pane-placement` (an agent's background pane joins its tab, or
+     * gets a new one). Absent from an older daemon: the client shows the shipped defaults.
+     */
+    readonly newTabOpens: 'terminal' | 'same' | 'agent';
+    readonly newTabPosition: 'after-current' | 'end';
+    readonly agentPanePlacement: 'own-tab' | 'new-tab';
 }
 
 /**
@@ -501,7 +510,10 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         agentClaudeCommand: 'claude',
         agentCodexCommand: 'codex',
         newWorkspaceAgent: 'none',
-        newWorkspaceSendPrompt: false
+        newWorkspaceSendPrompt: false,
+        newTabOpens: 'terminal',
+        newTabPosition: 'after-current',
+        agentPanePlacement: 'own-tab'
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -645,7 +657,11 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'agent-claude-command',
     'agent-codex-command',
     'new-workspace-agent',
-    'new-workspace-send-prompt'
+    'new-workspace-send-prompt',
+    // workspace-feature.md §12: Settings ▸ Workspaces ▸ Tabs. Placement rules only, no new power.
+    'new-tab-opens',
+    'new-tab-position',
+    'agent-pane-placement'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

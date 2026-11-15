@@ -149,7 +149,10 @@ export {
     TRAFFIC_LIGHT_INSET_PARAM,
     WINDOW_TRANSPARENT_PARAM,
     readShellWindowID,
+    readFullScreen,
     readTrafficLightInset,
+    WINDOW_FULLSCREEN_OFF_COMMAND,
+    WINDOW_FULLSCREEN_ON_COMMAND,
     readWindowTransparent
 } from './shell-window';
 

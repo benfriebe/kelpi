@@ -12,7 +12,8 @@ This inventory describes bundled chrome and native pane behavior. The
 [browser](plugin-browser.md) contracts allow replacement views while Kelpi retains native
 session ownership and recovery. [Custom plugin panes](plugins.md) participate in the same grid.
 
-Where the behavior lives: the client chrome in `packages/client/src/chrome/` (TopBar, Sidebar,
+Where the behavior lives: the client chrome in `packages/client/src/chrome/` (TopBar,
+WorkspaceTabBar, Sidebar,
 sidebar-model, SidebarResizer, Inspector, CommandPalette, palette, StatusFooter, HelpOverlay,
 ContextMenu, NewWorkspaceSheet, QuitConfirmDialog, theme, presets, icons), the pane grid in
 `packages/client/src/grid/` (PaneGrid, PaneHeader, FocusRing, PaneSearchOverlay, divider,
@@ -34,7 +35,8 @@ on the right; either sidebar can host either feature or a compatible plugin:
 ┌──────────────────────────────────────────────────────────┐
 │ WindowTitleBar (32 high, custom-drawn, traffic lights    │
 │ float over its left edge; sidebar toggle + ••• menu      │
-│ follow them; inspector toggle at its right edge)         │
+│ follow them, then the workspace's tabs; inspector        │
+│ toggle at its right edge)                                │
 ├──────────┬───────────────────────────────┬───────────────┤
 │ Sidebar  │ Pane grid (active workspace)  │ Inspector     │
 │ (optional│                               │ (optional,    │
@@ -304,6 +306,17 @@ Custom 32pt-high bar drawn as content at the very top (the shell creates the win
 no native bar to hide).
 Background = `theme.footerBackground` with a 1px bottom divider.
 
+Left to right: the leading controls (§3.2), then the tabs of the workspace that fills the pane
+area (§3.3), this daemon's or a paired daemon's, then the trailing controls (§3.2). With no
+workspace the centred identity cluster (§3.1) stands where the tabs would be.
+
+**Drag & double-click:** empty bar area drags the window; double-click in the strip
+(excluding the two gutter insets) performs the user's OS "double-click title bar"
+preference: Zoom (default), Minimize, or nothing. What counts as empty bar beside the tabs
+is in §3.3.
+
+### 3.1 Identity cluster
+
 **Identity cluster** (perfectly centered, non-interactive — clicks fall through to the
 drag region):
 
@@ -321,9 +334,7 @@ drag region):
   name truncates before it runs under the traffic lights or the controls. The 80pt
   traffic-light gutter is only the bar's left padding.
 
-**Drag & double-click:** empty bar area drags the window; double-click in the strip
-(excluding the two gutter insets) performs the user's OS "double-click title bar"
-preference — Zoom (default), Minimize, or nothing.
+### 3.2 Leading and trailing controls
 
 **Leading controls** (after the traffic-light gutter, clickable;
 `packages/client/src/chrome/TopBar.tsx:279-325`):
@@ -350,15 +361,154 @@ Both are tinted `textSecondary`, 13pt, 14pt apart.
 - Inspector-toggle button (mirror glyph of the sidebar toggle), tooltip "Toggle inspector
   (⌘I)", last so it sits the same 12pt from the window edge as the sidebar toggle does.
 
+### 3.3 Workspace tabs
+
+The tabs of the workspace that fills the pane area (workspace-feature.md §12), drawn by
+`WorkspaceTabBar` (`packages/client/src/chrome/WorkspaceTabBar.tsx`) from one view per tab
+(`chrome/workspace-tabs.ts`) and placed by `TopBar.tsx`. Every gesture is a WS verb
+(socket-handlers.md §4.17) and nothing is optimistic, so every window shows the daemon's tabs.
+
+**A paired daemon's workspace** (config-keybindings.md §1.7): while one fills the pane area the
+bar draws its tabs, read from that daemon's own mirror, and every tab gesture goes over that
+daemon's connection (`packages/client/src/app/remote-tabs.ts`): the bar, the tab menu, the native
+menu rows, the palette and the tab chords, which pass the window dispatcher even though its pane
+chords stand down there. None of them reaches the hidden local workspace. A tab dragged onto a
+sidebar row moves only onto that daemon's own rows (its section of the sidebar, marked
+`data-remote-daemon`), over its connection; this window's rows and another daemon's take no
+drop and do not light up, since a tab cannot change machine. A refused verb toasts only from
+the window's own controls: the bar, the tab menu, the native menu rows, the palette and the
+chords report it as a local one does, while a pane dropped from the paired daemon's grid (onto
+a tab, or its header's Move to New Tab) fails quietly, like that grid's other commands. A
+paired daemon always has tabs: its connection is the same handshake as this daemon's, and one
+that predates tabs speaks WS generation 3 and is refused (wire-protocol.md, generation 4), so
+no control here needs to ask.
+
+**Layout:**
+
+- The leading controls get a section of their own that ends in a full-height separator
+  (`divider` color). While the sidebar is shown on the left, that section is exactly the
+  sidebar's width, so the separator continues the sidebar's edge and the first tab starts where
+  the first pane does; with the sidebar hidden or on the right it is as wide as its controls.
+- The tabs follow, 2pt apart, then `+` and its chevron. A tab is 24pt tall in the 32pt bar and
+  between 100 and 220pt wide (`TAB_MIN_WIDTH_PX`, `TAB_MAX_WIDTH_PX`), shrinking toward the
+  minimum as tabs are added.
+- The bar after `+` is empty space, and at least 56pt of it (`TAB_BAR_DRAG_GAP_PX`) always
+  comes before the trailing controls, so the window can be grabbed however many tabs there are.
+- **Overflow:** the tabs that no longer fit at the minimum width fold into a `+N` button after
+  the last one, whose dot is the busiest hidden tab's status (waiting, then running, then
+  idle). Its menu lists the hidden tabs by title, the first nine with their ⌥⌘N, and shows the
+  one picked. The tab on screen is never folded: it takes the last visible place instead.
+
+**A tab**, left to right:
+
+- **Status dot** (7pt): its busiest pane, `statusWaiting` over `statusRunning` over
+  `statusInactive`. A background tab with a pane waiting for input, in a workspace that is not
+  muted, needs **attention**: the dot gains a halo (`statusWaiting` @ 0.28) and the title turns
+  `textPrimary` semibold. A tab opened in the background and not yet shown (an agent's, under
+  `agent-pane-placement = new-tab`) is **unvisited**: a hollow ring instead of the dot, and an
+  italic title.
+- **Kind glyph** (12pt, 75% opacity) of the pane the tab is named after, its focused pane:
+  terminal, agent (a shell with an agent session), globe, document, note (scratchpad) or image.
+- **Title**, tail-truncated: the tab's name, else that pane's label, else for a shell the
+  agent's kind or the last component of its title (else of its directory), for a web pane its
+  active web tab's title, otherwise what the pane's header shows.
+- **Split count**: with two or more panes in the tab, a layout glyph and the count in
+  `textTertiary`, tooltip "N panes in this tab".
+- **ZOOM** badge while a pane of the tab is zoomed.
+- While ⌥⌘ is held, the first nine tabs show `⌥⌘1`…`⌥⌘9`.
+- **×** (tooltip "Close Tab (⌥⌘W)"): always on the tab on screen, on another tab while the
+  pointer is over it, and on no tab while the workspace has only one.
+
+The tab on screen has an accent @ 0.2 fill and a 1px inset accent @ 0.75 ring; the others are
+transparent until hovered.
+
+**`+` and its menu:** `+` (tooltip "New Tab (⌥⌘T)") opens what `new-tab-opens` names, where
+`new-tab-position` puts it (config-keybindings.md §1.2). The chevron beside it opens New
+Terminal Tab, New Agent Tab, New Web Tab, New Scratchpad Tab, a divider and Move Focused Pane to
+New Tab (disabled while the tab on screen holds one pane).
+
+**Gestures on a tab:**
+
+- Click shows it; middle-click closes it (never the only tab).
+- Double-click renames it in place: a field holding its name, selected (empty, with the title
+  as placeholder, while it is named after its pane). Enter or a blur keeps the trimmed text, an
+  empty one naming the tab after its pane again; Escape cancels.
+- Right-click opens the tab menu: Rename Tab…, New Tab to the Right, Duplicate Tab (a copy just
+  after it: the same layout, with new panes of the same kinds), a divider, Give Each Pane
+  Its Own Tab (disabled with one pane), Merge Into Previous Tab (disabled on the first tab),
+  Move Tab to Workspace ▸ (the other workspaces in sidebar order; disabled when there are none),
+  a divider, Close Tab and Close Other Tabs (both disabled while there is one tab).
+- Drag (4pt) reorders: the tab dims to 55% and a 2pt accent bar marks where it will land.
+  Released over a workspace row in the sidebar, the tab moves there with its panes and becomes
+  that workspace's tab on screen. The row lights up while the tab is over it, and only the rows
+  of the tab's own daemon take it (`rowDaemon`, `chrome/tab-drop.ts` `TabDragWorkspace`).
+- The strip is a `tablist` in which only the tab on screen takes keyboard focus: ← / → show the
+  previous / next tab (wrapping), Home / End the first / last, F2 renames the tab on screen,
+  and Shift+F10 or the menu key opens the focused tab's menu, which takes the keyboard. A tab
+  focused from the keyboard draws the window's focus ring (a press never focuses a tab). Its
+  accessible name carries what the dot and badges show: pane count, an agent waiting or
+  running, zoomed.
+- A tab dragged over its own workspace's row does not light it up: dropping there does nothing.
+
+**Drag region:** a tab opts out of the window's drag region whole, its padding included
+(`[role='tab']` in the no-drag list of `packages/client/src/styles.css`), as do `+`, the chevron
+and `+N`, which are buttons. The 4pt above and below each tab, the gaps between tabs and the
+empty bar after `+` still drag the window. While a pane or a tab is being dragged the bar sets
+`data-titlebar-drag='false'` and is no drag region at all, so the whole bar can take the drop
+and the OS never reads the release as a title-bar drag.
+
+**A pane dropped on the bar:** a pane dragged by its header (§4.3) can be released on the bar
+(`packages/client/src/chrome/tab-drop.ts`, `grid/PaneGrid.tsx`); while it is over the bar the
+grid draws no drop zone of its own.
+
+- On a tab: the pane moves into that tab, to the right of its focused pane, and the tab is
+  shown. The target tab is drawn with an accent @ 0.14 fill and a dashed accent outline.
+- Within 8pt of a tab's side edge (`TAB_EDGE_SLOT_PX`): the pane gets a new tab at that
+  position, marked by the accent bar.
+- On the "Drop here for a new tab" slot, a dashed box that takes the bar's empty space while a
+  pane is in flight: the pane gets a new tab at the end.
+
+A pane alone in its tab, dropped between tabs, moves its tab there instead.
+
+**Spring-loading:** a pane held over a tab that is not on screen for 600ms (`TAB_SPRING_MS`,
+`chrome/tab-drop.ts`) opens that tab, and the drag goes on in its grid. The tab fills with an
+accent @ 0.22 wash from the left over the hold (a static wash under reduced motion), and moving
+off it starts over. Released beside a pane of the opened tab, the pane goes in at that drop zone
+(`pane-move-to-tab` with `target_pane_id` and `zone`); released anywhere else over the grid, it
+goes into that tab beside its focused pane; released on the bar, the bar's rules above apply.
+Escape, a release outside the grid and the bar, a release on the button of the tab the drag
+started in, or the window losing the pointer (`chrome/gesture-reset.ts`) show the tab the drag
+started in again and move nothing. Neither the tab on screen, the gaps between tabs nor the
+new-tab slot springs. Escape cancels any pane drag, sprung or not.
+
+**Fullscreen:** a fullscreen window has no traffic lights, so the page keeps no gutter for them
+and the leading controls start 12pt from the edge, tabs or not. The shell adds `&fullscreen=1`
+when it loads the page into a window that is already fullscreen, and relays
+`window-fullscreen-on` / `window-fullscreen-off` whenever the window enters or leaves
+fullscreen, and again when its status socket reconnects (`packages/shell/src/titlebar.ts`,
+`packages/shell/src/main.ts`).
+
+**Elsewhere:** the sidebar row counts a workspace's tabs (§5.3); the pane header and its menu
+offer Move to New Tab (§4.2); the keyboard has ⌥⌘T, ⌥⌘W, ⌥⌘[ / ⌥⌘], ⇧⌥⌘T and ⌥⌘1…⌥⌘9
+(config-keybindings.md §4 "Tabs"), the File and View menus carry all of them but ⌥⌘1…⌥⌘9,
+and the command palette offers New Tab, New Agent Tab, New Web Tab, Close Tab, Duplicate Tab and
+Move Pane to New Tab (§7). The phone shell shows the same tabs as a row of chips under the pane header once there
+are two (`packages/client/src/phone/PhoneTabChips.tsx`): status dot with the attention halo,
+title, and the pane count when there is more than one; a tap shows that tab, on a remote
+daemon's workspace through that daemon.
+
 ---
 
 ## 4. Pane grid
 
-Renders the active workspace's `PaneLayout` tree as absolutely-positioned pane views plus
-divider handles, computed mathematically from the tree (`paneFrames` / `splitDividers` in
+Renders the active workspace's tab on screen (§3.3): its `PaneLayout` tree as
+absolutely-positioned pane views plus divider handles, computed mathematically from the tree (`paneFrames` / `splitDividers` in
 `packages/core/src/layout/frames.ts`). Pane view identity is stable across layout changes, 
 panes are only moved/resized, never re-created (critical for keeping terminal state alive:
 the DOM nodes stay stable across layout mutations, `packages/client/src/grid/PaneGrid.tsx`).
+The grid is handed only that tab's panes (`onScreenPanes`, `chrome/workspace-tabs.ts`), although
+the workspace holds every tab's: a background tab's panes are unmounted, exactly as another
+workspace's are, and come back with their tab.
 
 - Divider thickness: **2pt**.
 - Empty layout state: centered terminal glyph (36pt faint), "No panes", and a
@@ -437,7 +587,7 @@ Left-to-right contents:
    - diff → `"diff: <basename of filePath, or of workingDirectory if no filePath>"`
    - shell/web → `pane.title ?? pane.workingDirectory`, home-abbreviated (`~/…`)
    - plugin → `pane.label ?? pane.title ?? "Plugin view"`
-4. **ZOOM badge** (only when the workspace is zoomed AND has >1 pane): orange badge
+4. **ZOOM badge** (only when the workspace is zoomed AND its tab on screen has >1 pane): orange badge
    (expand icon + "ZOOM", 10pt mono, orange @ 0.12 fill); clicking it un-zooms.
    Tooltip "Toggle zoom".
 5. **SYNC badges** (synchronise-input, workspace-level flag):
@@ -468,6 +618,9 @@ Left-to-right contents:
      refresh token, re-running `git diff`.
    - csv: **edit toggle** relabelled "Raw text (⌘E)" / "Table (⌘E)" (disabled over the 2 MiB
      raw limit, tooltip says why) and a **header-row toggle** (csv-pane.md §6.8).
+   - any pane, only while its tab holds other panes: **move to new tab** (tooltip "Move to new
+     tab (⇧⌥⌘T)", `pane-chrome/model.ts`) → takes the pane out into a tab of its own, just after
+     this one, and shows it (§3.3). Drawn last of these, just before Split right.
 10. **Split right** (2×1 rect icon, tooltip "Split right (⌘D)").
 11. **Split down** (1×2 rect icon, tooltip "Split down (⌘⇧D)").
 12. **New web pane** (globe icon, tooltip "New web pane (⇧-click splits down)") — click
@@ -481,7 +634,7 @@ text floor. Below that, `badgeFit` computes the width left after the fixed chrom
 badges in order: git branch first (the footer and inspector both show it), then the agent
 badge (the status dot already carries it), then the label chip. Below that again,
 `headerOverflowCount` folds trailing buttons from the ✕ inward (globe, split-down,
-split-right, then the per-type buttons; never the ✕, and never just one, because a lone fold
+split-right, then move to new tab and the per-type buttons; never the ✕, and never just one, because a lone fold
 saves nothing) into a `•••` overflow menu whose rows carry the same labels and chords.
 Widening the pane un-folds the row and closes an open overflow menu.
 
@@ -511,8 +664,10 @@ Status ▸  Idle / Running / Awaiting Input   (current gets a checkmark;
 ──────────                    (web panes only; packages/client/src/App.tsx:3420-3432)
 Element Pickup                (arms the web pane's element picker)
 Toggle Developer Tools        (disabled outside the Electron shell)
-──────────                    (only when other workspaces exist)
-Move to Workspace ▸  <workspace names>       (fire-and-forget move)
+──────────
+Move to New Tab               (disabled while the pane is alone in its tab; §3.3)
+Move to Workspace ▸  <workspace names>       (only when other workspaces exist;
+                                             fire-and-forget move)
 ──────────                    (only while workspace sync is active)
 Include in Sync | Exclude from Sync          (toggles this pane's membership)
 ──────────
@@ -596,6 +751,8 @@ covers the owner's path.
 - On release over a valid zone → `movePane(paneID, targetPaneID, zone)`: the reducer
   re-parents the dragged pane adjacent to the target (zone → before/after in a
   horizontal/vertical split). Release over nothing → no-op.
+- Over the title bar's tabs the bar is the target instead, and the grid shows no zone: a
+  release there moves the pane into a tab or out into a new one (§3.3).
 
 ### 4.4 Divider drag & resize overlay
 
@@ -776,6 +933,10 @@ from the left (applied outside the background so the selection ring indents too)
   the row like anywhere else. It is a `shrink-0` sibling on the row's one line, never a
   second line, so the row height is unchanged. Remote rows show their own daemon's answer.
   `packages/client/src/chrome/PullRequestGlyph.tsx`.
+- **Tab count** (Kelpi addition, workspace-feature.md §12): once the workspace has two or more
+  tabs, a stack glyph and the count (10pt monospace, tertiary) between the muted bell and the
+  ⌘N badge, tooltip "N tabs" (`data-testid="workspace-tab-count-<id>"`,
+  `packages/client/src/chrome/Sidebar.tsx`). With one tab, nothing.
 - **Backgrounds** (rounded 7):
   - selected (multi-select): `selectionFill` fill + `selectionStroke` @ 0.7 1px outline.
   - active: `selectionFill` @ 0.7 fill + `selectionStroke` 1.5px outline (drawn on top
@@ -789,6 +950,7 @@ Row interactions:
 - Shift-click → range select from the anchor over `visibleWorkspaceOrder`.
 - Right-click → context menu (§5.6).
 - Drag (≥5pt) → reorder / regroup (§5.5).
+- A title-bar tab dragged onto the row and released → the tab moves to this workspace (§3.3).
 
 ### 5.4 Group header row
 
@@ -1192,18 +1354,23 @@ Structure:
 **Item universe** (rebuilt from state on every read):
 
 - One item per workspace: icon `rectangle.stack`, title = name, subtitle = "N pane(s)".
-- One item per pane (in layout order): icon per type (terminal/doc/note/±/globe);
+- One item per pane of the workspace, every tab's, tab by tab in layout order
+  (`workspacePaneOrder`): picking a background tab's pane shows its tab (workspace-feature.md
+  §12.3). Icon per type (terminal/doc/note/±/globe);
   title = `label ?? title ?? cwd(~)`; subtitle = the terminal title when a distinct label
   exists, the cwd when only a label exists, else empty.
 - Then one **command** item per client verb (`PaletteItem.kind = "command"`,
   `packages/client/src/chrome/palette.ts:26-47`, `:101`; built by `paletteCommand(...)` in
   `packages/client/src/App.tsx:4926-4945`), appended after the state-derived items, each with
-  an optional shortcut hint (`⌘…`) when the binding map covers its action. One of them,
-  right after New Workspace, is titled by the active workspace's state: "Mute Workspace
-  Notifications" or "Unmute Workspace Notifications" (agent-lifecycle.md §7.6). Its id names
-  that state too (`cmd:mute-workspace` / `cmd:unmute-workspace`) and it sends the explicit
-  state, so a row picked after the state changed is refused as unavailable rather than doing
-  the opposite of its title.
+  an optional shortcut hint (`⌘…`) when the binding map covers its action. New Workspace is
+  followed by the workspace tab commands (§3.3): New Tab, New Agent Tab, New Web Tab, Close
+  Tab, Duplicate Tab, Move Pane to New Tab, then the tab menu's rows for the tab on screen
+  (Close Other Tabs, Merge Into Previous Tab, Give Each Pane Its Own Tab, and one Move Tab to
+  <workspace> row per other workspace of the tab's daemon). The next one is titled by the active workspace's state: "Mute
+  Workspace Notifications" or "Unmute Workspace Notifications" (agent-lifecycle.md §7.6). Its
+  id names that state too (`cmd:mute-workspace` / `cmd:unmute-workspace`) and it sends the
+  explicit state, so a row picked after the state changed is refused as unavailable rather
+  than doing the opposite of its title.
 
 **Filtering** (substring, not fuzzy):
 
@@ -2036,6 +2203,15 @@ interface CommandPaletteItem {   // PaletteItem, packages/client/src/chrome/pale
 }
 
 interface ChromeStatusSummary { running: number; waiting: number; inactive: number }
+
+interface WorkspaceTabView {   // one title-bar tab (§3.3), packages/client/src/chrome/workspace-tabs.ts
+  id: string; index: number;            // 0-based; ⌥⌘1-9 count from 1
+  title: string; named: boolean;        // named = the user gave it a name
+  kind: "terminal" | "agent" | "web" | "document" | "scratchpad" | "image";
+  status: PaneStatus;                   // the busiest pane: waiting > running > idle
+  paneCount: number; paneIDs: UUID[]; active: boolean;
+  attention: boolean; unvisited: boolean; zoomed: boolean;
+}
 
 interface StatusBarItem {   // status-bar count popover rows (§8)
   workspaceName: string; workspaceColor: WorkspaceColor;

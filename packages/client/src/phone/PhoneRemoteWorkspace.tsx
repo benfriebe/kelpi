@@ -14,10 +14,10 @@ import { ImagePane } from '../content/ImagePane';
  * reports, so the report names exactly the pane on screen.
  */
 
-import { useEffect, type ReactElement } from 'react';
+import { useEffect, useRef, type ReactElement } from 'react';
 import { useStore } from 'zustand';
 
-import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
+import { activeTabIDOf, layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
 
 import { RemoteWorkspaceView } from '../app/RemoteWorkspaceView';
 import { remoteDefaultFontSize } from '../app/text-size';
@@ -62,6 +62,16 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
         if (mode !== 'pane' || workspace === undefined) return;
         runtime.activateWorkspace(workspaceID, shownPaneID === null ? [] : [shownPaneID]);
     }, [runtime, workspaceID, mode, workspace !== undefined, shownPaneID]);
+    // workspace-feature.md §12.6: where this client is follows the tab on screen, record-only
+    // (`layout` mode's report is `RemoteWorkspaceView`'s).
+    const focusKey = mode !== 'pane' || workspace === undefined ? null : `${workspaceID}#${activeTabIDOf(workspace)}`;
+    const reportedFocus = useRef<string | null>(null);
+    useEffect(() => {
+        if (focusKey === null || reportedFocus.current === focusKey) return;
+        reportedFocus.current = focusKey;
+        const current = runtime.store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID);
+        if (current !== undefined) runtime.reportObservedFocus(workspaceID, current.focusedPaneID);
+    }, [focusKey, runtime, workspaceID]);
 
     if (mode === 'layout') {
         return <RemoteWorkspaceView daemonName={props.hostName} runtime={runtime} workspaceID={workspaceID} />;

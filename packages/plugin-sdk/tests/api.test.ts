@@ -313,6 +313,51 @@ describe('public SDK over Kelpi command handlers', () => {
      * #307 / #298: the same rule for the helpers that create a workspace, move a pane to another
      * one, open a diff or open a view: a gesture by default, `focus: false` for code without one.
      */
+    it('sends the window\'s tab verbs by id, shows by default, and refuses a tab without its workspace', async () => {
+        const T1 = testID('F', 1);
+        const calls: { method: string; args: JsonObject }[] = [];
+        const transport: HostCall = async (method, args) => {
+            calls.push({ method, args: args as JsonObject });
+            const command = (args as { payload?: { command?: string } }).payload?.command;
+            if (command === 'workspace-tab-list') return { ok: true, tabs: [{ id: T1, number: 1, workspace_id: W1, pane_ids: [P1], is_active: true }] };
+            return { ok: true, workspace_id: W1, tab_id: T1, pane_id: P1, kind: 'terminal' };
+        };
+        const api = createKelpiAPI(transport, () => ({ workspaceID: W1, paneID: P1 }));
+        const payload = () => calls.at(-1)?.args['payload'] as JsonObject;
+        const [tab] = await api.tabs.list();
+        expect(payload()).toEqual({ command: 'workspace-tab-list', workspace: W1 });
+        expect(tab).toEqual({ id: T1, number: 1, workspaceID: W1, paneIDs: [P1], isActive: true });
+        await api.tabs.list({ all: true });
+        expect(payload()).toEqual({ command: 'workspace-tab-list', all: true });
+        const created = await api.tabs.create({ kind: 'web', url: 'example.com', name: 'docs' });
+        expect(created).toMatchObject({ workspaceID: W1, tabID: T1 });
+        expect(calls.at(-2)?.args['payload']).toEqual({ command: 'workspace-tab-new', workspace_id: W1, kind: 'web', url: 'example.com', focus: true });
+        expect(payload()).toEqual({ command: 'workspace-tab-rename', workspace_id: W1, tab_id: T1, name: 'docs' });
+        await api.tabs.duplicate(tab!, { focus: false });
+        expect(payload()).toEqual({ command: 'workspace-tab-duplicate', workspace_id: W1, tab_id: T1, focus: false });
+        await api.tabs.moveToWorkspace({ workspaceID: W1, tabID: T1 }, W2);
+        expect(payload()).toEqual({ command: 'workspace-tab-move-to-workspace', workspace_id: W1, tab_id: T1, to_workspace_id: W2, focus: true });
+        await api.panes.moveToTab(P1, tab!, { anchorID: P1, zone: 'below' });
+        expect(payload()).toEqual({ command: 'pane-move-to-tab', pane_id: P1, tab_id: T1, target_pane_id: P1, zone: 'below', focus: true });
+        await api.panes.moveToNewTab(P1, { focus: false });
+        expect(payload()).toEqual({ command: 'pane-move-to-new-tab', pane_id: P1, focus: false });
+        // `index` goes through as given: the daemon reads it as a position, or as a drop slot
+        // for a pane alone in its tab (domain.d.ts says which).
+        await api.panes.moveToNewTab(P1, { index: 2 });
+        expect(payload()).toEqual({ command: 'pane-move-to-new-tab', pane_id: P1, index: 2, focus: true });
+        const sent = calls.length;
+        await expect(api.tabs.select({ tabID: T1 } as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+        expect(calls).toHaveLength(sent);
+    });
+
+    it('resolves a merge with the tab it went into, naming the merged one', async () => {
+        const T1 = testID('F', 1);
+        const T2 = testID('F', 2);
+        const transport: HostCall = async () => ({ ok: true, workspace_id: W1, tab_id: T1, merged_tab_id: T2 });
+        const api = createKelpiAPI(transport, () => ({ workspaceID: W1, paneID: P1 }));
+        expect(await api.tabs.merge({ workspaceID: W1, tabID: T2 })).toEqual({ workspaceID: W1, tabID: T1, mergedTabID: T2 });
+    });
+
     it('workspace, move-to-workspace, diff and view helpers focus by default and pass focus:false through', async () => {
         const calls: { method: string; args: JsonObject }[] = [];
         const transport: HostCall = async (method, args) => {

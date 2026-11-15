@@ -84,6 +84,11 @@ export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'ic
      * same reason as `profileName`; absent reads as none.
      */
     readonly pullRequests?: readonly WorkspacePullRequest[] | undefined;
+    /**
+     * workspace-feature.md §12: the workspace's tabs; the row counts them once there are two.
+     * Optional for the same reason as `profileName`; absent reads as one tab.
+     */
+    readonly tabs?: readonly unknown[] | undefined;
 };
 
 /**

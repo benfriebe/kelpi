@@ -31,7 +31,8 @@ function fixture() {
         plugins: { menu: vi.fn(() => []), items: vi.fn(() => []), runItem: vi.fn(() => true) } as unknown as ChromeFeatureHost['plugins'],
         keymap: { sections: [], plugins: [], withheld: 0 }, toggleSidebar: vi.fn(), toggleInspector: vi.fn(),
         arrangement: DEFAULT_ARRANGEMENT, bottomPanelAvailable: false, toggleBand: vi.fn(), toggleZenMode: vi.fn(), resetArrangement: vi.fn(),
-        openSettings: vi.fn(), openHelp: vi.fn(), openPalette: vi.fn(), shellAction: vi.fn(), restartControlServer: vi.fn(), restartUI: vi.fn(), selectPane: vi.fn()
+        openSettings: vi.fn(), openHelp: vi.fn(), openPalette: vi.fn(), shellAction: vi.fn(), restartControlServer: vi.fn(), restartUI: vi.fn(), selectPane: vi.fn(),
+        tabs: { newTab: vi.fn(() => true), closeActiveTab: vi.fn(() => true), selectTabStep: vi.fn(() => true), selectTab: vi.fn(() => true) }
     };
     return { daemon, store, sync, runtime, commands, host, source: createChromeFeatureSource(host), remote(value: boolean) { remote = value; } };
 }
@@ -78,6 +79,29 @@ describe('shared toolbar and status feature contracts', () => {
         // Disabled means refused, like every other command.
         expect(() => h.source.execute('kelpi.panel.bottom.toggle', {})).toThrow('disabled');
     });
+    it('gives a replacement toolbar the workspace\'s tabs and the commands that drive them (§12)', async () => {
+        const h = fixture();
+        h.daemon.dispatch({
+            type: 'create-tab', workspaceID: 'one', tabID: 'tab-two', focus: false,
+            create: { type: 'create-pane', workspaceID: 'one', paneID: 'pane-one-b', now: 1 }
+        });
+        h.sync();
+        const workspace = h.source.snapshot().workspace;
+        expect(workspace?.tabs.map((tab) => [tab.id, tab.active, tab.paneCount])).toEqual([['one', true, 1], ['tab-two', false, 1]]);
+        expect(workspace?.paneCount).toBe(2);
+        expect(workspace?.onScreenPaneCount).toBe(1);
+        const command = (id: string) => h.source.snapshot().commands.find((entry) => entry.id === id);
+        expect(command('kelpi.tab.close')?.enabled).toBe(true);
+        await h.source.execute('kelpi.tab.select', { workspaceID: 'one', tabID: 'tab-two' });
+        expect(h.host.tabs.selectTab).toHaveBeenCalledExactlyOnceWith('tab-two');
+        await h.source.execute('kelpi.tab.next', { workspaceID: 'one' });
+        expect(h.host.tabs.selectTabStep).toHaveBeenCalledExactlyOnceWith(1);
+        expect(() => h.source.execute('kelpi.tab.select', { workspaceID: 'one', tabID: 'nope' })).toThrow('tabID');
+        // A paired daemon's workspace selected: the chrome is this daemon's, so its tab commands stand down.
+        h.remote(true);
+        expect(command('kelpi.tab.new')?.enabled).toBe(false);
+    });
+
     it('rejects stale workspace actions, disconnected mutations, unknown commands and remote selection', async () => {
         const h = fixture(), model = createPluginChrome(h.source);
         const before = model.getChrome(); expect(before.workspace?.id).toBe('one');

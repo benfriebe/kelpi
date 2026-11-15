@@ -221,6 +221,15 @@ describe('CommandClient RPC', () => {
             split_path: 'd',
             ratio: 0.42
         });
+        // …and with the tab the divider was drawn in, when the caller knows it.
+        void h.client.setSplitRatioAtPath({ workspaceID: 'W1', splitPath: 'd', ratio: 0.42, tabID: 'T2' });
+        expect(h.lastCommand()).toEqual({
+            command: 'set-split-ratio',
+            workspace_id: 'W1',
+            tab_id: 'T2',
+            split_path: 'd',
+            ratio: 0.42
+        });
 
         void h.client.moveWorkspace({ workspace: 'dev' });
         // `group` omitted entirely = "move to top level"; never sent as null.
@@ -343,7 +352,26 @@ describe('CommandClient reports', () => {
         const socket = h.socket();
         expect(reports(socket, 'visibility-report')).toHaveLength(1);
         expect(reports(socket, 'focus-report')).toHaveLength(1);
-        expect(reports(socket, 'focus-report')[0]).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: PANE });
+        // Marked as a replay: the daemon records it but moves nobody's focus (§12.6).
+        expect(reports(socket, 'focus-report')[0]).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: PANE, replay: true });
+    });
+
+    it('marks focus this client only observed (a tab it now shows) record-only, so it moves nobody', () => {
+        const h = harness();
+        h.client.reportFocus('W1', PANE, { force: true, observed: true });
+        h.client.reportFocus('W1', null);
+        expect(reports(h.socket(), 'focus-report')).toEqual([
+            { type: 'focus-report', workspaceID: 'W1', paneID: PANE, replay: true },
+            { type: 'focus-report', workspaceID: 'W1', paneID: null }
+        ]);
+    });
+
+    it('sends a live report after a reconnect unmarked', () => {
+        const h = harness();
+        h.client.reportFocus('W1', PANE);
+        h.redial();
+        h.client.reportFocus('W1', null);
+        expect(reports(h.socket(), 'focus-report').at(-1)).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: null });
     });
 });
 

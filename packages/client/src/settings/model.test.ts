@@ -21,12 +21,13 @@ import {
 } from './model';
 
 describe('the keybinding table', () => {
-    it('renders §13.1’s eight sections in order, every row labelled', () => {
+    it('renders §13.1’s nine sections in order, every row labelled', () => {
         const sections = keybindingSections(DEFAULT_KEYBINDINGS);
         expect(sections.map((section) => section.category)).toEqual([
             'Pane Management',
             'Navigation',
             'Workspaces',
+            'Tabs',
             'View',
             'Files',
             'Search',
@@ -34,7 +35,7 @@ describe('the keybinding table', () => {
             'Terminal'
         ]);
         const rows = sections.flatMap((section) => section.rows);
-        expect(rows).toHaveLength(55);
+        expect(rows).toHaveLength(69);
         expect(rows.every((row) => row.label.length > 0)).toBe(true);
     });
 

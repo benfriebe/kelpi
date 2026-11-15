@@ -46,6 +46,27 @@
  * focus change is the shell's own answer to a click (`shell/webhost/view-focus.ts` §N29), so
  * the case this module was written for is untouched.
  *
+ * ## The blur into a child frame
+ *
+ * A plugin view is an `<iframe>` in this document (`plugins/PluginView.tsx`), and giving it the
+ * caret (`frame.focus()`, its pane claim) also fires `blur` on this `window`: the keyboard went
+ * one frame down, not out of the app, and by the time the `blur` is dispatched this document's
+ * active element is that frame (measured in the shell's renderer). Such a blur ends no gesture.
+ * It cannot hide a real one: once the keyboard is inside a frame this window has already
+ * blurred, so leaving the app from there blurs the frame's window, not this one, and a Space
+ * switch still arrives as the document going hidden. Springing a dragged pane into a tab whose
+ * focused pane is a plugin view used to cancel the drag the moment the view took the caret, and
+ * pressing an unfocused plugin pane's header cancelled the move it had just armed. A native web
+ * view is not a frame of this document: its handoff keeps its own prediction above.
+ *
+ * ## Escape belongs to a gesture in flight
+ *
+ * A drag listens for Escape on `window` itself, but the window's key dispatcher was installed
+ * first, so it saw the key first and ran Escape's binding too (`close_search`, or clearing a
+ * sidebar selection) on the same press that cancelled the drag. {@link holdEscape} is the seam:
+ * a gesture that is live holds Escape, and the dispatcher hands the key to it
+ * ({@link cancelHeldGesture}) before anything else.
+ *
  * A reset is not a cancel: each gesture decides what ending early means. Both of today's
  * callers COMMIT what the user has already dragged to, because a gesture that vanishes should
  * leave the divider (or the sidebar edge) where the user last saw it, not snap it back.
@@ -80,7 +101,14 @@ let ownHandoffUntil = 0;
 /** The clock, as a seam: the unit tests drive it rather than sleeping. */
 let now: () => number = () => Date.now();
 
+/** The keyboard went into a frame of this document (a plugin view), not out of the window. */
+function focusWentIntoChildFrame(): boolean {
+    if (typeof document === 'undefined' || typeof HTMLIFrameElement === 'undefined') return false;
+    return document.activeElement instanceof HTMLIFrameElement;
+}
+
 function onBlur(): void {
+    if (focusWentIntoChildFrame()) return;
     if (ownHandoffUntil > now()) {
         // One handoff, one blur: consumed here so the NEXT blur is read normally even if it
         // arrives inside the same window.
@@ -181,4 +209,27 @@ export function registeredGestureCount(): number {
 export function setGestureResetClock(clock: (() => number) | null): void {
     now = clock ?? (() => Date.now());
     ownHandoffUntil = 0;
+}
+
+/** Live gestures' cancels, the latest last: Escape cancels the one that started last. */
+const escapeHolds: Array<() => void> = [];
+
+/**
+ * A gesture that is live takes Escape (see the module note). Returns the release, which the
+ * gesture runs whenever it ends; it is safe to run twice.
+ */
+export function holdEscape(cancel: () => void): () => void {
+    escapeHolds.push(cancel);
+    return () => {
+        const at = escapeHolds.indexOf(cancel);
+        if (at >= 0) escapeHolds.splice(at, 1);
+    };
+}
+
+/** Escape was pressed: cancel the live gesture, if there is one. True when one was cancelled. */
+export function cancelHeldGesture(): boolean {
+    const cancel = escapeHolds.at(-1);
+    if (cancel === undefined) return false;
+    cancel();
+    return true;
 }

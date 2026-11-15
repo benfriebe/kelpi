@@ -236,6 +236,23 @@ describe('reopen-closed-pane / create-scratchpad / reveal-path over the socket',
         expect(calls[0]?.command).toBe('create-scratchpad');
     });
 
+    it('answers a tab verb that waits once it settles, and a rejected one with an error', async () => {
+        const run = (command: string): JsonObject | Promise<JsonObject> =>
+            command === 'workspace-tab-duplicate'
+                ? Promise.resolve({ ok: true, tab_id: 'COPY' })
+                : Promise.reject(new Error('lsof went away'));
+        const channel: PaneLifecycleChannel = { run: run as PaneLifecycleChannel['run'] };
+        const f = fixture({ panes: channel });
+        const { session, transport } = f.connect();
+        expect(await askAsync(session, transport, { command: 'workspace-tab-duplicate', workspace_id: W1, tab_id: W1 })).toEqual({
+            ok: true,
+            tab_id: 'COPY'
+        });
+        expect(await askAsync(session, transport, { command: 'workspace-tab-new', workspace_id: W1, kind: 'same' })).toMatchObject({
+            ok: false
+        });
+    });
+
     it('turns a throwing channel into an error reply rather than a dropped RPC', () => {
         const channel: PaneLifecycleChannel = {
             run() {

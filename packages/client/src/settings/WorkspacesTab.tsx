@@ -6,7 +6,7 @@
  * those live in the Swift app's UserDefaults with no config-file key and no daemon equivalent
  * yet, so only the two that write through `set-general-setting` are here:
  *
- *   - **Confirm before deleting a workspace with active agents** — `confirm-workspace-delete`.
+ *   - **Confirm before deleting a workspace or closing a tab with active agents**: `confirm-workspace-delete`.
  *     shell-ui.md's port note is explicit that the suppression settings must move into the
  *     daemon settings store "so Settings UI and dialogs stay in sync across clients", and the
  *     daemon's settings store is the config file. The CLI's `--force` is independent of it, as

@@ -25,10 +25,14 @@ import { usePluginCommands } from '../plugins/commands';
  * the pane's links are resolved on this window's daemon, which answers `pane not found`.
  */
 
-import { useEffect, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
 import { wireEdgeForDropZone } from '@kelpi/core/layout';
+import { activeTabIDOf, onScreenPaneIDs } from '@kelpi/daemon/store';
+import { visiblePaneIDs } from '../terminal/mount-policy';
+import { onScreenPanes } from '../chrome/workspace-tabs';
+import { createWorkspaceTabActions } from '../features/workspace-tabs-actions';
 
 import { tokens } from '../chrome/tokens';
 import { PaneGrid } from '../grid';
@@ -80,12 +84,54 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
      * starts from, never reached this window.
      */
     const defaultFontSize = useStore(runtime.store, remoteDefaultFontSize);
+    /*
+     * workspace-feature.md §12: a pane dragged onto the title bar's tabs, which are this
+     * daemon's while its workspace fills the pane area (`app/remote-tabs.ts`), moves through
+     * this daemon's own verbs. The window's toasts are not reachable from here; a refusal shows
+     * as the pane staying where it was, as `movePaneAdjacent` below already does. No capability
+     * check is needed: this connection made the same WS handshake as the window's own, so a
+     * daemon from before tabs (generation 3) was refused before any of this could draw.
+     */
+    const tabActions = useMemo(
+        () =>
+            createWorkspaceTabActions({
+                commands: runtime.commands,
+                activeWorkspace: () => runtime.store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID) ?? null,
+                focusedPaneID: () => null,
+                run: () => true
+            }),
+        [runtime, workspaceID]
+    );
 
     // The remote daemon fans PTY bytes out by what this connection REPORTS it is showing —
     // the same activation contract the primary window keeps.
     useEffect(() => {
         if (workspace !== undefined) runtime.activateWorkspace(workspaceID);
     }, [runtime, workspaceID, workspace !== undefined]);
+
+    /*
+     * workspace-feature.md §12: App's two report effects, for this daemon's connection. A tab
+     * switch (or a zoom, a split) changes what is on screen, and the daemon reads its suppression
+     * and PTY fan-out from the set this connection reports; and its record of where this client
+     * is follows the tab on screen, sent record-only so it can move nobody (§12.6).
+     */
+    const present = workspace !== undefined;
+    const visibleKey =
+        workspace === undefined
+            ? ''
+            : visiblePaneIDs({ paneOrder: onScreenPaneIDs(workspace), zoomedPaneID: workspace.zoomedPaneID, workspaceActive: true }).join(',');
+    useEffect(() => {
+        if (!present) return;
+        runtime.reportVisiblePanes(workspaceID, visibleKey.length === 0 ? [] : visibleKey.split(','));
+    }, [runtime, workspaceID, visibleKey, present]);
+    const focusKey = workspace === undefined ? null : `${workspaceID}#${activeTabIDOf(workspace)}`;
+    const reportedFocus = useRef<string | null>(null);
+    useEffect(() => {
+        if (focusKey === null || reportedFocus.current === focusKey) return;
+        reportedFocus.current = focusKey;
+        const current = runtime.store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID);
+        if (current !== undefined) runtime.reportObservedFocus(workspaceID, current.focusedPaneID);
+    }, [focusKey, runtime, workspaceID]);
 
     if (workspace === undefined) {
         return (
@@ -160,7 +206,8 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             focusFollowsMouse={general.focusFollowsMouse}
             focusFollowsMouseDelayMs={general.focusFollowsMouseDelay}
             layout={workspace.layout}
-            panes={workspace.panes}
+            // workspace-feature.md §12: the remote workspace's tab on screen, as the local grid.
+            panes={onScreenPanes(workspace)}
             focusedPaneID={focusedPaneID}
             zoomedPaneID={workspace.zoomedPaneID ?? null}
             /* Sync input is the remote daemon's own standing state, mirrored like the layout:
@@ -204,6 +251,12 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                     zone: wireEdgeForDropZone(zone)
                 })
             }
+            onMovePaneToNewTab={(paneID) => {
+                tabActions.movePaneToNewTab(paneID);
+            }}
+            onMovePaneToTab={(paneID, target) => {
+                tabActions.movePaneOntoTab(paneID, target);
+            }}
             /* The empty-layout "New Pane" affordance, same swallow if left unwired. */
             onCreatePane={() => void runtime.commands.createPane({ workspace: workspaceID })}
             onSetRatio={(splitPath, ratio, commit) => {
@@ -215,7 +268,12 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 // socket, so the verb reaches it exactly as `toggleZoom` above does. Dropping the
                 // commit here made the divider preview and snap back on release (#54).
                 if (commit.paneID === null) {
-                    void runtime.commands.setSplitRatioAtPath({ workspaceID, splitPath, ratio });
+                    void runtime.commands.setSplitRatioAtPath({
+                        workspaceID,
+                        splitPath,
+                        ratio,
+                        ...(workspace === null ? {} : { tabID: activeTabIDOf(workspace) })
+                    });
                     return;
                 }
                 void runtime.commands.setSplitRatio(commit.paneID, commit.share);

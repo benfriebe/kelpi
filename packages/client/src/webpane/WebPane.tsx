@@ -33,6 +33,7 @@ import {
     type ReactElement
 } from 'react';
 
+import { usePaneInFlight } from '../chrome/tab-drop';
 import { pill, tokens } from '../grid/tokens';
 import { BatchPanel } from './BatchPanel';
 import type { WebPaneCommands } from './commands';
@@ -810,6 +811,9 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * keyboard in this renderer — §N19/§N20's divergence, one pane type further on.
      */
     const wasFocused = useRef(false);
+    // A pane in flight (§12, a drag that sprang into this pane's tab) keeps the keyboard in this
+    // document so Escape can still cancel it: the claim waits for the drop, gain unspent.
+    const paneInFlight = usePaneInFlight();
     const liveTabID = active?.id ?? null;
     /**
      * WEB-002's half of the rule, and the reason a mount is not simply "always claim": a pane
@@ -854,6 +858,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         }
         // The gain has already been spent — on a claim, or on a guard that stands.
         if (wasFocused.current) return;
+        if (paneInFlight) return;
         // Not claimable YET — a browser client with no native view, no tab, or a tab that is
         // still blank (WEB-002 owns that caret). Stay armed and re-decide when that changes.
         if (!embedded || liveTabID === null || blankTab) return;
@@ -866,7 +871,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         }
         wasFocused.current = true;
         void commands.focusView(paneID, liveTabID);
-    }, [focused, embedded, liveTabID, blankTab, commands, paneID]);
+    }, [focused, embedded, liveTabID, blankTab, commands, paneID, paneInFlight]);
 
     /**
      * Issue #32 - and the pane that LOSES focus lets go of its chrome caret.

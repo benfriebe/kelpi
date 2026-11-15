@@ -10,7 +10,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { resetIO, setIO } from './io.js';
 import { stableStringify } from './json.js';
-import { collapseHome, printCookiesTable, printGroupTable, printPaneTable, printTabsTable, printWorkspaceTable, shortUUID } from './table.js';
+import {
+    collapseHome,
+    printCookiesTable,
+    printGroupTable,
+    printPaneTable,
+    printTabsTable,
+    printWorkspaceTabTable,
+    printWorkspaceTable,
+    shortUUID
+} from './table.js';
 
 function capture(run: () => void): string[] {
     const lines: string[] = [];
@@ -101,6 +110,66 @@ describe('printWorkspaceTable', () => {
         expect(lines[0]).toBe('ID             NAME    GROUP  PARENT  PANES  ACTIVE  LABELS');
         expect(lines[1]).toBe('9C2B9A2E…6666  boss    -      -       1      ●       -');
         expect(lines[2]).toBe('0A1B2C3D…E8F9  worker  -      boss    1      -       -');
+    });
+});
+
+describe('workspace tabs in the tables (workspace-feature.md §12)', () => {
+    const pane = (id: string, workspace: string, tab?: { number: number; active: boolean }) => ({
+        id,
+        type: 'shell',
+        workspace_name: workspace,
+        status: 'idle',
+        working_directory: '/tmp',
+        ...(tab === undefined ? {} : { tab_number: tab.number, is_active_tab: tab.active })
+    });
+
+    it('adds a TAB column to the pane table only once some workspace has a second tab', () => {
+        const plain = capture(() => printPaneTable([pane(PANE_A, 'alpha')], false, '/Users/me'));
+        expect(plain[0]).toBe('ID                                    LABEL  TYPE   WORKSPACE  STATUS  SESSION  CWD');
+        const tabbed = capture(() =>
+            printPaneTable([pane(PANE_A, 'alpha', { number: 1, active: true }), pane(PANE_B, 'alpha', { number: 2, active: false }), pane(PANE_A, 'beta')], false, '/Users/me')
+        );
+        expect(tabbed[0]).toBe('ID                                    LABEL  TYPE   WORKSPACE  TAB  STATUS  SESSION  CWD');
+        expect(tabbed.slice(1).map((line) => line.split(/\s+/)[4])).toEqual(['1*', '2', '-']);
+    });
+
+    it('adds a TABS column to the workspace table only once some workspace has a second tab', () => {
+        const row = (name: string, tabs?: number) => ({ id: PANE_A, name, pane_count: 3, is_active: false, labels: [], ...(tabs === undefined ? {} : { tab_count: tabs }) });
+        expect(capture(() => printWorkspaceTable([row('alpha')], false))[0]).toBe('ID             NAME   GROUP  PANES  ACTIVE  LABELS');
+        const lines = capture(() => printWorkspaceTable([row('alpha', 3), row('beta')], false));
+        expect(lines[0]).toBe('ID             NAME   GROUP  PANES  TABS  ACTIVE  LABELS');
+        expect(lines.slice(1).map((line) => line.split(/\s+/)[4])).toEqual(['3', '1']);
+    });
+
+    it('keeps --no-header columns fixed, tabs or not, so a positional parser never shifts', () => {
+        const tabbedPanes = capture(() => printPaneTable([pane(PANE_A, 'alpha', { number: 2, active: true })], true, '/Users/me'));
+        const plainPanes = capture(() => printPaneTable([pane(PANE_A, 'alpha')], true, '/Users/me'));
+        expect(tabbedPanes[0]?.split(/\s+/)).toEqual(plainPanes[0]?.split(/\s+/));
+        expect(tabbedPanes[0]?.split(/\s+/)[4]).toBe('idle');
+        const row = { id: PANE_A, name: 'alpha', pane_count: 3, is_active: false, labels: [] };
+        const tabbedWorkspaces = capture(() => printWorkspaceTable([{ ...row, tab_count: 3 }], true));
+        const plainWorkspaces = capture(() => printWorkspaceTable([row], true));
+        expect(tabbedWorkspaces).toEqual(plainWorkspaces);
+        expect(plainWorkspaces[0]?.split(/\s+/).slice(1)).toEqual(['alpha', '-', '3', '-', '-']);
+    });
+
+    it('lists tabs number first, the one on screen marked, the full id last', () => {
+        const tab = (number: number, title: string, active: boolean, workspace = 'alpha') => ({
+            id: number === 1 ? PANE_A : PANE_B,
+            number,
+            title,
+            pane_count: number,
+            is_active: active,
+            status: 'idle',
+            workspace_name: workspace
+        });
+        expect(capture(() => printWorkspaceTabTable([tab(1, 'zsh', true), tab(2, 'build', false)], false, false))).toEqual([
+            'TAB  ACTIVE  TITLE  PANES  STATUS  ID',
+            `1    ●       zsh    1      idle    ${PANE_A}`,
+            `2    -       build  2      idle    ${PANE_B}`
+        ]);
+        // --all leads with the workspace; --no-header sizes the columns from the rows alone.
+        expect(capture(() => printWorkspaceTabTable([tab(1, 'zsh', true, 'ops')], true, true))).toEqual([`ops  1  ●  zsh  1  idle  ${PANE_A}`]);
     });
 });
 

@@ -113,7 +113,9 @@ describe('LAY-061: dragging a divider no pane can address', () => {
 
         const sent = h.commands().filter((command) => command['command'] === 'set-split-ratio');
         expect(sent.length).toBeGreaterThan(0);
-        expect(sent.at(-1)).toMatchObject({ workspace_id: W1, split_path: 'd' });
+        // Named with the tab it was drawn in (workspace-feature.md §12.6): the first tab's id is
+        // the workspace's own.
+        expect(sent.at(-1)).toMatchObject({ workspace_id: W1, tab_id: W1, split_path: 'd' });
         expect(sent.at(-1)?.['ratio']).toBeCloseTo((399 + 60) / 798, 6);
         // …and it is NOT spelled as a pane resize, which could only have named the wrong split.
         expect(h.commands().some((command) => command['command'] === 'pane-resize')).toBe(false);

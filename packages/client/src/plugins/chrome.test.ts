@@ -6,7 +6,7 @@ import { createWindowFeed } from './window-feed';
 
 export function chromeSnapshot(name = 'Workspace'): ChromeSnapshot {
     return { connection: 'connected', ready: true, remoteWorkspaceSelected: false,
-        workspace: { id: 'workspace', name, color: 'blue', paneCount: 2, layout: 'tiled', syncInputActive: false, syncedPaneCount: 2 },
+        workspace: { id: 'workspace', name, color: 'blue', paneCount: 2, onScreenPaneCount: 2, layout: 'tiled', syncInputActive: false, syncedPaneCount: 2, tabs: [] },
         focusedPane: null, sidebars: { left: { viewID: 'kelpi.workspaces', title: 'Workspaces', visible: true }, right: { viewID: 'kelpi.inspector', title: 'Inspector', visible: false } },
         sizeControl: 'this-window', layouts: [], commands: [], agents: { running: 0, waiting: 0, muted: 0, inactive: 0 }, agentPanes: [], git: null, systemStats: null, items: [],
         keymap: { sections: [], plugins: [], withheld: 0 } };

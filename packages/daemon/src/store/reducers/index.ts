@@ -3,6 +3,10 @@
  *
  * The `satisfies Record<DomainActionType, ActionFamily>` on the routing table is the exhaustive
  * check: adding an action to the union without routing it is a compile error.
+ *
+ * Every dispatch also passes through the workspace-tab layer (workspace-feature.md §12): a pane
+ * action aimed at a pane in a background tab runs in that tab (`routeThroughTabs`), and the tab
+ * invariants are restored on every workspace the dispatch touched.
  */
 
 import type { DaemonState, DomainAction, DomainActionType } from '../types.js';
@@ -10,10 +14,11 @@ import { reduceAgentAction } from './agent.js';
 import { reduceGroupAction } from './groups.js';
 import { reduceLayoutAction } from './layout.js';
 import { reducePaneAction } from './panes.js';
+import { normalizeTouchedWorkspaces, reduceTabAction, routeThroughTabs, type TabAction } from './tabs.js';
 import { reduceWebAction } from './web.js';
 import { reduceWorkspaceAction } from './workspaces.js';
 
-type ActionFamily = 'root' | 'workspace' | 'group' | 'pane' | 'layout' | 'agent' | 'web';
+type ActionFamily = 'root' | 'workspace' | 'group' | 'pane' | 'tab' | 'layout' | 'agent' | 'web';
 
 const ROUTES = {
     'replace-state': 'root',
@@ -101,6 +106,19 @@ const ROUTES = {
     'set-terminal-font-size': 'pane',
     'set-scratchpad-wrap': 'pane',
 
+    'create-tab': 'tab',
+    'select-tab': 'tab',
+    'rename-tab': 'tab',
+    'move-tab': 'tab',
+    'move-pane-to-new-tab': 'tab',
+    'move-pane-to-tab': 'tab',
+    'split-tab-panes': 'tab',
+    'merge-tab-into-previous': 'tab',
+    'move-tab-to-workspace': 'tab',
+    'close-tab': 'tab',
+    'close-other-tabs': 'tab',
+    'duplicate-tab': 'tab',
+
     'cycle-layout': 'layout',
     'select-layout': 'layout',
     'toggle-zoom': 'layout',
@@ -123,6 +141,10 @@ const ROUTES = {
 } as const satisfies Record<DomainActionType, ActionFamily>;
 
 export function reduce(state: DaemonState, action: DomainAction): DaemonState {
+    return normalizeTouchedWorkspaces(state, routeThroughTabs(state, action, reduceFamily));
+}
+
+function reduceFamily(state: DaemonState, action: DomainAction): DaemonState {
     switch (ROUTES[action.type] as ActionFamily) {
         case 'root':
             return action.type === 'replace-state' ? action.state : state;
@@ -132,6 +154,8 @@ export function reduce(state: DaemonState, action: DomainAction): DaemonState {
             return reduceGroupAction(state, action);
         case 'pane':
             return reducePaneAction(state, action);
+        case 'tab':
+            return reduceTabAction(state, action as TabAction, reduceFamily);
         case 'layout':
             return reduceLayoutAction(state, action);
         case 'agent':

@@ -93,8 +93,8 @@ Read/write tolerances (`packages/daemon/src/db/codec.ts`):
 | `name`          | TEXT    | no   |         | display name |
 | `slug`          | TEXT    | no*  | `''`    | filesystem-safe slug (see §6.3). *Added in v3 with default `''`; loader regenerates when empty. |
 | `color`         | TEXT    | no   |         | `WorkspaceColor` raw value: one of `red, orange, yellow, green, blue, purple, pink, gray, black, white`. Unknown value on load falls back to `blue`. |
-| `layoutJSON`    | TEXT    | no   |         | JSON-encoded `PaneLayout` tree (§3.1). Undecodable → treated as `empty` on load. |
-| `focusedPaneID` | TEXT    | yes  |         | UUID of focused pane; NULL allowed; invalid UUID → nil on load |
+| `layoutJSON`    | TEXT    | no   |         | JSON-encoded `PaneLayout` tree (§3.1) of the tab on screen; the other tabs' trees are in `tabsJSON`. Undecodable → treated as `empty` on load. |
+| `focusedPaneID` | TEXT    | yes  |         | UUID of the focused pane of the tab on screen; NULL allowed; invalid UUID → nil on load, and one the restored tree does not hold → that tree's first pane (§6.2 step 1) |
 | `createdAt`     | DOUBLE  | no   |         | epoch seconds |
 | `lastAccessedAt`| DOUBLE  | no   |         | epoch seconds; bumped when the workspace is activated |
 | `sortOrder`     | INTEGER | no   | 0       | index in the app's flat workspace array at save time. Load orders by this column. |
@@ -105,6 +105,8 @@ Read/write tolerances (`packages/daemon/src/db/codec.ts`):
 | `childOrderJSON`| TEXT    | yes  |         | Kelpi-only (v26). JSON array of the UUIDs nested under this workspace, in sidebar order (app-state-core.md §2.9). NULL (written when there are none), absent (a pre-v26 row) or undecodable → none. |
 | `childrenCollapsed` | BOOLEAN | no | 0     | Kelpi-only (v26). 1 = the nested workspaces are hidden behind the parent's chevron. NULL or absent reads as expanded. |
 | `status`        | TEXT    | no   | `'idle'`| Kelpi-only (v27). The row menu's hand-set Status (agent-lifecycle.md §5.10), in `pane.status`'s vocabulary and encoding. Unknown, NULL or absent (a pre-v27 row) → `idle`. Unlike `pane.status` it is NOT reset on load. |
+| `tabsJSON`      | TEXT    | yes  |         | Kelpi-only (v28). JSON array of the workspace's tabs in bar order, the one on screen included (§3.6; workspace-feature.md §12). Written for every workspace, a single tab too, since a tab's name and unvisited flag live nowhere else. NULL or absent (a pre-v28 row, or a row an older daemon saved), empty or undecodable → one tab holding `layoutJSON`. |
+| `activeTabID`   | TEXT    | yes  |         | Kelpi-only (v28). UUID of the tab on screen, whose tree is `layoutJSON`. NULL exactly when `tabsJSON` is; one that names no entry of `tabsJSON` reads as one tab holding `layoutJSON`, as a NULL does. |
 
 Note: there is **no group membership column**. A workspace belongs to a group iff its UUID
 appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears in the
@@ -219,7 +221,7 @@ Kelpi keeps under the same name (`packages/daemon/src/db/schema.ts:22`):
 CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-One row per applied migration identifier (`"v1_initial"` … `"v24_pane_terminal_font_size"`). On
+One row per applied migration identifier (`"v1_initial"` … `"v28_workspace_tabs"`). On
 startup, any registered migration whose identifier is not present is run, in registration
 order, each in its own transaction together with its ledger row (`INSERT OR IGNORE`, so a
 failure can never record an unapplied step); identifiers already present are skipped
@@ -280,8 +282,10 @@ An empty workspace stores `{"empty":{}}`. A single pane stores
 `{"leaf":{"_0":"<UUID>"}}`.
 
 **Load fallback**: if `layoutJSON` fails to decode (any parse error), the layout becomes
-`empty`. The loader does NOT reconcile the layout against the pane rows — a layout referencing
-a pane that has no row, or a pane row absent from the layout, is loaded as-is.
+`empty`. Since workspace tabs (v28) the loader reconciles every tree against the pane rows
+(`restoreTabs`, `packages/daemon/src/store/snapshot.ts`; §6.2 step 1): a leaf naming a pane that
+has no row is dropped from the tree, and a pane row that no tree holds goes into a tab rather
+than staying invisible.
 
 ### 3.2 UUID arrays and `topLevelOrder`
 
@@ -331,16 +335,50 @@ fallback (workspace: first-letter avatar; group: color-tinted folder glyph).
 Plain JSON array of strings: `["frontend","wip"]`. App-level invariants (not DB-enforced):
 labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 
+### 3.6 `workspace.tabsJSON`
+
+Kelpi-only (v28; workspace-feature.md §12). One entry per tab, in bar order
+(`encodeWorkspaceTabsJSON` / `parseWorkspaceTabsJSON`, `packages/core/src/codec/json-columns.ts`):
+
+```ts
+interface WorkspaceTabRecord {
+  id: string;                  // tab UUID; a workspace's first tab has the workspace's own id
+  name: string | null;         // null = named after its focused pane
+  layout: PaneLayout;          // the tab's UN-ZOOMED tree, in §3.1's shape
+  focusedPaneID: string | null;
+  seen: boolean;               // false = opened in the background and never shown yet
+}
+```
+
+```json
+[{"id":"11111111-…","name":null,"layout":{"leaf":{"_0":"5F0C…"}},"focusedPaneID":"5F0C…","seen":true},
+ {"id":"AAAAAAAA-…","name":"tests","layout":{"split":{"_0":"vertical","ratio":0.5,
+   "first":{"leaf":{"_0":"71AB…"}},"second":{"leaf":{"_0":"9C3D…"}}}},
+  "focusedPaneID":"9C3D…","seen":false}]
+```
+
+Decoding is per entry, unlike the Swift arrays above (this column has no Swift counterpart to
+stay byte-compatible with): an entry whose `id` is not a UUID, whose `name` is neither a string
+nor null, whose `layout` does not decode or whose `focusedPaneID` is not a UUID is skipped, and the
+panes only it held land in the recovered tab (§6.2 step 1). One bad name never costs the other
+tabs their trees and order. A column that is absent, NULL or not an array reads as one tab
+holding `layoutJSON`. Every id the daemon writes is a UUID, the recovered tab's included (it is
+derived from the workspace id, `recoveredTabID` in `store/snapshot.ts`, so a second boot recovers
+to the same id). An absent
+`name` or `focusedPaneID` reads as null, an empty `name` as null, and `seen` is false only when
+the entry says `false`. The tab on screen's entry carries its tree too, but the load takes that
+tab's tree from `layoutJSON` (§6.2 step 1).
+
 ---
 
 ## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 27 in total: the 18 shared
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 28 in total: the 18 shared
 with the legacy app plus `v19_pane_agent_profile`, `v20_plugin_panes`,
 `v21_workspace_muted`, `v22_workspace_group_repo`, `v23_pane_csv_header_row`,
-`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap`, `v26_workspace_nesting` and
-`v27_workspace_status`. From v3 onward, every
+`v24_pane_terminal_font_size`, `v25_pane_scratchpad_wrap`, `v26_workspace_nesting`,
+`v27_workspace_status` and `v28_workspace_tabs`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -379,6 +417,7 @@ migration idempotent regardless of ledger drift.
 | `v25_pane_scratchpad_wrap` | `pane` + `scratchpadWrap BOOLEAN NOT NULL DEFAULT 0` (§2.2). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing scratchpad reads back unwrapped, as it drew before; an older daemon's explicit-column INSERT leaves the default, so a downgrade turns each scratchpad's wrap off the first time it saves. |
 | `v26_workspace_nesting` | `workspace` + `childOrderJSON TEXT` and `childrenCollapsed BOOLEAN NOT NULL DEFAULT 0` (§2.1), guarded per column. Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`). Additive, so no new database generation: every existing workspace reads back with nothing nested, expanded. An older daemon ignores both columns and its sidebar does not show nested workspaces (app-state-core.md §2.9, Downgrade); its save rewrites every row with the defaults, so the nesting is lost once it saves, and a newer daemon's boot repair then places those workspaces at the top level. |
 | `v27_workspace_status` | `workspace` + `status TEXT NOT NULL DEFAULT 'idle'` (§2.1). Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`) and guarded. Additive, so no new database generation: every existing workspace reads back idle; an older daemon's explicit-column INSERT leaves the default, so a downgrade clears every workspace's status the first time it saves. |
+| `v28_workspace_tabs` | `workspace` + `tabsJSON TEXT` and `activeTabID TEXT` (both nullable, §2.1, §3.6), guarded per column. Kelpi-only (in `DAEMON_ONLY_MIGRATIONS`). Additive, so no new database generation: every existing workspace reads back as one tab holding its `layoutJSON`. `layoutJSON` and `focusedPaneID` stay the tab on screen's, so an older daemon opens on what was on screen. It keeps every pane row, so the other tabs' panes are in its workspace but in no tree: invisible, though a shell among them still gets its PTY, and a recorded agent session in one is resumed (`claude --resume` / `codex resume` typed into a terminal nobody can see), since the older daemon's resume walks every pane. Its explicit-column INSERT writes both tab columns NULL, so its first save forgets every tab; a newer daemon's next load puts the panes no tree holds into one unvisited tab at the end (§6.2 step 1). |
 
 ---
 
@@ -460,9 +499,9 @@ UPSERT appState rows               (the five keys in §2.4)
   and shutdown logs "kelpid stopped (state NOT saved)" and exits 1 (`compose.ts:1305`, `1322`).
 - Pane row insert order doubles as the de-facto order of the in-memory `panes` array on load
   (there is no ORDER BY on panes; SQLite returns them in rowid ≈ insert order). That array
-  order is not user-visible: display order comes from the layout tree, and the `pane-list`
-  reply enumerates each workspace's panes in layout order too (`allPaneIDs(workspace.layout)`,
-  skipping ids with no backing pane; `packages/daemon/src/handlers/pane/list.ts:79-81`,
+  order is not user-visible: display order comes from the layout trees, and the `pane-list`
+  reply enumerates each workspace's panes tab by tab, each tab in layout order (skipping ids
+  with no backing pane; `packages/daemon/src/handlers/pane/list.ts`,
   `packages/core/src/layout/tree.ts:14`), workspaces in state order. The `panes` array order
   is never consulted for `pane-list` (wire-protocol §6.2, socket-handlers §4.12).
 
@@ -471,6 +510,10 @@ UPSERT appState rows               (the five keys in §2.4)
 - **Layout**: the record stores `savedLayout ?? layout`. `savedLayout` is set while a pane is
   ZOOMED (temporarily maximized) — it holds the pre-zoom tree. So a zoomed workspace persists
   its un-zoomed layout; zoom state itself does not survive restart.
+- **Tabs** (`persistWorkspace`, `packages/daemon/src/store/snapshot.ts`): `tabsJSON` gets one
+  entry per tab with that tab's own `savedLayout ?? layout` and focused pane, the tab on screen
+  included (§3.6), and `activeTabID` names the tab on screen; `layoutJSON` / `focusedPaneID`
+  are that tab's. A tab's focus history, zoom and layout-cycle position are not written.
 - **Web panes** (`type == "web"`, sidecar state lives in a per-workspace `webPanes` map keyed
   by pane id):
   - `webIsPrivate` is ALWAYS written for web panes (true/false).
@@ -514,6 +557,8 @@ assocs      ← SELECT * FROM repoAssociation              (bucketed by workspac
     icon    ← parse icon string (fallback: nil)
     slug    ← record.slug, or makeSlug(name, id) when record.slug == ""   // legacy backfill
     focused ← UUID(focusedPaneID) (fallback: nil)
+    tabs    ← decode tabsJSON (per entry, §3.6) with activeTabID parsed as UUID
+              (fallback: none, which restores as one tab holding layoutJSON)
 activeWorkspaceID ← appState["activeWorkspaceID"] parsed as UUID (fallback: nil)
 groups      ← SELECT * FROM workspace_group ORDER BY sortOrder (skip unparseable id)
     childOrder ← decode childOrderJSON as [UUID] (fallback: [])
@@ -572,7 +617,24 @@ Case A — **zero workspaces loaded** (fresh install or wiped DB):
 
 Case B — normal restore:
 
-1. Install loaded workspaces / groups / repos into state.
+1. Install loaded workspaces / groups / repos into state, restoring each workspace's tabs
+   (`restoreTabs`, `packages/daemon/src/store/snapshot.ts`; workspace-feature.md §12.7) so they
+   obey the tab invariants whatever the row says:
+   - no usable tabs (`tabsJSON` NULL, empty or undecodable, or an `activeTabID` that names
+     none of its entries) → one tab, whose id is the workspace's, holding `layoutJSON`;
+   - the tab on screen's tree is `layoutJSON` without any leaf naming a pane that has no row,
+     whatever its `tabsJSON` entry says (it is what an older daemon would have edited, so it
+     is the freshest);
+   - a pane belongs to one tab: the tab on screen claims its panes first, then the other tabs
+     in order, each dropping a leaf already claimed or naming a pane with no row; a background
+     tab left with no panes is dropped, a repeated tab id is skipped, and a background tab
+     whose focused pane is gone falls back to its first pane;
+   - the panes no tree holds (parked plugin panes aside, which restore to the parked lane)
+     go into one new tab at the end, laid out `tiled`, unvisited and named after its focused
+     pane; when the tab on screen is empty they become its tree instead;
+   - `focusedPaneID` is kept when the tree on screen holds it, else that tree's first pane.
+   The invariants then run once more (`normalizeTabs`, workspace-feature.md §12.4), so an
+   empty tab on screen gives way to a neighbour.
 2. `activeWorkspaceID` ← loaded value when it names a loaded workspace, else first workspace's
    id (`snapshot.ts:281-285`; `kelpid import` applies the same repair and reports it,
    `packages/daemon/src/import/convert.ts:178-182`).
@@ -649,7 +711,8 @@ App level: workspace list + order, group list + order + collapse state, top-leve
 order, active workspace id, repo registry, repo associations.
 
 Per workspace: id, name, slug, color, icon, profileName, muted, status, labels, layout tree
-(un-zoomed), focused pane id, createdAt, lastAccessedAt.
+(un-zoomed), focused pane id, createdAt, lastAccessedAt, and its tabs (id, name, un-zoomed
+tree, focused pane, seen) with which one is on screen.
 
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
 the csv header-row choice (`csvHeaderRow`), a terminal pane's own text size (`terminalFontSize`),
@@ -668,7 +731,8 @@ Workspace: `focusHistory`, parked built-in panes (PTY included; plugin panes per
 `recentlyClosedPanes`, `zoomedPaneID` + `savedLayout` (the un-zoomed tree is what gets saved),
 search state (`searchingPaneID`, needle, counts), `currentLayoutIndex` (predefined-layout cycle
 position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off),
-`pullRequests` (looked up again with `gh` after the restart, workspace-feature.md §11).
+`pullRequests` (looked up again with `gh` after the restart, workspace-feature.md §11), and each
+background tab's focus history, zoom and `currentLayoutIndex`.
 
 Pane: `title` (live terminal/web title), `gitBranch` (re-detected), `isEditing` (recomputed:
 scratchpad → true; a csv pane comes back in grid mode), `externalEditorCommand`, `markdownFontSize` (resets to 14),
@@ -732,7 +796,7 @@ ordering, failure behavior and limits.
 
 ## 8. Equivalent SQLite DDL for the TS daemon
 
-This is the schema as it exists after v21, expressed as plain DDL. (SQLite's ALTER-produced
+This is the schema as it exists after v28, expressed as plain DDL. (SQLite's ALTER-produced
 schema differs cosmetically — column order and the absence of NOT NULL on late-added columns
 are preserved here.) An adopted legacy database may additionally hold `scheduledTask`,
 `workspaceFolder` and `workspace.folderID` (§2.6); they are not part of this DDL and Kelpi
@@ -759,7 +823,9 @@ CREATE TABLE workspace (
   muted          BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v21)
   childOrderJSON TEXT,                       -- Kelpi-only (v26): nested workspace UUIDs
   childrenCollapsed BOOLEAN NOT NULL DEFAULT 0, -- Kelpi-only (v26)
-  status         TEXT NOT NULL DEFAULT 'idle'  -- Kelpi-only (v27): idle|running|waitingForInput
+  status         TEXT NOT NULL DEFAULT 'idle', -- Kelpi-only (v27): idle|running|waitingForInput
+  tabsJSON       TEXT,                       -- Kelpi-only (v28): [WorkspaceTabRecord] JSON (§3.6)
+  activeTabID    TEXT                        -- Kelpi-only (v28): the tab on screen
 );
 
 CREATE TABLE pane (
@@ -839,6 +905,7 @@ interface WorkspaceRow {
   muted: number;                              // SQLite BOOLEAN, 0/1
   childOrderJSON: string | null; childrenCollapsed: number;
   status: string;                             // idle|running|waitingForInput
+  tabsJSON: string | null; activeTabID: string | null;   // v28 (§3.6)
 }
 interface PaneRow {
   id: string; workspaceID: string; label: string | null; type: string;
@@ -888,7 +955,7 @@ interface WorkspaceGroupRow {
    to start instead (§6.1).
 6. Unknown enum strings degrade: color→blue, pane type→shell, status→idle, agentKind→null,
    icon→null. Layout/labels/childOrder/topLevelOrder JSON parse failures degrade to
-   empty/[]-equivalents.
+   empty/[]-equivalents, and a `tabsJSON` failure to one tab holding `layoutJSON`.
 7. `slug == ""` on load ⇒ regenerate via `makeSlug` (v3 legacy rows).
 8. `topLevelOrder == []` on load ⇒ synthesize from flat workspace order (pre-groups DB).
 9. Group membership = presence in a group's `childOrderJSON`; top-level presence =
@@ -904,9 +971,11 @@ interface WorkspaceGroupRow {
     (`[A-Za-z0-9._-]{1,128}`, `isSafeSessionID`, `packages/core/src/agent/session.ts:31`) is a
     security boundary.
 14. `agentKind` survives load un-cleared (last-known badge value + resume verb selection).
-15. Panes are stored flat with a `workspaceID`; the layout tree is per-workspace JSON. There
-    is no reconciliation between them at load. Keep writes atomic so they can't diverge.
-16. Zoom is never persisted: the snapshot stores `savedLayout ?? layout`.
+15. Panes are stored flat with a `workspaceID`; the trees (`layoutJSON`, and every tab's in
+    `tabsJSON`) are per-workspace JSON. The load reconciles them (§6.2 step 1): a leaf without
+    a pane row is dropped, and a pane row no tree holds lands in a tab. Keep writes atomic so
+    they can't diverge.
+16. Zoom is never persisted: the snapshot stores `savedLayout ?? layout`, for every tab.
 17. Parked panes and recently-closed snapshots are never persisted.
 18. Scratchpad panes restore with `isEditing = true`; content comes from `pane.content` only
     (never a file).
@@ -929,7 +998,8 @@ declined.
 
 - **DB adoption**: because `kelpid import` and the persistence layer both read databases the
   legacy app wrote, Kelpi (a) runs/verifies the same migration ledger (`grdb_migrations`
-  identifiers `v1_initial` … `v18_pane_agent_kind`, plus its own `v19_pane_agent_profile`),
+  identifiers `v1_initial` … `v18_pane_agent_kind`, plus its own `v19_pane_agent_profile` …
+  `v28_workspace_tabs`),
   only applying migrations whose identifiers are absent and keeping the per-migration
   column-existence guards (`packages/daemon/src/db/schema.ts`); and (b) parses and writes the
   exact JSON shapes in §3, most notably the Swift-Codable enum encodings with `_0` keys for

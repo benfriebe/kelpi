@@ -2890,3 +2890,227 @@ describe('workspace create --icon', () => {
         expect(JSON.parse(json.stdout)).toMatchObject({ ok: true, workspace_id: PANE });
     });
 });
+
+describe('kelpi tab (workspace-feature.md §12)', () => {
+    const placed = { ok: true, workspace_id: OTHER, workspace_name: 'dev', tab_id: PANE, tab_number: 2 };
+
+    it('lists the tabs as a table, as JSON, and every workspace with --all', async () => {
+        const tabs = [
+            { id: OTHER, number: 1, title: 'zsh', pane_count: 1, is_active: true, status: 'idle', workspace_name: 'dev' },
+            { id: PANE, number: 2, title: 'build', pane_count: 2, is_active: false, status: 'running', workspace_name: 'dev' }
+        ];
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: OTHER, workspace_name: 'dev', tabs }] }));
+        const table = await runCLI(['tab', 'list'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-list', pane_id: PANE });
+        expect(table.stdout.split('\n')[0]).toBe('TAB  ACTIVE  TITLE  PANES  STATUS   ID');
+        expect(table.stdout).toContain(`2    -       build  2      running  ${PANE}`);
+        const json = await runCLI(['tab', 'list', '--workspace', 'dev', '--json'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-list', workspace: 'dev' });
+        expect(JSON.parse(json.stdout)).toEqual(tabs);
+        const all = await runCLI(['tab', 'list', '--all'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-list', all: true });
+        expect(all.stdout.split('\n')[0]).toBe('WORKSPACE  TAB  ACTIVE  TITLE  PANES  STATUS   ID');
+    });
+
+    it('opens a tab in the background unless --focus, at the 1-based position asked for', async () => {
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER, kind: 'web' }] }));
+        const result = await runCLI(['tab', 'new', '--kind', 'web', '--at', '2', '--name', 'docs'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', pane_id: PANE, kind: 'web', name: 'docs', index: 1 });
+        expect(result.stdout).toBe(`created tab 2 (${PANE}) in workspace dev\n`);
+        await runCLI(['tab', 'new', '--end', '--focus'], { port: server.port });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', at_end: true, focus: true });
+    });
+
+    it('refuses a kind it does not know, and --at with --end, without asking the daemon', async () => {
+        const kind = await runCLI(['tab', 'new', '--kind', 'spreadsheet'], { port: server.port });
+        expect(kind.code).toBe(1);
+        expect(kind.stderr).toContain("unknown kind 'spreadsheet'");
+        const both = await runCLI(['tab', 'new', '--at', '1', '--end'], { port: server.port });
+        expect(both.code).toBe(1);
+        const urlOnShell = await runCLI(['tab', 'new', '--kind', 'terminal', '--url', 'example.com'], { port: server.port });
+        expect(urlOnShell.code).toBe(1);
+        expect(urlOnShell.stderr).toContain('--url is for a web tab');
+        expect(server.requests).toEqual([]);
+    });
+
+    it('opens a web tab at an address with --url, which implies --kind web', async () => {
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER, kind: 'web', url: 'https://example.com' }] }));
+        await runCLI(['tab', 'new', '--url', 'example.com'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', pane_id: PANE, url: 'example.com' });
+        await runCLI(['tab', 'new', '--kind', 'web', '--url', 'example.com', '--focus'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-new', pane_id: PANE, kind: 'web', url: 'example.com', focus: true });
+    });
+
+    it('opens a local file with --url as a file:// URL, as kelpi web open does', async () => {
+        const home = scratchHome();
+        fs.writeFileSync(path.join(home, 'r.html'), '<h1>hi</h1>');
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER, kind: 'web' }] }));
+        for (const given of ['./r.html', 'r.html']) {
+            await runCLI(['tab', 'new', '--url', given], { port: server.port, paneID: PANE, cwd: home });
+            const sent = String((await lastRequest())['url']);
+            expect(sent.startsWith('file://')).toBe(true);
+            expect(sent.endsWith('/r.html')).toBe(true);
+        }
+    });
+
+    it('names a tab by number, id or title, and the caller\'s own tab by default', async () => {
+        server.respond(() => ({ lines: [placed] }));
+        const shown = await runCLI(['tab', 'show', 'build'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-select', pane_id: PANE, tab: 'build' });
+        expect(shown.stdout).toBe(`showing tab 2 (${PANE}) in workspace dev\n`);
+        await runCLI(['tab', 'close'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close', pane_id: PANE });
+    });
+
+    it('asks for a tab outside a pane rather than sending a request that cannot work', async () => {
+        const result = await runCLI(['tab', 'close'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('kelpi tab close: name a tab (a number, id or title) when not in a Kelpi pane');
+        expect(server.requests).toEqual([]);
+    });
+
+    it("closes over agents only with --force or -y, and prints a refusal's counts under --json", async () => {
+        const refusal = { ok: false, error: 'tab 2 has 1 running agent; pass --force to close anyway', active_agents: 1, running: 1, waiting: 0, inactive: 0 };
+        server.respond(() => ({ lines: [refusal] }));
+        const refused = await runCLI(['tab', 'close', '2'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close', pane_id: PANE, tab: '2' });
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toBe('kelpi tab close: tab 2 has 1 running agent; pass --force to close anyway\n');
+        const asJSON = await runCLI(['tab', 'close-others', '1', '--json'], { port: server.port, paneID: PANE });
+        expect(asJSON.code).toBe(1);
+        expect(JSON.parse(asJSON.stdout)).toEqual({ error: refusal.error, active_agents: 1, running: 1, waiting: 0, inactive: 0 });
+        server.respond(() => ({ lines: [{ ...placed, closed: 2 }] }));
+        await runCLI(['tab', 'close', '2', '--force'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close', pane_id: PANE, tab: '2', force: true });
+        await runCLI(['tab', 'close-others', '-y'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-close-others', pane_id: PANE, force: true });
+        const flagOnSelect = await runCLI(['tab', 'select', '2', '--force'], { port: server.port, paneID: PANE });
+        expect(flagOnSelect.code).toBe(1);
+    });
+
+    it("prints the daemon's refusal and exits 1", async () => {
+        server.respond(() => ({ lines: [{ ok: false, error: "no tab 7 in workspace 'dev' (it has 2 tabs)" }] }));
+        const result = await runCLI(['tab', 'select', '7'], { port: server.port, paneID: PANE });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toBe("kelpi tab select: no tab 7 in workspace 'dev' (it has 2 tabs)\n");
+    });
+
+    it('renames a named tab, the caller\'s tab, or clears a name', async () => {
+        server.respond(() => ({ lines: [{ ...placed, name: 'docs' }] }));
+        const renamed = await runCLI(['tab', 'rename', 'build', 'docs'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-rename', pane_id: PANE, tab: 'build', name: 'docs' });
+        expect(renamed.stdout).toBe(`renamed tab 2 (${PANE}) in workspace dev to docs\n`);
+        await runCLI(['tab', 'rename', 'docs'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-rename', pane_id: PANE, name: 'docs' });
+        server.respond(() => ({ lines: [{ ...placed, name: null }] }));
+        const cleared = await runCLI(['tab', 'rename', '2', '--clear'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-rename', pane_id: PANE, tab: '2', clear: true });
+        expect(cleared.stdout).toBe(`tab 2 (${PANE}) in workspace dev is named after its pane again\n`);
+    });
+
+    it('moves a tab to a 1-based position or the end, and needs exactly one of them', async () => {
+        server.respond(() => ({ lines: [placed] }));
+        await runCLI(['tab', 'move', '3', '--to', '1'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-move', pane_id: PANE, tab: '3', index: 0 });
+        await runCLI(['tab', 'move', '--end'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-move', pane_id: PANE, at_end: true });
+        const neither = await runCLI(['tab', 'move', '3'], { port: server.port, paneID: PANE });
+        expect(neither.code).toBe(1);
+        expect(neither.stderr).toContain('give exactly one of --to <n> or --end');
+    });
+
+    it('duplicates, merges, splits and moves a tab to another workspace', async () => {
+        server.respond(() => ({ lines: [{ ...placed, tab_numbers: [3, 4], closed: 0 }] }));
+        const duplicated = await runCLI(['tab', 'duplicate', '2', '--focus'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-duplicate', pane_id: PANE, tab: '2', focus: true });
+        expect(duplicated.stdout).toBe(`duplicated as tab 2 (${PANE}) in workspace dev\n`);
+        await runCLI(['tab', 'merge', '3'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-merge-previous', pane_id: PANE, tab: '3' });
+        const split = await runCLI(['tab', 'split', '2'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-split-panes', pane_id: PANE, tab: '2' });
+        expect(split.stdout).toBe('split into tabs 2, 3, 4 in workspace dev\n');
+        await runCLI(['tab', 'move-to-workspace', '2', '--to-workspace', 'ops'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-move-to-workspace', pane_id: PANE, tab: '2', to_workspace: 'ops' });
+    });
+
+    it('prints the reply without ok under --json', async () => {
+        server.respond(() => ({ lines: [placed] }));
+        const result = await runCLI(['tab', 'select', '2', '--json'], { port: server.port, paneID: PANE });
+        expect(JSON.parse(result.stdout)).toEqual({ workspace_id: OTHER, workspace_name: 'dev', tab_id: PANE, tab_number: 2 });
+    });
+
+    it('moves a pane into a named tab beside a pane of it, or out into a new tab', async () => {
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER }] }));
+        const moved = await runCLI(['pane', 'move-to-tab', 'build', '--target', 'worker', '--below', 'lead'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-to-tab', pane_id: PANE, target: 'worker', tab: 'build', anchor: 'lead', zone: 'below' });
+        expect(moved.stdout).toBe(`moved pane ${OTHER} to tab 2 (${PANE}) in workspace dev\n`);
+        const fresh = await runCLI(['pane', 'move-to-new-tab', '--end', '--focus'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-to-new-tab', pane_id: PANE, at_end: true, focus: true });
+        expect(fresh.stdout).toBe(`moved pane ${OTHER} to new tab 2 (${PANE}) in workspace dev\n`);
+    });
+
+    it('needs a pane to move: --target, or a call from inside a pane', async () => {
+        const result = await runCLI(['pane', 'move-to-new-tab'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('requires --target <name-or-uuid> when called from outside a Kelpi pane');
+        const noTab = await runCLI(['pane', 'move-to-tab'], { port: server.port, paneID: PANE });
+        expect(noTab.code).toBe(1);
+        expect(server.requests).toEqual([]);
+    });
+
+    it('prints the group help', async () => {
+        const result = await runCLI(['tab', '--help'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('kelpi tab list|new|select');
+    });
+
+    it('refuses a blank tab, workspace or edge pane before sending, rather than act on the caller\'s own', async () => {
+        for (const [args, said] of [
+            [['tab', 'close', ''], 'kelpi tab close: the tab is empty (an unset variable?)'],
+            [['tab', 'close-others', '  '], 'kelpi tab close-others: the tab is empty (an unset variable?)'],
+            [['tab', 'close', '2', '--workspace', ''], 'kelpi tab close: --workspace is empty (an unset variable?)'],
+            [['tab', 'move-to-workspace', '2', '--to-workspace', ''], 'kelpi tab move-to-workspace: --to-workspace is empty (an unset variable?)'],
+            [['tab', 'rename', '', 'docs'], 'kelpi tab rename: the tab is empty (an unset variable?)'],
+            [['pane', 'move-to-tab', ''], 'kelpi pane move-to-tab: the tab is empty (an unset variable?)'],
+            [['pane', 'move-to-tab', '2', '--below', ''], 'kelpi pane move-to-tab: the edge pane is empty (an unset variable?)']
+        ] as const) {
+            const result = await runCLI([...args], { port: server.port, paneID: PANE });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(said);
+        }
+        expect(server.requests).toEqual([]);
+    });
+
+    it('reads every word after -- as a value, even --help or a leading dash', async () => {
+        server.respond(() => ({ lines: [{ ...placed, name: '--help' }] }));
+        const renamed = await runCLI(['tab', 'rename', '2', '--', '--help'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-rename', pane_id: PANE, tab: '2', name: '--help' });
+        expect(renamed.stdout).toBe(`renamed tab 2 (${PANE}) in workspace dev to --help\n`);
+        server.respond(() => ({ lines: [{ ...placed, pane_id: OTHER }] }));
+        await runCLI(['pane', 'move-to-tab', '--', '-x'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-move-to-tab', pane_id: PANE, tab: '-x' });
+        await runCLI(['tab', 'select', '--workspace', 'dev', '--', '-x'], { port: server.port, paneID: PANE });
+        expect(await lastRequest()).toEqual({ command: 'workspace-tab-select', pane_id: PANE, workspace: 'dev', tab: '-x' });
+    });
+
+    it('notes that a name made of digits also reads as a tab number', async () => {
+        server.respond(() => ({ lines: [{ ...placed, name: '7' }] }));
+        const result = await runCLI(['tab', 'rename', '2', '7'], { port: server.port, paneID: PANE });
+        expect(result.code).toBe(0);
+        expect(result.stderr).toContain("'7' also reads as a tab number");
+        expect(result.stdout).toBe(`renamed tab 2 (${PANE}) in workspace dev to 7\n`);
+    });
+
+    it('says the same thing for every tab verb when the daemon is too old to answer', async () => {
+        server.respond(() => ({ silent: true }));
+        for (const [args, label] of [
+            [['tab', 'select', '2'], 'kelpi tab select'],
+            [['pane', 'move-to-tab', '2'], 'kelpi pane move-to-tab'],
+            [['pane', 'move-to-new-tab'], 'kelpi pane move-to-new-tab']
+        ] as const) {
+            const result = await runCLI([...args], { port: server.port, paneID: PANE });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(`${label}: no response from Kelpi (upgrade required?)`);
+        }
+    });
+});

@@ -46,7 +46,7 @@ const FRAME_HEADER_BYTES = 17;
 /** The process generation: names the run-dir files and is what `/healthz` reports. */
 const PROTOCOL_VERSION = 2;
 /** The client-sync generation a `hello` must match (`@kelpi/protocol` `WS_PROTOCOL_VERSION`). */
-const WS_PROTOCOL_VERSION = 3;
+const WS_PROTOCOL_VERSION = 4;
 
 const argv = new Set(process.argv.slice(2));
 const options = {

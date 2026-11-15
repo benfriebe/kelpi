@@ -15,6 +15,7 @@
  * ordering the port requires, and is what assembly should call.
  */
 
+import { onScreenPaneIDs } from '@kelpi/daemon/store';
 import type { WsRejectedMessage } from '@kelpi/protocol';
 
 import { forgetStoredToken, type StorageLike } from '../app/config';
@@ -32,6 +33,15 @@ import { useKelpiStore, type KelpiStoreApi } from './store';
  */
 export function isTokenRejection(message: WsRejectedMessage): boolean {
     return message.reason === 'bad-token' || message.code === 'unauthorized';
+}
+
+/**
+ * The daemon refused this client for speaking another WS generation (wire-protocol.md): a
+ * different Kelpi version on one side, which nothing but updating fixes, and which the client
+ * never retries (`connection/socket.ts`).
+ */
+export function isVersionMismatch(ui: { readonly connection: string; readonly connectionRejection: string | null }): boolean {
+    return ui.connection === 'rejected' && ui.connectionRejection === 'protocol-mismatch';
 }
 
 export interface StoreBridgeOptions {
@@ -267,7 +277,7 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             // stale one cannot wedge the KELPIT visit as well.
             const state = store.getState();
             const terminal = message.code !== 'server-error';
-            state.setConnectionStatus(terminal ? 'rejected' : state.ui.connection, message.message);
+            state.setConnectionStatus(terminal ? 'rejected' : state.ui.connection, message.message, terminal ? message.code : undefined);
             if (isTokenRejection(message)) forgetStoredToken(options.tokenStorage);
         })
     );
@@ -316,6 +326,11 @@ export interface KelpiRuntime {
     activateWorkspace(workspaceID: string, visiblePaneIDs?: readonly string[]): void;
     /** Focus a pane: local echo (so the ring moves now) + the canonical report. */
     focusPane(workspaceID: string, paneID: string | null): void;
+    /**
+     * Report where this client now is after it SAW focus move (a tab or workspace it shows):
+     * recorded for this connection, never dispatched, so it cannot move anyone else.
+     */
+    reportObservedFocus(workspaceID: string, paneID: string | null): void;
     /** Which panes this client renders right now (drives suppression + PTY fan-out). */
     reportVisiblePanes(workspaceID: string, visiblePaneIDs: readonly string[]): void;
     setDocumentVisible(visible: boolean): void;
@@ -360,7 +375,8 @@ export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRunt
 
     const visiblePanesFor = (workspaceID: string): readonly string[] => {
         const workspace = store.getState().daemon.state.workspaces.find((entry) => entry.id === workspaceID);
-        return workspace?.panes.map((pane) => pane.id) ?? [];
+        // workspace-feature.md §12: the tab on screen, not every tab's panes in the lane.
+        return workspace === undefined ? [] : onScreenPaneIDs(workspace);
     };
 
     const runtime: KelpiRuntime = {
@@ -421,6 +437,12 @@ export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRunt
                 .daemon.state.workspaces.find((workspace) => workspace.id === workspaceID)?.focusedPaneID;
             commands.reportFocus(workspaceID, paneID, known === paneID ? {} : { force: true });
             // Visiting a pane acknowledges its notification (agent-lifecycle §7.5 removal).
+            if (paneID !== null) notifications?.clear(paneID);
+        },
+
+        reportObservedFocus(workspaceID, paneID): void {
+            commands.reportFocus(workspaceID, paneID, { force: true, observed: true });
+            // Showing a pane acknowledges its notification, as visiting it does.
             if (paneID !== null) notifications?.clear(paneID);
         },
 

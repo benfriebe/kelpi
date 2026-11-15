@@ -18,6 +18,7 @@ export const SETTINGS_CATEGORIES = [
     'Pane Management',
     'Navigation',
     'Workspaces',
+    'Tabs',
     'View',
     'Files',
     'Search',
@@ -27,11 +28,15 @@ export const SETTINGS_CATEGORIES = [
 ] as const;
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 
-/** §4's eight visible sections, in the order §13.1 fixes. `Web Pane` is deliberately absent. */
+/**
+ * §4's nine visible sections, in the order §13.1 fixes (Tabs, workspace-feature.md §12, right
+ * after Workspaces). `Web Pane` is deliberately absent.
+ */
 export const VISIBLE_CATEGORIES: readonly SettingsCategory[] = [
     'Pane Management',
     'Navigation',
     'Workspaces',
+    'Tabs',
     'View',
     'Files',
     'Search',
@@ -86,6 +91,17 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'rename_workspace', category: 'Workspaces', label: 'Rename Workspace' },
     { action: 'new_group', category: 'Workspaces', label: 'New Group' },
     ...switchEntries(),
+
+    { action: 'new_tab', category: 'Tabs', label: 'New Tab' },
+    { action: 'close_tab', category: 'Tabs', label: 'Close Tab' },
+    { action: 'next_tab', category: 'Tabs', label: 'Next Tab' },
+    { action: 'previous_tab', category: 'Tabs', label: 'Previous Tab' },
+    { action: 'move_pane_to_new_tab', category: 'Tabs', label: 'Move Pane to New Tab' },
+    ...Array.from({ length: 9 }, (_, index): ActionEntry => ({
+        action: `go_to_tab_${String(index + 1)}` as KelpiAction,
+        category: 'Tabs',
+        label: `Go to Tab ${String(index + 1)}`
+    })),
 
     { action: 'toggle_sidebar', category: 'View', label: 'Toggle Sidebar' },
     { action: 'toggle_inspector', category: 'View', label: 'Toggle Inspector' },

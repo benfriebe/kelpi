@@ -100,6 +100,7 @@ import {
     CHECK_FOR_UPDATES_LABEL,
     CLOSE_PANE_EXPRESSION,
     appMenuTemplate,
+    applyWindowTabs,
     applyWorkspaceSelection,
     closeRouteLogLine,
     debugMenuSection,
@@ -119,7 +120,15 @@ import { focusWindowContents, presentWindow, presentWindowLogLine } from './wind
 import { OPEN_FILE_EXTENSIONS, isForwardableOpenPath, scriptedFolderAnswer } from './shell-actions.js';
 import { readClipboardFiles } from './clipboard-files.js';
 import { resolveDroppedFiles, serialized, type DroppedFilesResult } from './dropped-files.js';
-import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowButtonsLogLine, windowButtonsVisible } from './titlebar.js';
+import {
+    FULLSCREEN_QUERY,
+    fullScreenCommand,
+    titleBarLogLine,
+    titleBarStyleFor,
+    trafficLightQuery,
+    windowButtonsLogLine,
+    windowButtonsVisible
+} from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
 import {
@@ -170,6 +179,7 @@ import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
 import { createCornerLayer, type CornerLayer } from './corner-layer.js';
 import { createCornerOverlayView, type CornerOverlayViewHandle } from './corner-layer-view.js';
 import { setWebFindPalette } from './webhost/scripts.js';
+import { setWindowTabCount } from './webhost/keys.js';
 import {
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
@@ -559,7 +569,9 @@ function loadDaemonUrl(window: BrowserWindow): void {
         // APP-046: the same shape of answer for the traffic lights. With `hiddenInset` the page
         // is drawn UNDER them, so it is told how much leading room to keep clear; a browser tab
         // (and a Linux window) gets no parameter and reserves nothing.
-        trafficLightQuery(TITLE_BAR);
+        trafficLightQuery(TITLE_BAR) +
+        // shell-ui.md §3.3: a window loaded fullscreen has no traffic lights to keep clear.
+        (TITLE_BAR.gutter > 0 && window.isFullScreen() ? FULLSCREEN_QUERY : '');
     // The token rides in the query string (the client reads it, remembers it, and strips it
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
@@ -864,8 +876,15 @@ function createWindow(): BrowserWindow {
     });
     window.on('resize', () => scheduleBoundsSave(window));
     window.on('move', () => scheduleBoundsSave(window));
-    window.on('enter-full-screen', () => saveFullScreenFlag(window, true));
-    window.on('leave-full-screen', () => saveFullScreenFlag(window, false));
+    window.on('enter-full-screen', () => {
+        saveFullScreenFlag(window, true);
+        // shell-ui.md §3.3: the page drops the traffic lights' gutter while there are none.
+        status?.sendMenuRequest(fullScreenCommand(true));
+    });
+    window.on('leave-full-screen', () => {
+        saveFullScreenFlag(window, false);
+        status?.sendMenuRequest(fullScreenCommand(false));
+    });
     window.on('focus', () => {
         /*
          * #75: the fast path back from a hide.
@@ -1726,6 +1745,13 @@ function applyCliInstallPolicy(): void {
 let workspaceSelectionCount = 0;
 
 /**
+ * workspace-feature.md §12: the tab count this window's page last reported (`window-tabs`), or
+ * null before it has. Kept for the same reason as the selection count: a menu rebuild seeds the
+ * tab rows from it.
+ */
+let windowTabCount: number | null = null;
+
+/**
  * config-keybindings.md §7.1 / #47: the accelerator set the LIVE application menu was built
  * from, or null before the first build.
  *
@@ -1907,6 +1933,8 @@ function buildMenu(): void {
         }
     ];
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    // A rebuild must not un-grey tab rows the page has already said belong greyed.
+    if (windowTabCount !== null) applyWindowTabs(Menu.getApplicationMenu(), windowTabCount);
     // Logged rather than inferred, for the same reason the tray item is: an application menu is
     // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
     // "the items are there" becomes a check instead of a hope.
@@ -2091,9 +2119,25 @@ function startStatusController(): void {
                 workspaceSelectionChanged: (selectedCount) => {
                     applyWorkspaceSelectionCount(selectedCount);
                 },
+                /** workspace-feature.md §12: grey the tab rows, and let a page keep tab chords the window cannot use. */
+                windowTabsChanged: (tabCount) => {
+                    if (windowTabCount === tabCount) return;
+                    windowTabCount = tabCount;
+                    setWindowTabCount(tabCount);
+                    applyWindowTabs(Menu.getApplicationMenu(), tabCount);
+                },
                 /** The root arrangement's toolbar, reported by this window's page (`window-chrome`). */
                 windowChromeChanged: (titleBarHidden) => {
                     if (mainWindow !== null) applyWindowButtons(mainWindow, titleBarHidden, 'report');
+                    /*
+                     * shell-ui.md §3.3: the page sends this on every (re)connect, so it is the
+                     * moment to tell it the truth about fullscreen. Its `fullscreen=1` came from
+                     * the URL it loaded with, which a reload keeps, and a change made while it was
+                     * loading or reconnecting reached no page at all.
+                     */
+                    if (mainWindow !== null && !mainWindow.isDestroyed() && TITLE_BAR.gutter > 0) {
+                        status?.sendMenuRequest(fullScreenCommand(mainWindow.isFullScreen()));
+                    }
                 },
                 /*
                  * The same rule as a navigation: a page this shell cannot hear from has not said its
@@ -2109,6 +2153,10 @@ function startStatusController(): void {
                 },
                 statusConnected: () => {
                     daemonWatch?.healthy();
+                    // shell-ui.md §3.3: a page that missed the change while the link was down.
+                    if (mainWindow !== null && !mainWindow.isDestroyed() && TITLE_BAR.gutter > 0) {
+                        status?.sendMenuRequest(fullScreenCommand(mainWindow.isFullScreen()));
+                    }
                     // #312: the daemon came back where it was before the watch looked again; the
                     // window may still be on the stopped page or an error page. A Start Daemon in
                     // flight reloads the window itself.

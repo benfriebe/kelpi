@@ -7,8 +7,8 @@
  */
 
 import { epochSecondsFromUnixMillis } from '@kelpi/core/codec';
-import { makePane, type Pane, type PaneType } from '@kelpi/core/layout';
-import { MAX_FOCUS_HISTORY, type DaemonState, type WorkspaceState } from '../types.js';
+import { containsPane, makePane, type Pane, type PaneType } from '@kelpi/core/layout';
+import { MAX_FOCUS_HISTORY, type DaemonState, type WebPaneState, type WorkspaceState } from '../types.js';
 
 /** Persisted timestamps are epoch seconds; actions carry epoch milliseconds. */
 export function seconds(nowMillis: number): number {
@@ -39,9 +39,49 @@ export function findParkedPane(workspace: WorkspaceState, paneID: string): Pane 
     return workspace.parkedPanes.find((pane) => pane.id === paneID) ?? null;
 }
 
+/**
+ * What travels with visible panes moving to another workspace (socket-handlers.md §4.11,
+ * workspace-feature.md §12.5): the `--here` sources they park, and the web sidecars of all
+ * of them. Closing a moving pane in its new workspace un-parks its source there, so a source
+ * left behind would keep its PTY in a lane nothing points at any more. A parked source can
+ * itself have replaced another (`--here` twice), so the chain moves whole.
+ */
+export function movingCargo(
+    workspace: WorkspaceState,
+    paneIDs: ReadonlySet<string>
+): {
+    readonly parked: readonly Pane[];
+    /** The moving panes and their parked sources: every id whose records leave. */
+    readonly ids: ReadonlySet<string>;
+    readonly sidecars: Readonly<Record<string, WebPaneState>>;
+} {
+    const parkedIDs = new Set<string>();
+    const follow = (pane: Pane): void => {
+        const sourceID = pane.parkedSourcePaneID;
+        if (sourceID === null || sourceID === undefined || parkedIDs.has(sourceID)) return;
+        const source = findParkedPane(workspace, sourceID);
+        if (source === null) return;
+        parkedIDs.add(sourceID);
+        follow(source);
+    };
+    for (const pane of workspace.panes) if (paneIDs.has(pane.id)) follow(pane);
+    const parked = workspace.parkedPanes.filter((pane) => parkedIDs.has(pane.id));
+    const ids = new Set([...paneIDs, ...parked.map((pane) => pane.id)]);
+    const sidecars = Object.fromEntries(Object.entries(workspace.webPanes).filter(([paneID]) => ids.has(paneID)));
+    return { parked, ids, sidecars };
+}
+
 /** §3.6: visible pane, else parked pane, else null. */
 export function findPane(workspace: WorkspaceState, paneID: string): Pane | null {
     return findVisiblePane(workspace, paneID) ?? findParkedPane(workspace, paneID);
+}
+
+/**
+ * workspace-feature.md §12: a visible pane in the tab ON SCREEN. The visible lane holds every
+ * tab's panes, so focus (which belongs to the tab on screen) must also check the tree.
+ */
+export function isFocusablePane(workspace: WorkspaceState, paneID: string): boolean {
+    return findVisiblePane(workspace, paneID) !== null && containsPane(workspace.savedLayout ?? workspace.layout, paneID);
 }
 
 /** §3.6 `mutatePane`: apply to whichever lane holds the pane; no-op if absent. */
@@ -152,14 +192,14 @@ export function focusCreatedPane(
 ): WorkspaceState {
     if (focus === false) {
         const current = workspace.focusedPaneID;
-        if (current !== null && findVisiblePane(workspace, current) !== null) return workspace;
+        if (current !== null && isFocusablePane(workspace, current)) return workspace;
     }
     return setFocus(workspace, newID);
 }
 
 export interface PoppedFocus {
     readonly history: readonly string[];
-    /** Most-recent VISIBLE pane id; dead/parked entries are discarded on the way. */
+    /** Most-recent pane id in the tab on screen; dead, parked and other tabs' entries are discarded. */
     readonly candidate: string | null;
 }
 
@@ -171,7 +211,7 @@ export function popFocusFromHistory(
     const history = workspace.focusHistory.filter((id) => id !== excluding);
     while (history.length > 0) {
         const candidate = history.pop() as string;
-        if (findVisiblePane(workspace, candidate) !== null) return { history, candidate };
+        if (isFocusablePane(workspace, candidate)) return { history, candidate };
     }
     return { history, candidate: null };
 }

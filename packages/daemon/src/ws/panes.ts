@@ -32,11 +32,20 @@ import type { JsonObject } from '@kelpi/protocol';
 import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../handlers/pane/index.js';
 import { visiblePane, workspaceByID } from '../store/derived.js';
 import type { WorkspaceState } from '../store/types.js';
+import {
+    createWorkspaceTabChannel,
+    isWorkspaceTabCommand,
+    WORKSPACE_TAB_COMMANDS,
+    type WaitingWorkspaceTabCommand,
+    type WorkspaceTabChannelOptions
+} from './workspace-tabs.js';
 
 export const PANE_LIFECYCLE_COMMANDS = [
     'reopen-closed-pane',
     'create-scratchpad',
-    'reveal-path'
+    'reveal-path',
+    // workspace-feature.md §12: the tab verbs need the same pane context (`./workspace-tabs.ts`).
+    ...WORKSPACE_TAB_COMMANDS
 ] as const;
 export type PaneLifecycleCommand = (typeof PANE_LIFECYCLE_COMMANDS)[number];
 
@@ -47,12 +56,21 @@ export function isPaneLifecycleCommand(command: string): command is PaneLifecycl
 /** How long a reopened shell settles before its resume command is typed (§7.9: 2 s). */
 export const REOPEN_RESUME_SETTLE_MS = 2000;
 
+/**
+ * A new "same kind" tab and a duplicated tab can wait on the OS before they answer
+ * (`./workspace-tabs.ts`); every other verb's reply is there when `run` returns.
+ */
+export type ImmediatePaneLifecycleCommand = Exclude<PaneLifecycleCommand, WaitingWorkspaceTabCommand>;
+
 export interface PaneLifecycleChannel {
-    run(command: PaneLifecycleCommand, payload: Record<string, unknown>): JsonObject;
+    run(command: ImmediatePaneLifecycleCommand, payload: Record<string, unknown>): JsonObject;
+    run(command: PaneLifecycleCommand, payload: Record<string, unknown>): JsonObject | Promise<JsonObject>;
 }
 
 export interface PaneLifecycleChannelOptions {
     readonly ctx: PaneHandlerContext;
+    /** The tab verbs' boot-only seams (`./workspace-tabs.ts`). */
+    readonly tabs?: Omit<WorkspaceTabChannelOptions, 'ctx'> | undefined;
     /** Test seam for the 2 s settle before the resume command is typed. */
     readonly sleep?: ((ms: number) => Promise<void>) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -182,11 +200,14 @@ export function createPaneLifecycleChannel(
         return { ok: true, path, select };
     };
 
-    return {
-        run(command, payload) {
-            if (command === 'reopen-closed-pane') return reopen(payload);
-            if (command === 'create-scratchpad') return scratchpad(payload);
-            return reveal(payload);
-        }
+    const tabs = createWorkspaceTabChannel({ ...options.tabs, ctx });
+
+    const run = (command: PaneLifecycleCommand, payload: Record<string, unknown>): JsonObject | Promise<JsonObject> => {
+        if (isWorkspaceTabCommand(command)) return tabs.run(command, payload);
+        if (command === 'reopen-closed-pane') return reopen(payload);
+        if (command === 'create-scratchpad') return scratchpad(payload);
+        return reveal(payload);
     };
+    // One implementation behind both signatures: only the waiting tab verbs return a promise.
+    return { run: run as PaneLifecycleChannel['run'] };
 }

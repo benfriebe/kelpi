@@ -32,6 +32,8 @@ export type IconName =
     | 'broadcast-off'
     | 'split-right'
     | 'split-down'
+    // workspace-feature.md §12: a pane going into a tab of its own (a tab with a + on it).
+    | 'new-tab'
     | 'ellipsis'
     | 'close'
     | 'pencil'
@@ -170,6 +172,12 @@ const PATHS: Record<IconName, ReactElement> = {
         <>
             <rect x="1.5" y="2" width="9" height="8" rx="1" />
             <path d="M6 2v8" />
+        </>
+    ),
+    'new-tab': (
+        <>
+            <path d="M1.5 4.5h9V10h-9zM1.5 4.5V2.5h3.5v2" />
+            <path d="M8 1v3M6.5 2.5h3" />
         </>
     ),
     'split-down': (

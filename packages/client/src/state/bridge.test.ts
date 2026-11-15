@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOKEN_STORAGE_KEY, type StorageLike } from '../app/config';
 import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
 import { noteAgentCreateSent } from './agent-launch';
-import { connectStore, createKelpiRuntime, isTokenRejection } from './bridge';
+import { connectStore, createKelpiRuntime, isTokenRejection, isVersionMismatch } from './bridge';
 import { createNotificationManager, type NotificationApi } from './notifications';
 import { createKelpiStore, type KelpiStoreApi } from './store';
 
@@ -220,7 +220,7 @@ describe('store bridge', () => {
             code: 'unauthorized',
             reason: 'bad-token',
             message: "invalid or missing daemon token - open the client via 'kelpid url'",
-            protocolVersion: 3
+            protocolVersion: 4
         });
         h.sockets.last().serverClose(4003, 'bad-token');
 
@@ -236,6 +236,23 @@ describe('store bridge', () => {
         expect(storage.data.has(TOKEN_STORAGE_KEY)).toBe(false);
     });
 
+    it('keeps the rejection code beside the sentence, so a version mismatch can be named', () => {
+        const h = harness(createKelpiStore(), memoryStorage({}));
+        h.connection.connect();
+        h.sockets.last().open();
+        h.sockets.last().emit({
+            type: 'rejected',
+            code: 'protocol-mismatch',
+            message: 'daemon speaks client protocol v3, client speaks v4; update Kelpi so the app and the daemon run the same version',
+            protocolVersion: 3
+        });
+        h.sockets.last().serverClose(4002, 'protocol-mismatch');
+        const ui = h.store.getState().ui;
+        expect(ui.connection).toBe('rejected');
+        expect(ui.connectionRejection).toBe('protocol-mismatch');
+        expect(isVersionMismatch(ui)).toBe(true);
+    });
+
     it('connects again once a good token arrives', () => {
         const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
         const h = harness(createKelpiStore(), storage);
@@ -246,7 +263,7 @@ describe('store bridge', () => {
             code: 'unauthorized',
             reason: 'bad-token',
             message: 'invalid or missing daemon token',
-            protocolVersion: 3
+            protocolVersion: 4
         });
         h.sockets.last().serverClose(4003, 'bad-token');
 
@@ -269,7 +286,7 @@ describe('store bridge', () => {
             code: 'server-error',
             reason: 'hello-timeout',
             message: 'no hello within 10000ms',
-            protocolVersion: 3
+            protocolVersion: 4
         });
         h.sockets.last().serverClose(4500, 'hello-timeout');
 
@@ -283,14 +300,14 @@ describe('store bridge', () => {
 
     it('classifies rejections the same way for old and new daemons', () => {
         expect(
-            isTokenRejection({ type: 'rejected', code: 'unauthorized', reason: 'bad-token', message: '', protocolVersion: 3 })
+            isTokenRejection({ type: 'rejected', code: 'unauthorized', reason: 'bad-token', message: '', protocolVersion: 4 })
         ).toBe(true);
         // A daemon that predates `reason` still says `unauthorized`.
-        expect(isTokenRejection({ type: 'rejected', code: 'unauthorized', message: '', protocolVersion: 3 })).toBe(true);
+        expect(isTokenRejection({ type: 'rejected', code: 'unauthorized', message: '', protocolVersion: 4 })).toBe(true);
         expect(
-            isTokenRejection({ type: 'rejected', code: 'protocol-mismatch', reason: 'protocol-mismatch', message: '', protocolVersion: 3 })
+            isTokenRejection({ type: 'rejected', code: 'protocol-mismatch', reason: 'protocol-mismatch', message: '', protocolVersion: 4 })
         ).toBe(false);
-        expect(isTokenRejection({ type: 'rejected', code: 'server-error', message: '', protocolVersion: 3 })).toBe(false);
+        expect(isTokenRejection({ type: 'rejected', code: 'server-error', message: '', protocolVersion: 4 })).toBe(false);
     });
 
     it('records socket errors as the connection error and stops on dispose', () => {

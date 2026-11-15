@@ -26,6 +26,8 @@ export const globalUsage = `Usage:
   kelpi pane move [--focus] [left|right|up|down]
   kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--focus]
   kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create] [--focus]
+  kelpi pane move-to-tab <tab> [--target <name-or-uuid>] [--above|--below|--left-of|--right-of <pane>] [--focus]
+  kelpi pane move-to-new-tab [--target <name-or-uuid>] [--at <n> | --end] [--focus]
   kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
   kelpi pane sync (on|off|toggle|status) [--workspace <name-or-uuid>] [--json]
@@ -44,6 +46,13 @@ export const globalUsage = `Usage:
   kelpi workspace rename <name-or-id> <new-name> [--json]
   kelpi workspace icon <name-or-id> (<emoji> | --clear) [--json]
   kelpi workspace color <name-or-id> <color> [--json]
+  kelpi tab list [--workspace <name-or-id> | --all] [--json] [--no-header]
+  kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--url <url-or-path>] [--name <name>] [--at <n> | --end] [--workspace <name-or-id>] [--focus] [--json]
+  kelpi tab select|duplicate|merge|split [<tab>] [--workspace <name-or-id>] [--json]
+  kelpi tab close|close-others [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
+  kelpi tab rename [<tab>] (<new-name> | --clear) [--json]
+  kelpi tab move [<tab>] (--to <n> | --end) [--json]
+  kelpi tab move-to-workspace [<tab>] --to-workspace <name-or-id> [--focus] [--json]
   kelpi group list [--json] [--no-header]
   kelpi group create <name> [--color blue]
   kelpi group rename <name-or-id> <new-name>
@@ -275,6 +284,53 @@ the adjacent form. Exit codes: 0 on success, non-zero on failure.
 
 `;
 
+export const paneMoveToTabUsage = `Usage:
+  kelpi pane move-to-tab <tab> [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--focus] [--json]
+  kelpi pane move-to-tab <tab> --target X (--above|--below|--left-of|--right-of) Y [--focus]
+
+Moves a pane into another tab of its workspace (workspace-feature.md §12).
+<tab> is the tab's number (as in kelpi tab list and ⌥⌘1-9), its id, or its
+title. Without --target the calling pane moves (requires KELPI_PANE_ID). The
+pane lands beside the tab's focused pane, or on an edge of the pane you name;
+naming its own tab with an edge pane moves it there as kelpi pane move does.
+The move happens in the background unless --focus is given, which shows the
+tab and focuses the pane. Words after -- are tab names, even with a dash.
+
+Options:
+  --target <name-or-uuid>     Pane to move.
+  --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
+  --above|--below|--left-of|--right-of <pane>
+                              Dock beside this pane of the tab (name-or-uuid).
+  --focus                     Show the tab and focus the pane.
+  --json                      Print the structured reply instead of the ack.
+  -h, --help                  Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const paneMoveToNewTabUsage = `Usage:
+  kelpi pane move-to-new-tab [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--at <n> | --end] [--focus] [--json]
+
+Takes a pane out of its tab into a new tab of its own (⇧⌥⌘T in the window).
+Without --target the calling pane moves (requires KELPI_PANE_ID). The new tab
+goes just after the pane's tab unless --at or --end says otherwise. The move
+happens in the background unless --focus is given.
+
+Options:
+  --target <name-or-uuid>     Pane to move.
+  --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
+  --at <n>                    Put the new tab at position n (1 is first).
+  --end                       Put the new tab after the last one.
+  --focus                     Show the new tab.
+  --json                      Print the structured reply instead of the ack.
+  -h, --help                  Show this help.
+
+A pane alone in its tab is refused (move the tab with kelpi tab move).
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
 export const paneResizeUsage = `Usage:
   kelpi pane resize --ratio <0..1>                      # resize the calling pane
   kelpi pane resize --target <name-or-uuid> --ratio 0.4 # resize a specific pane
@@ -327,7 +383,10 @@ Exit codes: 0 on success, non-zero on failure.
 export const paneListUsage = `Usage:
   kelpi pane list [--workspace <name-or-uuid> | --current] [--json] [--no-header]
 
-Lists panes as a table (or a JSON array with --json).
+Lists panes as a table (or a JSON array with --json), every tab's panes, tab
+by tab. Once a workspace has more than one tab, the table gains a TAB column
+(the tab's number, * on the tab on screen) and the JSON entries carry tab_id,
+tab_number and is_active_tab.
 
 Options:
   --workspace <name-or-uuid>  Only panes in this workspace.
@@ -389,7 +448,9 @@ Lists workspaces as a table, or a JSON array with --json. Each entry
 carries id, name, group, color, pane count, created_at, last_accessed_at,
 last_activity_at, labels, muted, and the icon, agent session id and parent
 (parent_id, parent_name) when present. Nested workspaces follow their parent,
-and the table gains a PARENT column when any workspace is nested.
+and the table gains a PARENT column when any workspace is nested. A workspace
+with more than one tab carries tab_count and active_tab_id, and the table
+gains a TABS column.
 
 Options:
   --group <name-or-id>  Only list workspaces in this group (with the
@@ -644,6 +705,204 @@ Options:
 
 Exit codes: 0 on success, non-zero on failure (unknown/ambiguous
 workspace, not one of the ten colors).
+
+`;
+
+/** Shared by every `kelpi tab` verb that acts on one tab. */
+const TAB_ADDRESSING = `<tab> is the tab's number (1 is first, as ⌥⌘1-9 count), its id, or the title
+the tab bar shows (exactly, then ignoring case; two tabs with one title are
+refused). A number in range is always the position; past the last tab it is
+tried as a title. A tab id is found in any workspace. Without <tab> the calling
+pane's own tab is meant (requires KELPI_PANE_ID); a blank <tab> is refused.
+--workspace names the workspace (name or id); without it the calling pane's
+workspace, else the one on screen. Words after -- are names, even with a dash.`;
+
+export const tabUsage = `Usage:
+  kelpi tab list|new|select|rename|move|close|close-others|duplicate|merge|split|move-to-workspace [...]
+
+Every workspace has tabs in the title bar, and each tab its own split layout
+(workspace-feature.md §12).
+
+Subcommands:
+  list               List a workspace's tabs, or every workspace's with --all.
+  new                Open a new tab (in the background unless --focus).
+  select             Show a tab (alias: show).
+  rename             Name a tab, or --clear its name.
+  move               Move a tab to another position.
+  close              Close a tab and every pane in it.
+  close-others       Close every other tab of the workspace.
+  duplicate          Open a copy of a tab beside it.
+  merge              Merge a tab into the one before it.
+  split              Give each pane of a tab its own tab.
+  move-to-workspace  Move a tab to another workspace.
+
+See also kelpi pane move-to-tab and kelpi pane move-to-new-tab.
+Run \`kelpi tab <subcommand> --help\` for subcommand-specific usage.
+
+`;
+
+export const tabListUsage = `Usage:
+  kelpi tab list [--workspace <name-or-id> | --all] [--json] [--no-header]
+
+Lists a workspace's tabs: TAB (its number), ACTIVE (● on the tab on screen),
+TITLE (what the tab bar shows), PANES, STATUS (its busiest pane) and ID. With
+--json each entry also carries name (null while it is named after its pane),
+pane_ids, zoomed and its workspace.
+
+Options:
+  --workspace <name-or-id>  This workspace (default: the calling pane's, else the
+                            one on screen).
+  --all                     Every workspace's tabs, with a WORKSPACE column.
+  --json                    Print a JSON array instead of the table.
+  --no-header               Omit the table header row.
+  -h, --help                Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabNewUsage = `Usage:
+  kelpi tab new [--kind terminal|same|agent|web|scratchpad] [--name <name>]
+                [--url <url>] [--at <n> | --end] [--workspace <name-or-id>]
+                [--focus] [--json]
+
+Opens a new tab with one pane in it. Without --kind it opens what Settings ▸
+Workspaces "A new tab opens" says; "same" opens the kind of the focused pane.
+The tab opens in the background unless --focus is given, which shows it.
+
+Options:
+  --kind <kind>             terminal, same, agent, web or scratchpad.
+  --url <url>               A web tab at this address (implies --kind web; a
+                            bare host gets https://, as kelpi web open does).
+  --name <name>             Name the tab (default: named after its pane).
+  --at <n>                  Put it at position n (1 is first).
+  --end                     Put it after the last tab.
+  --workspace <name-or-id>  The workspace (default: the calling pane's, else the
+                            one on screen).
+  --focus                   Show the new tab.
+  --json                    Print the structured reply instead of the ack.
+  -h, --help                Show this help.
+
+Without --at or --end the tab goes where Settings "New tabs go" says.
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabSelectUsage = `Usage:
+  kelpi tab select [<tab>] [--workspace <name-or-id>] [--json]
+  kelpi tab show [<tab>] [--workspace <name-or-id>] [--json]
+
+Shows a tab in its workspace: it becomes that workspace's tab on screen. It does
+not switch workspaces, as pane split --focus does not; a window looking at
+another workspace stays where it is.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabRenameUsage = `Usage:
+  kelpi tab rename <tab> <new-name> [--workspace <name-or-id>] [--json]
+  kelpi tab rename <new-name>                 # the calling pane's tab
+  kelpi tab rename [<tab>] --clear            # named after its pane again
+
+Names a tab. A tab with no name is named after its focused pane.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabMoveUsage = `Usage:
+  kelpi tab move [<tab>] --to <n> [--workspace <name-or-id>] [--json]
+  kelpi tab move [<tab>] --end [--workspace <name-or-id>] [--json]
+
+Moves a tab to position n (1 is first), or after the last tab.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabCloseUsage = `Usage:
+  kelpi tab close [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
+
+Closes a tab and every pane in it (each can be reopened with ⇧⌘T). A
+workspace's only tab never closes; delete the workspace instead.
+
+A tab whose panes hold agent sessions (running, waiting for input, or
+resumable) is refused with the counts, as kelpi workspace delete is; pass
+--force (or -y) to close it anyway. Your own pane is not counted, so an agent
+can close its own tab. With --json a refusal prints its counts and exits 1.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabCloseOthersUsage = `Usage:
+  kelpi tab close-others [<tab>] [--workspace <name-or-id>] [--force|-y] [--json]
+
+Closes every tab of the workspace but this one, with their panes. Refused,
+with the counts, when those tabs hold agent sessions; pass --force (or -y) to
+close them anyway, as with kelpi tab close.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabDuplicateUsage = `Usage:
+  kelpi tab duplicate [<tab>] [--workspace <name-or-id>] [--focus] [--json]
+
+Opens a copy of a tab just after it, with the same layout (what each kind of
+pane becomes is in workspace-feature.md §12.5). The copy opens in the
+background unless --focus is given.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabMergeUsage = `Usage:
+  kelpi tab merge [<tab>] [--workspace <name-or-id>] [--json]
+
+Merges a tab into the one before it: its panes join that tab's layout. The
+first tab has nothing before it to merge into.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabSplitUsage = `Usage:
+  kelpi tab split [<tab>] [--workspace <name-or-id>] [--json]
+
+Gives each pane of a tab its own tab, in layout order, just after it.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const tabMoveToWorkspaceUsage = `Usage:
+  kelpi tab move-to-workspace [<tab>] --to-workspace <name-or-id> [--workspace <name-or-id>] [--focus] [--json]
+
+Moves a tab, with its panes, to another workspace. A workspace's only tab can
+move too: the workspace is left with a new empty tab. The move happens in the
+background unless --focus is given, which follows it.
+
+${TAB_ADDRESSING}
+
+Exit codes: 0 on success, non-zero on failure.
 
 `;
 

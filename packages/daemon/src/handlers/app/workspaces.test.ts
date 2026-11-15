@@ -56,6 +56,23 @@ describe('workspace-list', () => {
         });
     });
 
+    it('reports the tab count and the tab on screen once a workspace has a second tab (§12)', () => {
+        const h = harness({ initial: seeded(2) });
+        const tab = 'FFFFFFFF-0000-4000-8000-000000000001';
+        h.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: tab,
+            focus: true,
+            create: { type: 'create-pane', workspaceID: W1, paneID: 'EEEEEEEE-0000-4000-8000-000000000001', now: 1_755_500_000_000 }
+        });
+        const entries = h.reply({ command: 'workspace-list' })['workspaces'] as Record<string, unknown>[];
+        expect(entries.map((entry) => [entry['name'], entry['tab_count'], entry['active_tab_id']])).toEqual([
+            ['w1', 2, tab],
+            ['w2', undefined, undefined]
+        ]);
+    });
+
     it('reports the muted flag on every entry', () => {
         const h = harness({ initial: seeded(2) });
         h.dispatch({ type: 'set-workspace-muted', id: W2, muted: true });

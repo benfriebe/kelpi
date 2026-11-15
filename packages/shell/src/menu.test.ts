@@ -57,7 +57,11 @@ import {
     TOGGLE_SIDEBAR_LABEL,
     VIEW_MENU_LOG_FRAGMENT,
     appMenuTemplate,
+    applyWindowTabs,
     applyWorkspaceSelection,
+    CLOSE_TAB_MENU_ID,
+    NEXT_TAB_MENU_ID,
+    PREVIOUS_TAB_MENU_ID,
     closeRouteLogLine,
     debugMenuLogFragment,
     debugMenuSection,
@@ -74,6 +78,16 @@ import {
     switchWorkspacePosition,
     viewMenuTemplate,
     workspaceSelectionLogLine,
+    CLOSE_TAB_COMMAND,
+    CLOSE_TAB_LABEL,
+    MOVE_PANE_TO_NEW_TAB_COMMAND,
+    MOVE_PANE_TO_NEW_TAB_LABEL,
+    NEW_TAB_COMMAND,
+    NEW_TAB_LABEL,
+    NEXT_TAB_COMMAND,
+    NEXT_TAB_LABEL,
+    PREVIOUS_TAB_COMMAND,
+    PREVIOUS_TAB_LABEL,
     DECREASE_TEXT_SIZE_COMMAND,
     DECREASE_TEXT_SIZE_LABEL,
     INCREASE_TEXT_SIZE_COMMAND,
@@ -98,6 +112,10 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
             TOGGLE_TOOLBAR_LABEL,
             TOGGLE_STATUS_BAR_LABEL,
             TOGGLE_BOTTOM_PANEL_LABEL,
+            // workspace-feature.md §12: the workspace's tabs, on ⌥⌘] / ⌥⌘[.
+            'separator',
+            NEXT_TAB_LABEL,
+            PREVIOUS_TAB_LABEL,
             'separator',
             TOGGLE_ZEN_MODE_LABEL,
             RESET_WINDOW_ARRANGEMENT_LABEL,
@@ -356,6 +374,11 @@ describe('File menu (§APP-018 / §WS-151)', () => {
             SELECT_ALL_WORKSPACES_LABEL,
             DESELECT_ALL_WORKSPACES_LABEL,
             'separator',
+            // workspace-feature.md §12: below the Swift group, which stays row for row.
+            NEW_TAB_LABEL,
+            MOVE_PANE_TO_NEW_TAB_LABEL,
+            'separator',
+            CLOSE_TAB_LABEL,
             // N14: a real "Close" row where `{ role: 'close' }` used to sit. Same place, same
             // ⌘W — it is the ACTION that changed, and the row below asserts that.
             CLOSE_LABEL
@@ -422,8 +445,8 @@ describe('File menu (§APP-018 / §WS-151)', () => {
         // Select All / Deselect All are plain `Button`s in the Swift — outside the binding map,
         // and §4's action list has no name for either — so an accelerator here would be one this
         // port invented.
-        const selectAll = template.at(-4);
-        const deselectAll = template.at(-3);
+        const selectAll = template.find((item) => item.label === SELECT_ALL_WORKSPACES_LABEL);
+        const deselectAll = template.find((item) => item.label === DESELECT_ALL_WORKSPACES_LABEL);
         expect(selectAll?.label).toBe(SELECT_ALL_WORKSPACES_LABEL);
         expect(selectAll?.accelerator).toBeUndefined();
         expect(deselectAll?.label).toBe(DESELECT_ALL_WORKSPACES_LABEL);
@@ -532,6 +555,16 @@ describe('File menu (§APP-018 / §WS-151)', () => {
 
         expect(workspaceSelectionLogLine(2)).toBe('menu: Deselect All Workspaces enabled (2 selected)');
         expect(workspaceSelectionLogLine(0)).toBe('menu: Deselect All Workspaces disabled (0 selected)');
+    });
+
+    it('greys Close Tab and Show Next / Previous Tab while the window has one tab', () => {
+        const items = new Map([CLOSE_TAB_MENU_ID, NEXT_TAB_MENU_ID, PREVIOUS_TAB_MENU_ID].map((id) => [id, { enabled: true }]));
+        const menu = { getMenuItemById: (id: string) => items.get(id) ?? null };
+        expect(applyWindowTabs(menu, 1)).toBe(false);
+        expect([...items.values()].map((item) => item.enabled)).toEqual([false, false, false]);
+        expect(applyWindowTabs(menu, 2)).toBe(true);
+        expect([...items.values()].map((item) => item.enabled)).toEqual([true, true, true]);
+        expect(applyWindowTabs(null, 0)).toBe(false);
     });
 
     it('names the `switch-workspace-N` commands the client parses back', () => {
@@ -1063,6 +1096,12 @@ describe('menu accelerators follow the binding map (#47, §7.1)', () => {
             toggle_inspector: TOGGLE_INSPECTOR_ACCELERATOR,
             command_palette: COMMAND_PALETTE_ACCELERATOR,
             toggle_zen_mode: TOGGLE_ZEN_MODE_ACCELERATOR,
+            // workspace-feature.md §12.
+            new_tab: 'Alt+CommandOrControl+T',
+            close_tab: 'Alt+CommandOrControl+W',
+            next_tab: 'Alt+CommandOrControl+]',
+            previous_tab: 'Alt+CommandOrControl+[',
+            move_pane_to_new_tab: 'Alt+Shift+CommandOrControl+T',
             // #175's three rows are the only entries here that are NOT menu-bar actions: they
             // display a chord they do not register, so the derivation reaches them while the
             // dispatch layer does not (`MENU_ACCELERATOR_ACTIONS`).
@@ -1071,7 +1110,7 @@ describe('menu accelerators follow the binding map (#47, §7.1)', () => {
             reset_terminal_font_size: 'CommandOrControl+0'
         });
         expect(DEFAULT_MENU_ACCELERATORS).toEqual(defaults);
-        // Every one of the 20 menu-bar actions ships with a displayable chord (§4) except the three
+        // Every one of the 25 menu-bar actions ships with a displayable chord (§4) except the three
         // single-band toggles, which ship unbound and gain a chord only when the user binds one…
         const unbound = ['toggle_toolbar', 'toggle_status_bar', 'toggle_bottom_panel'];
         for (const action of MENU_BAR_ACTIONS) {
@@ -1206,5 +1245,21 @@ describe('#95 - the chords the platform owns, and the rows that answer them', ()
         // `unhide` (Show All) carries no accelerator, so nothing can swallow it and nothing has
         // to hand it back. It is deliberately absent from the list.
         expect(PLATFORM_CHORDS.some((chord) => (chord.role as string) === 'unhide')).toBe(false);
+    });
+});
+
+describe('the workspace tab rows (workspace-feature.md §12)', () => {
+    it('relay to the client, each with its own command', () => {
+        const sent: string[] = [];
+        const deps = { sendMenuRequest: (command: string) => { sent.push(command); return true; } };
+        const file = fileMenuTemplate({ ...deps, promptOpenFile: () => undefined, platform: 'darwin', closeFocusedPane: () => undefined });
+        const view = viewMenuTemplate(deps);
+        for (const label of [NEW_TAB_LABEL, MOVE_PANE_TO_NEW_TAB_LABEL, CLOSE_TAB_LABEL]) {
+            ((file.find((item) => item.label === label)?.click) as (() => void) | undefined)?.();
+        }
+        for (const label of [NEXT_TAB_LABEL, PREVIOUS_TAB_LABEL]) {
+            ((view.find((item) => item.label === label)?.click) as (() => void) | undefined)?.();
+        }
+        expect(sent).toEqual([NEW_TAB_COMMAND, MOVE_PANE_TO_NEW_TAB_COMMAND, CLOSE_TAB_COMMAND, NEXT_TAB_COMMAND, PREVIOUS_TAB_COMMAND]);
     });
 });

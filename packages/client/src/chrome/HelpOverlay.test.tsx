@@ -99,7 +99,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(row?.textContent).toContain('-');
     });
 
-    it('groups rows under the eight visible categories', () => {
+    it('groups rows under the nine visible categories', () => {
         renderHelp();
         const groups = [...document.querySelectorAll('[data-help-category]')].map((node) =>
             node.getAttribute('data-help-category')
@@ -108,6 +108,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
             'Pane Management',
             'Navigation',
             'Workspaces',
+            'Tabs',
             'View',
             'Files',
             'Search',
@@ -211,7 +212,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(shortcut('example.lab.toggle')?.getAttribute('data-help-shortcut')).toBe('');
         expect(shortcut('example.lab.toggle')?.textContent).toBe('-');
         // Plugin groups are not native categories.
-        expect(document.querySelectorAll('[data-help-category]')).toHaveLength(8);
+        expect(document.querySelectorAll('[data-help-category]')).toHaveLength(9);
     });
 
     it('follows a rebound or cleared plugin shortcut', () => {

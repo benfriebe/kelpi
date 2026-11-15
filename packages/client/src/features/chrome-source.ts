@@ -1,5 +1,6 @@
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER, type PredefinedLayoutKind } from '@kelpi/core/layout';
-import { syncedPaneIDs } from '@kelpi/daemon/store';
+import { onScreenPaneIDs, syncedPaneIDs, workspaceTabs } from '@kelpi/daemon/store';
+import { workspaceTabViews } from '../chrome/workspace-tabs';
 import type { JsonObject } from '@kelpi/protocol';
 import { footerGitStats, type FooterAssociation } from '../chrome/StatusFooter';
 import { compactStatLabel, detailStatLabel, SYSTEM_STAT_META, visibleStatKinds } from '../chrome/stats';
@@ -47,6 +48,13 @@ export interface ChromeFeatureHost {
     readonly restartControlServer: () => void;
     readonly restartUI: () => void;
     readonly selectPane: (workspaceID: string, paneID: string) => void;
+    /** workspace-feature.md §12: the tab actions the `kelpi.tab.*` commands run. */
+    readonly tabs: {
+        readonly newTab: () => boolean;
+        readonly closeActiveTab: () => boolean;
+        readonly selectTabStep: (delta: 1 | -1) => boolean;
+        readonly selectTab: (tabID: string) => boolean;
+    };
 }
 /** The registry produces both native controls and SDK discovery, and rechecks live state on invocation. */
 export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource {
@@ -74,11 +82,18 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
         const state = host.runtime.store.getState(), workspace = selectActiveWorkspace(state), focused = selectFocusedPaneID(state);
         const windowEnabled = ready() && !host.remoteWorkspaceSelected();
         const domainEnabled = windowEnabled && !!workspace;
+        const tabCount = workspace ? workspaceTabs(workspace).length : 0;
         return [
             { id: 'kelpi.layout.cycle', title: 'Cycle Layout', enabled: domainEnabled && !!focused, group: 'layout' },
             ...PREDEFINED_LAYOUT_ORDER.map((layout, index): ChromeCommand => ({ id: `kelpi.layout.select.${layout}`, title: PREDEFINED_LAYOUT_DISPLAY_NAMES[layout],
                 enabled: domainEnabled && !!focused, checked: workspace?.currentLayoutIndex === index, group: 'layout' })),
             { id: 'kelpi.input.toggleSync', title: 'Synchronise Input', enabled: domainEnabled, checked: workspace?.isSyncInputActive ?? false, group: 'window' },
+            // workspace-feature.md §12: the bundled title bar's tab controls, for a replacement one.
+            { id: 'kelpi.tab.new', title: 'New Tab', enabled: domainEnabled, group: 'window' },
+            { id: 'kelpi.tab.close', title: 'Close Tab', enabled: domainEnabled && tabCount > 1, group: 'window' },
+            { id: 'kelpi.tab.next', title: 'Show Next Tab', enabled: domainEnabled && tabCount > 1, group: 'window' },
+            { id: 'kelpi.tab.previous', title: 'Show Previous Tab', enabled: domainEnabled && tabCount > 1, group: 'window' },
+            { id: 'kelpi.tab.select', title: 'Show Tab', enabled: domainEnabled, group: 'window' },
             { id: 'kelpi.sidebar.left', title: `${sidebar('left').visible ? 'Hide' : 'Show'} ${sidebar('left').title}`, enabled: true, group: 'window' },
             { id: 'kelpi.sidebar.right', title: `${sidebar('right').visible ? 'Hide' : 'Show'} ${sidebar('right').title}`, enabled: true, group: 'window' },
             ...arrangementCommands(),
@@ -114,6 +129,9 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
             return {
                 connection: state.ui.connection, ready: ready(), remoteWorkspaceSelected: host.remoteWorkspaceSelected(),
                 workspace: workspace ? { id: workspace.id, name: workspace.name, color: workspace.color, paneCount: workspace.panes.length,
+                    onScreenPaneCount: onScreenPaneIDs(workspace).length,
+                    tabs: workspaceTabViews(workspace).map((tab) => ({ id: tab.id, title: tab.title, active: tab.active, paneCount: tab.paneCount,
+                        status: tab.status, attention: tab.attention, unvisited: tab.unvisited, zoomed: tab.zoomed })),
                     layout: workspace.currentLayoutIndex === null ? null : PREDEFINED_LAYOUT_ORDER[workspace.currentLayoutIndex] ?? null,
                     syncInputActive: workspace.isSyncInputActive, syncedPaneCount: syncedPaneIDs(workspace).length } : null,
                 focusedPane: pane ? { id: pane.id, title: pane.label ?? pane.title ?? pane.workingDirectory, type: pane.type,
@@ -138,7 +156,7 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
             const command = commands().find(command => command.id === id);
             if (!item?.enabled && !command?.enabled) throw new Error('Chrome command is unavailable or disabled.');
             const workspace = selectActiveWorkspace(host.runtime.store.getState());
-            if (id.startsWith('kelpi.layout.') || id === 'kelpi.input.toggleSync') {
+            if (id.startsWith('kelpi.layout.') || id === 'kelpi.input.toggleSync' || id.startsWith('kelpi.tab.')) {
                 if (!workspace || target['workspaceID'] !== workspace.id || host.remoteWorkspaceSelected()) throw new Error('Chrome command workspace is no longer selected.');
             }
             if ((id.startsWith('menu:') || id.startsWith('item:')) && (workspace?.id !== target['workspaceID'] || host.remoteWorkspaceSelected())) throw new Error('Chrome command workspace is no longer selected.');
@@ -152,6 +170,16 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
             switch (id) {
                 case 'kelpi.layout.cycle': if (paneID) return complete(host.runtime.commands.cycleLayout({ paneID })); break;
                 case 'kelpi.input.toggleSync': return complete(host.runtime.commands.setSyncInput({ action: 'toggle', workspace: workspace!.id }));
+                case 'kelpi.tab.new': if (host.tabs.newTab()) return; break;
+                case 'kelpi.tab.close': if (host.tabs.closeActiveTab()) return; break;
+                case 'kelpi.tab.next': if (host.tabs.selectTabStep(1)) return; break;
+                case 'kelpi.tab.previous': if (host.tabs.selectTabStep(-1)) return; break;
+                case 'kelpi.tab.select': {
+                    const tabID = target['tabID'];
+                    if (typeof tabID !== 'string' || !workspaceTabs(workspace!).some((tab) => tab.id === tabID)) throw new Error('Show Tab requires a tabID of the selected workspace.');
+                    if (host.tabs.selectTab(tabID)) return;
+                    break;
+                }
                 case 'kelpi.sidebar.left': (swapped() ? host.toggleInspector : host.toggleSidebar)(); return;
                 case 'kelpi.sidebar.right': (swapped() ? host.toggleSidebar : host.toggleInspector)(); return;
                 case 'kelpi.inspector.toggle': host.toggleInspector(); return;

@@ -118,7 +118,14 @@ export const WIRE_FIELD_TYPES = {
     if_revision: 'int',
     start_agent: 'string',
     agent_prompt: 'string',
-    send_prompt: 'bool'
+    send_prompt: 'bool',
+    kind: 'string',
+    to_workspace: 'string',
+    at_end: 'bool',
+    workspace_id: 'uuid',
+    tab_id: 'uuid',
+    to_workspace_id: 'uuid',
+    target_pane_id: 'uuid'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;
@@ -151,7 +158,9 @@ export const EMPTY_STRING_NORMALIZED_FIELDS: ReadonlySet<string> = new Set([
     'block',
     'behavior',
     'target_path',
-    'start_agent'
+    'start_agent',
+    'kind',
+    'to_workspace'
 ]);
 
 export interface WireFieldTypeError {

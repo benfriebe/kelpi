@@ -411,6 +411,18 @@ keyboard out of the pane the user is typing in. The window's own gestures (⌘D,
 menu items, the inspector) and `kelpi pane split --focus` send `focus: true`, which keeps the
 pre-#295 behaviour below.
 
+**In the source's own tab (workspace-feature.md §12.3).** A source in a background tab of its
+workspace is split there: the store runs the split with that tab borrowed onto the screen and
+puts the user's tab back, so an agent in a background tab adds its pane to its own tab without
+moving anyone. Only `focus: true` leaves that tab on screen.
+
+**`agent-pane-placement = new-tab` (workspace-feature.md §12.6).** A background split then
+splits nothing: the new pane (same acked id, label and directory) is the first pane of a new
+background tab, unvisited, inserted just after the source's tab, or at the end under
+`new-tab-position = end` (`dispatchInNewTab`, `handlers/pane/create.ts`). The setting is read
+per command; under `own-tab` (the default), and for every `focus: true` split, step 4 below
+splits as it always has.
+
 Routing precedence (identical for `pane-create`):
 
 ```
@@ -419,7 +431,7 @@ if target == null and workspaceFilter != null:
   // beating the caller's forwarded KELPI_PANE_ID.
   ws = resolveWorkspace(workspaceFilter)
        or error("workspace not found: {workspaceFilter}")
-  source = ws.focusedPaneID ?? ws.panes.first?.id
+  source = ws.focusedPaneID ?? (first pane of ws's tab on screen)
        or error("workspace '{ws.name}' has no pane to split — use `kelpi pane create --workspace {workspaceFilter}`")
 else if target != null or paneID != null:
   (source, ws) = resolvePaneTarget(paneID, target, workspaceFilter)   // errors pass through
@@ -457,14 +469,16 @@ Side effects & reply:
    without → a plain split inheriting `source`'s cwd (step 0's answer when there was one).
    Both carry `direction ?? horizontal`,
    `label = name`, `focus`, and the pre-minted `newID` so the created pane really gets the
-   acked id. The reducer focuses the new pane only when `focus` is true.
+   acked id. The reducer focuses the new pane only when `focus` is true. A background split
+   under `agent-pane-placement = new-tab` dispatches `create-tab` instead (above), its pane's
+   cwd `path`, else step 0's answer, else `source`'s stored directory.
 
 ### 4.2 `pane-create` → handlePaneCreate
 
 Same inputs minus `direction` (so `focus` too, with the same background default). Same
 three-way routing as `pane-split`, except the
 `--workspace`-alone branch does **not** require the workspace to have a pane
-(`source = ws.focusedPaneID ?? ws.panes.first?.id`, possibly null), and the
+(`source = ws.focusedPaneID ?? (first pane of the tab on screen)`, possibly null), and the
 outside-caller error string is
 `"pane create requires --target or --workspace when called from outside a Kelpi pane"`.
 
@@ -472,7 +486,7 @@ After the defensive workspace check, and after §4.1's step 0 when the create wi
 source without `path` (an empty workspace asks nothing):
 
 1. Mint `newID`; **reply** with the same payload shape as `pane-split`.
-2. `source = resolvedSource ?? ws.focusedPaneID ?? ws.panes.first?.id`.
+2. `source = resolvedSource ?? ws.focusedPaneID ?? (first pane of the tab on screen)`.
 3. If `source == null` (**empty workspace**): dispatch create-first-pane carrying `newID`,
    `label = name`, `workingDirectory = path` — this is the route a split-only handler
    cannot serve, and the acked pane must actually get the label/path. The first pane of a
@@ -480,7 +494,7 @@ source without `path` (an empty workspace asks nothing):
 4. Otherwise (populated workspace): focus `source` only when `focus` is true; with `path` →
    split-at-path of `source` (default horizontal) with `label`/`newID`; without → plain
    horizontal split of `source` with `label`/`newID`, in step 0's directory when there was
-   one. Background as in §4.1.
+   one. Background as in §4.1, the source's own tab and `agent-pane-placement` included.
 
 ### 4.3 `pane-close` → handlePaneClose
 
@@ -746,9 +760,14 @@ pane = sourceWS.panes[paneID]; if missing: drop.
 // not on the Pane struct — capture it before removal or the target gets
 // a blank pane and `kelpi web url` fails with "web pane state missing".
 webState = pane.type == "web" ? sourceWS.webPanes[paneID] : null
+// `--here` sources: the parked pane pane.parkedSourcePaneID names, and the one THAT names, and
+// so on (`movingCargo`, workspace-feature.md §12.5). Closing the pane in its new workspace
+// un-parks its source there; left behind, the source's PTY lives on where nothing reaches it.
+parked = the chain of parkedPanes from pane.parkedSourcePaneID, with their webPanes entries
 
 REMOVE from source:
   panes.remove(paneID); webPanes.delete(paneID) if webState
+  parkedPanes.remove(parked); webPanes.delete(each parked id that has one)
   syncInputExcluded.delete(paneID)                     // else a later move-back silently re-applies the opt-out
   layout = layout.removing(paneID); currentLayoutIndex = null
   focusHistory: remove all entries == paneID
@@ -763,6 +782,7 @@ REMOVE from source:
 
 ADD to target:
   panes.append(pane); webPanes[paneID] = webState if any
+  parkedPanes.append(parked); webPanes += the parked panes' entries
   if target layout is empty: layout = leaf(paneID)
   else:
     anchor = target.focusedPaneID ?? target layout's first leaf
@@ -800,9 +820,16 @@ Validation:
   `error("no workspace contains the requesting pane")`; lists that workspace.
 - any other scope value → `error("unknown scope: {scope}")` (empty string when null).
 
-Per workspace, panes are enumerated in **layout order** (the layout tree's leaf order),
-skipping ids with no backing pane; parked panes never appear (not in the layout).
-Timestamps: ISO 8601 with internet date-time format.
+Per workspace, panes are enumerated **tab by tab** in bar order, each tab in **layout order**
+(its tree's leaf order; a zoomed tab lists only its zoomed pane, as a zoomed workspace did
+before tabs),
+skipping ids with no backing pane; parked panes never appear (not in any tree). A background
+tab's panes are listed and addressable like the ones on screen (workspace-feature.md §12.6).
+`is_focused` is true only for the focused pane of the tab on screen: a background tab
+remembers a focused pane, but the user's keys are not there. Once the workspace has two or
+more tabs every entry also carries `tab_id`, `tab_number` (1-based position in the bar, the N
+of ⌥⌘N) and `is_active_tab` (the tab on screen); with one tab the three are absent
+(`handlers/pane/list.ts`). Timestamps: ISO 8601 with internet date-time format.
 
 ```jsonc
 {"ok": true, "panes": [
@@ -825,7 +852,8 @@ Timestamps: ISO 8601 with internet date-time format.
     "agent": "claude",                     // last-known kind, never cleared — NOT "attached now"
     "background_tasks": 2,                 // only when > 0
     "file_path": "/Users/me/notes.md",     // markdown/diff/web panes
-    "group_id": "…", "group_name": "Client X"   // only when the workspace is in a group
+    "group_id": "…", "group_name": "Client X",  // only when the workspace is in a group
+    "tab_id": "…", "tab_number": 2, "is_active_tab": false   // only with two or more tabs
   }
 ]}
 ```
@@ -919,6 +947,169 @@ Inputs: `paneID?`, `target?`, `workspaceFilter?`.
 
 The window sends this for ⌘K (`clear_screen`, config-keybindings.md §4), and only when the
 focused pane's own renderer is not on the alternate screen (`client/src/app/clear-screen.ts`).
+
+### 4.17 Workspace tab verbs
+
+The window's tab gestures (shell-ui.md §3.3) raise the tab actions of workspace-feature.md
+§12.5 through twelve WS `command` frames, by id. The control socket carries the same verbs
+with names, for `kelpi tab` and agents (§4.17.1). On the WebSocket they ride the pane
+lifecycle channel beside `reopen-closed-pane`
+(`packages/daemon/src/ws/panes.ts`; the verbs are `packages/daemon/src/ws/workspace-tabs.ts`)
+because they are more than a dispatch: a new tab mints ids and may need a PTY, a close ends
+PTYs as `pane-close` does, and a move changes which sync group a shell is in, so each refreshes
+the sync group of every workspace it touched (§5). Every reply is `{ok: true, …}` or
+`{ok: false, error}`, and every new tab id is a fresh UUID.
+
+Shared rules: `workspace_id` is an id, never a name; an absent or unknown one is refused
+`"<verb> requires a known workspace_id"`, and a `tab_id` the workspace does not have
+`"<verb>: no such tab in '<workspace name>'"`. An `index` is a non-negative integer (anything
+else counts as absent). `focus`, where a verb takes it, defaults to true: only `focus: false`
+leaves the change in the background.
+
+- **`workspace-tab-new`** `{workspace_id, kind?, url?, index?, focus?, source_pane_id?}`: a new
+  tab holding one new pane (`create-tab`), at `index`, else where `new-tab-position` puts it.
+  "The focused pane" below, and the tab "next to the current one" follows, is `source_pane_id`'s
+  when it names a visible pane of the workspace (the control socket sends its caller, §4.17.1),
+  else the tab on screen's focused pane (the window sends none). `kind` is
+  `terminal`, `same`, `agent`, `web` or `scratchpad`; absent, `new-tab-opens` decides
+  (config-keybindings.md §1.2). `terminal` and `agent` are a shell in the workspace's folder
+  (its first repository association's checkout, else the focused pane's directory), and
+  `agent` then starts the agent `new-workspace-agent` names in it (Claude for `none`); `same`
+  is a blank web pane or an empty scratchpad when the focused pane is one, else a terminal
+  where the focused shell really is (the OS is asked first, as a split asks it, and the reply
+  waits for the answer; with none, the shell's stored directory, which OSC 7 keeps current);
+  `web` is a blank web pane, or one at `url` when it is given (normalized as `web-open` does: a
+  bare host gets `https://`, a local one `http://`, and `about:blank` is the blank page); a
+  `url` with no `kind` means `web`. `scratchpad` is an empty scratchpad.
+  A shell gets its PTY. Reply `workspace_id`, `tab_id`, `pane_id`, `kind` (as resolved, so never
+  `same`), and `url` (normalized) for a web tab. Refusals: `unknown tab kind '<kind>': use
+  terminal, same, agent, web, scratchpad`; `workspace-tab-new: a url is for a web tab, not a
+  <kind> tab`; `workspace-tab-new: url must be a non-empty string`;
+  `this daemon cannot start agents` (an `agent` tab on a daemon composed without the agent
+  launcher); `the new tab could not be opened` (the create made nothing).
+- **`workspace-tab-select`** `{workspace_id, tab_id}`: shows the tab (`select-tab`). Reply
+  `workspace_id`, `tab_id`.
+- **`workspace-tab-rename`** `{workspace_id, tab_id, name}`: `name` is a string (trimmed; blank
+  clears it) or null (named after its focused pane again). Anything else, absence included, is
+  refused `workspace-tab-rename requires a name (or null to clear it)`. Reply `workspace_id`,
+  `tab_id`.
+- **`workspace-tab-move`** `{workspace_id, tab_id, index}`: reorders; `index` counts the other
+  tabs and is clamped. Refused `workspace-tab-move requires an index` without one. Reply
+  `workspace_id`, `tab_id`.
+- **`workspace-tab-close`** `{workspace_id, tab_id}`: closes every pane in the tab, and so the
+  tab (`close-tab`; each pane lands in the reopen stack). Refused
+  `a workspace keeps at least one tab` for the only tab. Document panes save first, as for a
+  pane's close: a save that fails refuses the whole close with its own error. Every pane the
+  close removed, one a `--here` close un-parked included, then has its PTY ended and its
+  terminal state disposed. Reply `workspace_id`, `tab_id`, `closed` (how many panes the tab
+  held).
+- **`workspace-tab-close-others`** `{workspace_id, tab_id}`: the same for every other tab, the
+  named one left on screen. Same reply; with one tab it closes nothing.
+- **`workspace-tab-split-panes`** `{workspace_id, tab_id}`: every pane but the first (layout
+  order) gets a tab of its own, after the tab. Refused `the tab has only one pane`. Reply
+  `workspace_id`, `tab_id`, `tab_ids` (the new tabs, in bar order).
+- **`workspace-tab-merge-previous`** `{workspace_id, tab_id}`: the tab's tree joins the previous
+  tab's, side by side, and the tab goes. Refused
+  `the first tab has no tab before it to merge into`. Reply `workspace_id`, `tab_id` (the tab
+  it went INTO, which is the one left) and `merged_tab_id` (the tab that went).
+- **`workspace-tab-move-to-workspace`** `{workspace_id, tab_id, to_workspace_id, focus?}`: moves
+  the tab with its panes and tree to the end of the other workspace's bar; with `focus` it is
+  shown there and that workspace becomes the daemon's active one. A workspace's only tab moves
+  too, leaving an empty tab behind. Refusals: `workspace-tab-move-to-workspace requires a known
+  to_workspace_id`, `the tab is already in that workspace`, `the tab could not be moved`.
+  Reply `workspace_id` (the DESTINATION), `tab_id`.
+- **`workspace-tab-duplicate`** `{workspace_id, tab_id, focus?}`: Duplicate Tab
+  (`duplicate-tab`, workspace-feature.md §12.5): a copy of the tab just after it, with its name,
+  tree and ratios and a fresh pane of the same kind for every pane in it, shown unless
+  `focus: false`. The daemon first asks the OS where each shell in the tab really is, so the
+  reply waits; it then re-reads the tab, mints a pane id for every pane it holds by then (and a
+  web tab id for each web pane), dispatches once and spawns the copies' shells there. A copy
+  never carries its source's label or agent session, and no agent is started. Refusals: the
+  shared ones, and `the tab could not be duplicated`. Reply `workspace_id`, `tab_id` (the NEW
+  tab), `pane_ids` (the copies, in the tab's layout order).
+- **`pane-move-to-new-tab`** `{pane_id, index?, focus?}`: takes the pane out of its tab into a
+  new tab at `index`, else just after its tab; a pane alone in its tab moves that tab to
+  `index` instead. Refused `pane-move-to-new-tab requires a pane in a tab` (no `pane_id`, or an
+  unknown or parked pane). Reply `workspace_id`, `pane_id`,
+  `tab_id` (the tab the pane is in afterwards).
+- **`pane-move-to-tab`** `{pane_id, tab_id, target_pane_id?, zone?, focus?}`: puts the pane into
+  another tab of its own workspace, beside `target_pane_id` on `zone`; without a `zone`, to the
+  right of `target_pane_id`, else of that tab's focused pane. `zone` is a wire edge, `above`,
+  `below`, `left-of` or `right-of`, as `pane-move-adjacent` takes it (§4.10). Refusals:
+  `pane-move-to-tab requires a pane and a tab of the same workspace`,
+  `unknown zone '<zone>': use above, below, left-of, right-of`. A pane already in that tab
+  changes nothing. Reply `workspace_id`, `pane_id`, `tab_id`.
+
+#### 4.17.1 On the control socket
+
+The control socket answers the same verbs, plus `workspace-tab-list`, with the control
+socket's conventions (`packages/daemon/src/handlers/pane/tabs.ts`, wire-protocol.md §6.10).
+Each handler resolves what was named, then runs the verb above on the same channel, built per
+command so it reads the settings of the moment:
+
+- **Addressing.** `workspace` is a name-or-id (§2.1, strict). Absent, the workspace holding
+  the tab named by id (`tab_id`, or a `tab` that is a tab's UUID: tab ids are unique across
+  workspaces), else the workspace of `pane_id` (the caller), else the active one. A `pane_id`
+  that names no visible pane (closed, or parked behind a `--here` open) is refused as the pane
+  verbs refuse it: `origin pane '<id>' no longer exists; pass --workspace <name-or-id> to
+  address a tab in another workspace`, never a fall back to the workspace on screen. `tab` is a
+  1-based number, a tab id, a name the user gave the tab (exactly, then ignoring case), or the
+  title the bar derives from an unnamed tab's pane (`workspaceTabTitle`, the same two ways).
+  A user's name always wins over a derived title, so a program that sets its terminal title
+  (or a page its `<title>`) can neither shadow a named tab nor make its name ambiguous; two tabs
+  that match at the same step are refused, never guessed. A number in range is
+  always the position; one past the last tab is tried as a title before it is refused (`no
+  tab <n> in workspace '<name>' (it has <count> tabs)`), so a tab named "7" stays reachable in
+  a two-tab workspace. A verb on one tab that names none takes the tab holding `pane_id`, else
+  is refused `name a tab in workspace '<name>': a number, an id or a title`.
+  `pane-move-to-tab` and `pane-move-to-new-tab` resolve their pane as every pane-target
+  command does (§2.4, `target` then `pane_id`), and the `tab`, and an `anchor`, within that
+  pane's workspace; the anchor must be in that tab. An anchor in the pane's OWN tab moves it
+  beside that pane, as `pane-move-adjacent` does (§4.10), rather than reporting a move that
+  changed nothing.
+- **Blank is refused, never absent.** Absent `tab` or `workspace` means the caller's own, so a
+  present but blank `tab`, `tab_id`, `workspace`, `workspace_id`, `to_workspace`,
+  `to_workspace_id`, `anchor` or `target_pane_id` (an unset variable: `kelpi tab close "$T"`)
+  is refused at decode with `<field> is empty (an unset variable?)`, before anything is
+  resolved; the CLI refuses it before sending.
+- **The WS shape is accepted.** A line written for the window (`workspace_id`, `tab_id`,
+  `to_workspace_id`, and `target_pane_id` for `pane-move-to-tab`) acts on exactly what it
+  names: each id resolves by id only, and giving both spellings of one (`tab` and `tab_id`) is
+  refused. Before, those keys were unknown and dropped, and the verb fell back to the caller's
+  own tab.
+- **Destination.** `workspace-tab-move-to-workspace`'s `to_workspace` resolves as
+  `pane-move-to-workspace`'s does (§2.3, lenient: an id, then a name in any case, then a slug).
+- **Background by default.** Absent `focus` is false (#295), where the WS frames read it as a
+  gesture; the handler always sends the channel an explicit `focus`.
+- **Positions.** `index` is the tab's 0-based position once placed (an `index` past the end is
+  the end; negative is refused), `at_end` the end. `workspace-tab-move` refuses a position past
+  the last tab: `no position <n> in workspace '<name>' (it has <count> tabs)`.
+- **`workspace-tab-new`** takes `name` too, which renames the new tab once it exists, and
+  passes `url` through (a web tab at that address; `kelpi tab new --url`). When `pane_id` is a
+  pane of the workspace, the handler sends it to the channel as `source_pane_id`: a tab with no
+  position goes just after the CALLER's tab (not the one on screen) unless "New tabs go" says
+  the end, and `kind: "same"` copies the caller's pane, a shell in the directory it is in now.
+  The window sends no `source_pane_id`, so its tabs follow the tab on screen and its focused
+  pane.
+- **Closing over agents.** `workspace-tab-close` and `workspace-tab-close-others` refuse when
+  the panes they would end (the shells a `--here` open parked behind them included, the caller's
+  own pane not) hold agent sessions, counted as `workspace-delete` counts them (§2.3: running,
+  waiting for input, or resumable): `tab <n> has <counts>; pass --force to close anyway` (or
+  `the other tabs of workspace <name> have …`), with `active_agents`, `running`, `waiting` and
+  `inactive` beside the error. `force: true` closes anyway. The WS verbs above never ask; the
+  window raises its own confirmation (`TabCloseGate`) first.
+- **Replies** add `workspace_name` and `tab_number`, as both stand after the change, to the
+  channel's reply (wire-protocol.md §6.10 lists the extras per verb). A `name` in a reply is
+  the name as stored (trimmed; null once a blank rename has cleared it), not as typed.
+- **Refusals** of its own: `the pane is alone in its tab already` (`pane-move-to-new-tab`; move
+  the tab instead), `the pane is in that tab already` (`pane-move-to-tab` without an anchor),
+  `no pane matching '<anchor>' in that tab`. A verb the channel does not know answers
+  `this Kelpi does not support <verb>`.
+
+`workspace-tab-list` `{workspace?, pane_id?, all?}` answers every tab of one workspace (or of
+all, with `all`) in bar order: `id`, `number`, `name` (null while unnamed), `title`,
+`workspace_id`, `workspace_name`, `pane_ids` (layout order), `pane_count`, `is_active`,
+`status` (the busiest pane's) and `zoomed`.
 
 ---
 
@@ -1708,13 +1899,15 @@ afterwards (`files.ts:120`).
 ### 8.3 `layout-cycle` → layoutCycle(paneID)
 
 Workspace containing the pane (visible panes only); drop if none. Dispatch
-cycle-predefined-layout on that workspace.
+cycle-predefined-layout on that workspace, naming the pane, so it lays out the caller's own
+tab: a caller in a background tab rearranges that tab and leaves the user's tab on screen
+(workspace-feature.md §12.3). The tab needs two or more panes, as the workspace once did.
 
 ### 8.4 `layout-select` → layoutSelect(paneID, name)
 
 Same workspace lookup, **and** `name` must be a valid predefined layout raw value:
 `even-horizontal | even-vertical | main-horizontal | main-vertical | tiled` — otherwise
-silently drop. Dispatch select-layout.
+silently drop. Dispatch select-layout, naming the pane, so it too lays out the caller's tab.
 
 ---
 
@@ -1984,7 +2177,8 @@ hook scripts and saved state keep working; each explains why the code does somet
    `handlers/app/common.ts` strips the milliseconds `toISOString()` would add so the output
    matches what scripts already parse.
 9. **Stable orderings in replies.** `synced_pane_ids` and the `excluded` array are sorted
-   by UUID string; `pane-list` follows layout-tree leaf order; `workspace-list`/`group-list`
+   by UUID string; `pane-list` follows the tabs in bar order, each in layout-tree leaf order;
+   `workspace-list`/`group-list`
    follow sidebar order with a dedupe + never-hide append; `group-reorder`'s reply filters
    dangling ids while the stored order keeps them at the tail. Scripts diff these outputs,
    so the sorts are preserved.
@@ -2015,7 +2209,9 @@ hook scripts and saved state keep working; each explains why the code does somet
     the distinct `"pane capture failed: …"` line instead.
 16. **Zoom interactions.** `pane-resize` refuses while zoomed (specific error), and
     `pane-move-to-workspace` un-zooms by restoring the saved layout minus the moved pane.
-    Both touch points are preserved.
+    Moving any other pane leaves the zoom on and takes the pane out of the saved layout too, so
+    un-zooming (or a save, which writes the saved layout) never brings back a leaf whose pane
+    lives in another workspace. Both touch points are preserved.
 17. **`workspace-delete --prune-worktree` is daemon-side.** The CLI sends
     `prune_worktrees` and the daemon removes the workspace's linked worktrees from its repo
     associations (graft-git.md §8.7). The `path` field (first shell pane's cwd) is still

@@ -56,6 +56,16 @@ export const TOGGLE_STATUS_BAR_COMMAND = 'toggle-status-bar';
 export const TOGGLE_BOTTOM_PANEL_COMMAND = 'toggle-bottom-panel';
 export const RESET_WINDOW_ARRANGEMENT_COMMAND = 'reset-window-arrangement';
 
+/**
+ * workspace-feature.md §12: File ▸ New Tab / Close Tab / Move Pane to New Tab and View ▸ Show
+ * Next / Previous Tab, each onto the handler its key action runs. Pinned in both suites.
+ */
+export const NEW_TAB_COMMAND = 'new-tab';
+export const CLOSE_TAB_COMMAND = 'close-tab';
+export const NEXT_TAB_COMMAND = 'next-tab';
+export const PREVIOUS_TAB_COMMAND = 'previous-tab';
+export const MOVE_PANE_TO_NEW_TAB_COMMAND = 'move-pane-to-new-tab';
+
 /** File ▸ Switch to Workspace 1…9 (⌘1…⌘9), as `switch-workspace-1` … `switch-workspace-9`. */
 export const SWITCH_WORKSPACE_COMMAND_PREFIX = 'switch-workspace-';
 
@@ -103,6 +113,23 @@ export function windowChromeReport(
     return {
         type: 'window-chrome',
         titleBarHidden,
+        ...(shellWindowID === null ? {} : { windowID: shellWindowID })
+    };
+}
+
+/**
+ * workspace-feature.md §12: how many tabs this window draws, for its shell (protocol
+ * `WS_WINDOW_TABS_MESSAGE`). The shell greys Close Tab and Show Next / Previous Tab with one tab,
+ * and leaves a focused web page the tab chords this window could not use. Scoped to this page's
+ * shell window as the reports above are.
+ */
+export function windowTabsReport(
+    tabs: number,
+    shellWindowID: string | null
+): { type: 'window-tabs'; tabs: number; windowID?: string } {
+    return {
+        type: 'window-tabs',
+        tabs,
         ...(shellWindowID === null ? {} : { windowID: shellWindowID })
     };
 }

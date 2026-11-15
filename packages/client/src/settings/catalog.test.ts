@@ -20,8 +20,20 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 66 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(66);
+    it('is the 80 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(80);
+    });
+
+    it('lists the workspace tab actions under Tabs (workspace-feature.md §12)', () => {
+        expect(actionsInCategory('Tabs')).toEqual([
+            'new_tab',
+            'close_tab',
+            'next_tab',
+            'previous_tab',
+            'move_pane_to_new_tab',
+            ...Array.from({ length: 9 }, (_, index) => `go_to_tab_${String(index + 1)}`)
+        ]);
+        expect(actionLabel('go_to_tab_3')).toBe('Go to Tab 3');
     });
 
     it('lists the recent-workspace switcher under Workspaces', () => {
@@ -66,6 +78,7 @@ describe('the action catalog', () => {
             'Pane Management',
             'Navigation',
             'Workspaces',
+            'Tabs',
             'View',
             'Files',
             'Search',
@@ -79,7 +92,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(66 - 11);
+        expect(visible).toHaveLength(80 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

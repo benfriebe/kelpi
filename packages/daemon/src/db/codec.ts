@@ -29,6 +29,7 @@ import {
     encodePaneLayoutJSON,
     encodeTopLevelOrderJSON,
     encodeWebTabsJSON,
+    encodeWorkspaceTabsJSON,
     epochSecondsFromUnixMillis,
     epochSecondsFromUnixSeconds,
     epochSecondsToColumn,
@@ -39,6 +40,7 @@ import {
     parseIconString,
     parseUUID,
     parseWebTabsJSON,
+    parseWorkspaceTabsJSON,
     tryParseJSON,
     workspaceSidebarID,
     type IconRef,
@@ -93,6 +95,10 @@ export interface WorkspaceRow {
     readonly childrenCollapsed: number;
     /** agent-lifecycle §5.10: the pane status vocabulary, set by hand on the workspace. */
     readonly status: string;
+    /** workspace-feature.md §12: every tab with its own tree (NULL = one tab, `layoutJSON`). */
+    readonly tabsJSON: string | null;
+    /** §12: the tab on screen; `layoutJSON` is its tree. */
+    readonly activeTabID: string | null;
 }
 
 export interface PaneRow {
@@ -361,7 +367,16 @@ export function encodeWorkspaceRow(workspace: PersistedWorkspace, sortOrder: num
                 ? null
                 : encodeChildOrderJSON(workspace.childOrder),
         childrenCollapsed: workspace.childrenCollapsed === true ? 1 : 0,
-        status: workspace.status ?? 'idle'
+        status: workspace.status ?? 'idle',
+        // Written even for one tab: its name and unvisited flag live nowhere else.
+        tabsJSON:
+            workspace.tabs === undefined || workspace.tabs.length === 0
+                ? null
+                : encodeWorkspaceTabsJSON(workspace.tabs),
+        activeTabID:
+            workspace.tabs === undefined || workspace.tabs.length === 0 || workspace.activeTabID == null
+                ? null
+                : normalizeUUIDLoose(workspace.activeTabID)
     };
 }
 
@@ -574,9 +589,18 @@ export function decodeWorkspaceRow(row: SqlRow): DecodedWorkspaceScalars | null 
             labels: decodeLabelsJSON(textColumn(row, 'labelsJSON')),
             childOrder: decodeChildOrderJSON(textColumn(row, 'childOrderJSON')),
             childrenCollapsed: boolColumn(row, 'childrenCollapsed') ?? false,
-            status: decodePaneStatus(textColumn(row, 'status'))
+            status: decodePaneStatus(textColumn(row, 'status')),
+            // §12: NULL, absent or undecodable reads as one tab holding `layoutJSON` (the
+            // restore in `store/snapshot.ts` builds it), as does an active id it does not list.
+            ...tabColumns(row)
         }
     };
+}
+
+function tabColumns(row: SqlRow): Pick<PersistedWorkspace, 'tabs' | 'activeTabID'> {
+    const tabs = parseWorkspaceTabsJSON(textColumn(row, 'tabsJSON'));
+    if (tabs === null || tabs.length === 0) return {};
+    return { tabs, activeTabID: parseUUID(textColumn(row, 'activeTabID')) };
 }
 
 export interface DecodedPaneRow {

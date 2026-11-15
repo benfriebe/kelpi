@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetGestures } from '../chrome/gesture-reset';
+import { setTabDragWorkspace } from '../chrome/tab-drop';
 import type { KelpiRuntime } from '../state';
 import { createKelpiStore } from '../state';
 import { RemoteDaemonSections } from './RemoteDaemonSections';
@@ -100,6 +101,47 @@ function setRowBox(workspaceID: string, top: number): void {
 }
 
 describe('RemoteDaemonSections (§1.7 accordion)', () => {
+    it('says a paired daemon refusing for another Kelpi version needs an update, not a pairing URL', () => {
+        const refused = (code: string | null): RemoteDaemonRuntime => {
+            const store = createKelpiStore();
+            store.getState().setConnectionStatus('rejected', 'daemon speaks client protocol v3, client speaks v4; update Kelpi', code);
+            return { name: 'werk', url: 'https://werk/?token=kd_a', runtime: { store, commands: {} } as unknown as KelpiRuntime };
+        };
+        const view = render(<RemoteDaemonSections daemons={[refused('protocol-mismatch')]} selection={null} onSelect={vi.fn()} bucket="dark" />);
+        expect(screen.getByTestId('remote-daemon-body-werk').textContent).toBe('werk runs a different Kelpi version: update both to the same version');
+        view.unmount();
+        render(<RemoteDaemonSections daemons={[refused('unauthorized')]} selection={null} onSelect={vi.fn()} bucket="dark" />);
+        expect(screen.getByTestId('remote-daemon-body-werk').textContent).toBe('connection refused - check the pairing URL');
+    });
+
+    it('forgets why it was refused once it connects again', () => {
+        const store = createKelpiStore();
+        store.getState().setConnectionStatus('rejected', 'mismatch', 'protocol-mismatch');
+        expect(store.getState().ui.connectionRejection).toBe('protocol-mismatch');
+        store.getState().setConnectionStatus('reconnecting');
+        expect(store.getState().ui.connectionRejection).toBe('protocol-mismatch');
+        store.getState().setConnectionStatus('connecting');
+        expect(store.getState().ui.connectionRejection).toBeNull();
+    });
+
+    it('marks its section with the daemon, and lights a row only for a tab of that daemon', () => {
+        const h = held();
+        render(<RemoteDaemonSections daemons={[h.held]} selection={null} onSelect={vi.fn()} bucket="dark" />);
+        expect(screen.getByTestId('remote-daemon-werk').getAttribute('data-remote-daemon')).toBe('werk');
+        const row = (): Element => document.querySelector(`[data-workspace-id="${W1}"]`) as Element;
+        try {
+            // This window's own tab over a workspace id the paired daemon also has: not a target.
+            act(() => setTabDragWorkspace({ daemon: null, workspaceID: W1 }));
+            expect(row().getAttribute('data-tab-drop-target')).toBeNull();
+            act(() => setTabDragWorkspace({ daemon: 'other', workspaceID: W1 }));
+            expect(row().getAttribute('data-tab-drop-target')).toBeNull();
+            act(() => setTabDragWorkspace({ daemon: 'werk', workspaceID: W1 }));
+            expect(row().getAttribute('data-tab-drop-target')).toBe('true');
+        } finally {
+            act(() => setTabDragWorkspace(null));
+        }
+    });
+
     it('renders the remote structure with the LOCAL sidebar’s own row components, in daemon order', () => {
         const h = held();
         render(

@@ -20,12 +20,16 @@ import type { WsUpdateStateMessage } from './update.js';
  *     workspace, and the `nest-workspaces` / `set-workspace-children-collapsed` verbs. A nested
  *     workspace lives only in its parent's `childOrder`, so a generation 2 client would show no
  *     row for it at all; it is refused instead, and told to update.
+ *   - 4 adds workspace tabs (workspace-feature.md §12): `tabs` / `activeTabID` on a workspace and
+ *     on `layout-changed`, and the `workspace-tab-*` / `pane-move-to-*tab` verbs. A generation 3
+ *     client would place only the tab on screen and keep every other tab's panes mounted where
+ *     nobody can see or reach them, so it is refused instead, and told to update.
  *
  * Independent of `PROTOCOL_VERSION` (the process generation that names the run-dir files) from 3
  * on: a client-only change must not move the run dir, or an updated app would start a second
  * daemon beside the running one instead of handing it off.
  */
-export const WS_PROTOCOL_VERSION = 3;
+export const WS_PROTOCOL_VERSION = 4;
 
 export const WS_CLIENT_KINDS = ['electron', 'browser', 'cli'] as const;
 export type WsClientKind = (typeof WS_CLIENT_KINDS)[number];
@@ -123,6 +127,15 @@ export interface WsFocusReportMessage {
     readonly type: 'focus-report';
     readonly workspaceID: string;
     readonly paneID: string | null;
+    /**
+     * Record-only: the daemon records it as this connection's focus and dispatches nothing.
+     * Sent for focus the client did not choose: its last report re-asserted after a reconnect,
+     * before it has the new snapshot, and the report it makes because it SAW focus move (it now
+     * shows another tab or workspace). Either can predate what other clients did meanwhile
+     * (another pane focused, another tab shown), and a stale one must not pull every client back
+     * (workspace-feature.md §12.6).
+     */
+    readonly replay?: true;
 }
 
 /**
@@ -385,6 +398,24 @@ export interface WsWindowChromeMessage {
 }
 
 /**
+ * How many workspace tabs the window draws (workspace-feature.md §12), for the shell that owns
+ * it: Close Tab and Show Next / Previous Tab grey out with one tab, and a web page keeps the
+ * tab chords the window would not use (⌥⌘N past the last tab, ⌥⌘[ / ⌥⌘] with one tab), since
+ * the shell takes a chord from the page before the window is asked (`shell/src/webhost/keys.ts`).
+ * Routed and not remembered exactly as `window-chrome` is; the page re-reports on every
+ * (re)connect and whenever the count changes. 0 = no workspace is drawn.
+ */
+export const WS_WINDOW_TABS_MESSAGE = 'window-tabs';
+
+export interface WsWindowTabsMessage {
+    readonly type: typeof WS_WINDOW_TABS_MESSAGE;
+    /** The number of tabs in the workspace the window draws; 0 when it draws none. */
+    readonly tabs: number;
+    /** The shell window this is about; absent = every shell. */
+    readonly windowID?: string;
+}
+
+/**
  * #283: the generic "choose a folder" round trip, the one desktop gesture that needs an ANSWER.
  *
  * The shell has no preload, so the page cannot open a native panel itself and the main process
@@ -571,6 +602,7 @@ export type WsClientMessage =
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
+    | WsWindowTabsMessage
     | WsChooseFolderAnswerMessage
     | WsDroppedFilesAnswerMessage
     | WsUpdateStateMessage;
@@ -758,6 +790,13 @@ export type WsDeltaEvent =
           readonly zoomedPaneID: string | null;
           readonly savedLayout: JsonValue;
           readonly currentLayoutIndex: number | null;
+          /**
+           * workspace-feature.md §12: the workspace's tabs (`{id, name, stash, seen}`, where
+           * `stash` is a background tab's layout tuple and null for the tab on screen) and the
+           * id of the one on screen. Absent from a daemon older than tabs: one tab.
+           */
+          readonly tabs?: JsonValue;
+          readonly activeTabID?: string;
       }
     | {
           readonly kind: 'focus-changed';
@@ -1216,6 +1255,7 @@ export type WsServerMessage =
     | WsShellActivationMessage
     | WsWorkspaceSelectionMessage
     | WsWindowChromeMessage
+    | WsWindowTabsMessage
     | WsChooseFolderResultMessage
     | WsDroppedFilesResultMessage
     | WsUpdateStateMessage;

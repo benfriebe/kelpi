@@ -36,6 +36,8 @@ export interface PaneListEntryInput {
     readonly background_tasks?: number | undefined;
     readonly file_path?: string | undefined;
     readonly group?: GroupRef | undefined;
+    /** workspace-feature.md §12: the pane's tab (all three together or none). */
+    readonly tab?: { readonly id: string; readonly number: number; readonly active: boolean } | undefined;
 }
 
 function optionalText(value: string | undefined): { readonly value: string } | undefined {
@@ -68,7 +70,10 @@ export function buildPaneListEntry(input: PaneListEntryInput): PaneListEntry {
         ...(input.agent !== undefined ? { agent: input.agent } : {}),
         ...(background !== undefined ? { background_tasks: background } : {}),
         ...(filePath ? { file_path: filePath.value } : {}),
-        ...(input.group !== undefined ? { group_id: input.group.id, group_name: input.group.name } : {})
+        ...(input.group !== undefined ? { group_id: input.group.id, group_name: input.group.name } : {}),
+        ...(input.tab !== undefined
+            ? { tab_id: input.tab.id, tab_number: input.tab.number, is_active_tab: input.tab.active }
+            : {})
     };
 }
 
@@ -90,6 +95,8 @@ export interface WorkspaceListEntryInput {
     readonly parent?: GroupRef | undefined;
     readonly repos?: readonly WorkspaceListRepo[] | undefined;
     readonly pull_requests?: readonly WorkspaceListPullRequest[] | undefined;
+    /** workspace-feature.md §12: the tab count and the tab on screen. */
+    readonly tabs?: { readonly count: number; readonly active_id: string } | undefined;
 }
 
 export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): WorkspaceListEntry {
@@ -117,6 +124,10 @@ export function buildWorkspaceListEntry(input: WorkspaceListEntryInput): Workspa
         ...(input.repos !== undefined && input.repos.length > 0 ? { repos: input.repos } : {}),
         ...(input.pull_requests !== undefined && input.pull_requests.length > 0
             ? { pull_requests: input.pull_requests }
+            : {}),
+        // Only worth fields once there is a choice of tab, as on `pane-list`.
+        ...(input.tabs !== undefined && input.tabs.count > 1
+            ? { tab_count: input.tabs.count, active_tab_id: input.tabs.active_id }
             : {})
     };
 }

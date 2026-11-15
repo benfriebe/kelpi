@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (66 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (80 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -42,6 +42,22 @@ export const KELPI_ACTIONS = [
     'switch_to_workspace_7',
     'switch_to_workspace_8',
     'switch_to_workspace_9',
+    // Tabs (workspace-feature.md §12): the active workspace's own tabs, in the title bar. Not the
+    // web pane's, which are the `web_tab_*` actions below and keep ⌘T / ⇧⌘[ ].
+    'new_tab',
+    'close_tab',
+    'next_tab',
+    'previous_tab',
+    'move_pane_to_new_tab',
+    'go_to_tab_1',
+    'go_to_tab_2',
+    'go_to_tab_3',
+    'go_to_tab_4',
+    'go_to_tab_5',
+    'go_to_tab_6',
+    'go_to_tab_7',
+    'go_to_tab_8',
+    'go_to_tab_9',
     // View
     'toggle_sidebar',
     'toggle_inspector',
@@ -111,11 +127,18 @@ export function isKelpiAction(value: string): value is KelpiAction {
 }
 
 /**
- * The 20 actions owned by the menu-bar dispatch layer (§4 "Menu-bar action set"); the
+ * The 25 actions owned by the menu-bar dispatch layer (§4 "Menu-bar action set"); the
  * pane-shortcut monitor never consumes events for these.
  */
 export const MENU_BAR_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
     'new_workspace',
+    // workspace-feature.md §12: File ▸ New Tab / Close Tab / Move Pane to New Tab and View ▸
+    // Show Next / Previous Tab. ⌥⌘1-9 stay off the menu, like most of the window's chords.
+    'new_tab',
+    'close_tab',
+    'next_tab',
+    'previous_tab',
+    'move_pane_to_new_tab',
     'open_file',
     'open_web_pane',
     'new_group',

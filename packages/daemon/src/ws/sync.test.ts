@@ -288,6 +288,32 @@ describe('reports', () => {
         expect(session.focusedPaneID).toBe(f.paneID);
     });
 
+    it('records a replayed focus report without moving anyone (workspace-feature.md §12.6)', () => {
+        const f = fixture();
+        const { session } = f.connect();
+        session.handleMessage(hello());
+        // A second tab, on screen: the first tab's pane is in the background now.
+        f.store.dispatch({
+            type: 'create-tab',
+            workspaceID: W1,
+            tabID: '0000000F-0000-0000-0000-000000000001',
+            create: { type: 'create-pane', workspaceID: W1, paneID: PANE_B, now: NOW }
+        });
+        const before = f.store.state().workspaces[0];
+        expect(before?.activeTabID).toBe('0000000F-0000-0000-0000-000000000001');
+
+        session.handleMessage(JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID, replay: true }));
+
+        expect(f.store.state().workspaces[0]).toBe(before);
+        expect(session.focusedPaneID).toBe(f.paneID);
+        expect(session.activeWorkspaceID).toBe(W1);
+
+        // The same report live follows the pane into its tab, as a click in the palette does.
+        session.handleMessage(JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID }));
+        expect(f.store.state().workspaces[0]?.focusedPaneID).toBe(f.paneID);
+        expect(f.store.state().workspaces[0]?.activeTabID).toBe(W1);
+    });
+
     it('accepts a null focus report (nothing focused)', () => {
         const f = fixture();
         const { session } = f.connect();
@@ -733,6 +759,40 @@ describe('WS-only commands', () => {
                 send(f, { command: 'set-split-ratio', workspace_id: W1, split_path: 'dLL', ratio: 0.7 })
             ).toEqual({ ok: false, error: "no split at path 'dLL'" });
             expect(layoutOf(f)).toEqual(before);
+        });
+
+        /*
+         * workspace-feature.md §12.6: the path names a split in the tab the client drew. If
+         * another client switched tabs before the drag landed, the same path can name a split
+         * in the tab now on screen, and that is not the divider anybody moved.
+         */
+        it('refuses a drag drawn in a tab that is no longer on screen, rather than move another tab\'s divider', () => {
+            const f = tiled();
+            const drawnIn = f.store.state().workspaces[0]?.activeTabID as string;
+            const other = 'FFFFFFFF-0000-4000-8000-0000000000EE';
+            const PANE_E = '44444444-5555-4666-8777-888888888888';
+            const PANE_F = '55555555-6666-4777-8888-999999999999';
+            f.store.dispatch({
+                type: 'create-tab',
+                workspaceID: W1,
+                tabID: other,
+                create: { type: 'create-pane', workspaceID: W1, paneID: PANE_E, now: NOW }
+            });
+            f.store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PANE_F, sourcePaneID: PANE_E, direction: 'horizontal', now: NOW });
+            // The other tab is on screen now, with a split of its own at the root.
+            expect(f.store.state().workspaces[0]?.activeTabID).toBe(other);
+            const before = ratioAtPath(layoutOf(f), 'd');
+            expect(before).not.toBeNull();
+
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: W1, tab_id: drawnIn, split_path: 'd', ratio: 0.8 })
+            ).toEqual({ ok: false, error: `tab '${drawnIn}' is no longer on screen` });
+            expect(ratioAtPath(layoutOf(f), 'd')).toBe(before);
+
+            // Naming the tab on screen moves its divider as before.
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: W1, tab_id: other, split_path: 'd', ratio: 0.8 })
+            ).toMatchObject({ ok: true, ratio: 0.8 });
         });
 
         it('refuses an unknown workspace, a missing path and a non-numeric ratio', () => {
@@ -1267,6 +1327,42 @@ describe('window-chrome relay', () => {
         window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: 7 }));
         window.session.handleMessage(JSON.stringify({ type: 'window-chrome', titleBarHidden: true, windowID: '' }));
         expect(shell.transport.ofType('window-chrome')).toHaveLength(0);
+    });
+});
+
+/** The window's `window-tabs` report: how many tabs it draws, for its shell's menu and web relay. */
+describe('window-tabs relay', () => {
+    it('fans a report out to every attached party, windowID intact, and replays nothing', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs: 3, windowID: 'WIN-1' }));
+        window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs: 0 }));
+        expect(shell.transport.ofType('window-tabs')).toEqual([
+            { type: 'window-tabs', tabs: 3, windowID: 'WIN-1' },
+            { type: 'window-tabs', tabs: 0 }
+        ]);
+
+        const late = f.connect();
+        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        expect(late.transport.ofType('window-tabs')).toHaveLength(0);
+    });
+
+    it('drops a report whose count is not a whole number, or whose window id is unusable', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        for (const tabs of [-1, 1.5, '2', null]) {
+            window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs }));
+        }
+        window.session.handleMessage(JSON.stringify({ type: 'window-tabs', tabs: 2, windowID: '' }));
+        expect(shell.transport.ofType('window-tabs')).toHaveLength(0);
     });
 });
 

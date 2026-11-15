@@ -85,6 +85,23 @@ function groupedState(): JsonObject {
     return store.getState() as unknown as JsonObject;
 }
 
+/** §12: W1 with two tabs (tab 1 holds A, tab 2 "workers" holds B), and W2 to move a tab to. */
+function tabbedState(): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: NOW });
+    store.dispatch({
+        type: 'create-tab',
+        workspaceID: W1,
+        tabID: T2,
+        focus: false,
+        create: { type: 'create-pane', workspaceID: W1, paneID: PANE_B, now: NOW, workingDirectory: '/Users/test/workers', focus: true }
+    });
+    store.dispatch({ type: 'rename-tab', workspaceID: W1, tabID: T2, name: 'workers' });
+    store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_W2, name: 'docs', color: 'green', now: NOW });
+    store.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });
+    return store.getState() as unknown as JsonObject;
+}
+
 const REGISTRY_REPLY: JsonObject = {
     ok: true,
     repos: [{ id: R1, name: 'app', path: '/Users/test/app', worktree_base: '/Users/test/worktrees' }]
@@ -105,7 +122,27 @@ function memoryStorage(initial: Record<string, string> = {}): StorageLike & { re
 }
 
 /** A remote host's runtime: its own mirror, a fake PTY, stubbed commands, no socket. */
-function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: string[] } {
+const REMOTE_PANE_2 = 'DDDDDDDD-0000-4000-8000-000000000098';
+const REMOTE_TAB = 'FFFFFFFF-0000-4000-8000-000000000099';
+const T2 = 'FFFFFFFF-0000-4000-8000-000000000002';
+
+/** The remote workspace's second tab ("logs", holding REMOTE_PANE_2), for the phone's tab tests. */
+function remoteSecondTab(): Record<string, unknown> {
+    return {
+        tabs: [
+            { id: REMOTE_WS, name: null, stash: null, seen: true },
+            {
+                id: REMOTE_TAB,
+                name: 'logs',
+                stash: { layout: { kind: 'leaf', paneID: REMOTE_PANE_2 }, focusedPaneID: REMOTE_PANE_2, focusHistory: [], zoomedPaneID: null, savedLayout: null, currentLayoutIndex: null },
+                seen: true
+            }
+        ],
+        activeTabID: REMOTE_WS
+    };
+}
+
+function fakeRemoteRuntime(target: string, options: { readonly tabs?: boolean } = {}): { runtime: KelpiRuntime; calls: string[] } {
     const store = createKelpiStore();
     store.getState().applySnapshot(0, {
         workspaces: [
@@ -139,9 +176,28 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: stri
                         agentProfileName: null,
                         agentStartedAt: null,
                         backgroundTaskCount: 0
-                    }
+                    },
+                    ...(options.tabs === true
+                        ? [
+                              {
+                                  id: REMOTE_PANE_2,
+                                  type: 'shell',
+                                  label: null,
+                                  title: 'remote logs',
+                                  workingDirectory: '/home/remote/logs',
+                                  gitBranch: null,
+                                  status: 'idle',
+                                  agentSessionID: null,
+                                  agentKind: null,
+                                  agentProfileName: null,
+                                  agentStartedAt: null,
+                                  backgroundTaskCount: 0
+                              }
+                          ]
+                        : [])
                 ],
-                layout: { kind: 'leaf', paneID: REMOTE_PANE }
+                layout: { kind: 'leaf', paneID: REMOTE_PANE },
+                ...(options.tabs === true ? remoteSecondTab() : {})
             }
         ],
         groups: [],
@@ -161,6 +217,11 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: stri
                 if (input['command'] === 'plugin') {
                     if (input['action'] === 'list' || input['action'] === 'contributions') return { ok: true, result: [] };
                     if (input['action'] === 'identity') return { ok: true, result: { daemonID: 'phone-test-remote' } };
+                }
+                // §12: the tab verbs a phone sends a paired daemon, recorded as they went out.
+                if (typeof input['command'] === 'string' && input['command'].startsWith('workspace-tab-')) {
+                    calls.push(`tab:${JSON.stringify(input)}`);
+                    return { ok: true };
                 }
                 throw new Error(`Unexpected remote command: ${JSON.stringify(input)}`);
             }),
@@ -201,6 +262,7 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: stri
             calls.push(`focus:${workspaceID}:${String(paneID)}`);
         }),
         reportVisiblePanes: vi.fn(),
+        reportObservedFocus: vi.fn(),
         setDocumentVisible: vi.fn()
     };
     return { runtime: runtime as unknown as KelpiRuntime, calls };
@@ -233,6 +295,7 @@ function setup(
         everyPaneType?: boolean;
         state?: JsonObject;
         qrCamera?: QrCamera;
+        remoteTabs?: boolean;
     } = {}
 ): Harness {
     const sockets = createFakeSocketFactory();
@@ -254,7 +317,7 @@ function setup(
     });
     const remotes = new Map<string, { entry: RemoteDaemonEntry; runtime: KelpiRuntime; calls: string[] }>();
     const factory = (entry: RemoteDaemonEntry): KelpiRuntime => {
-        const fake = fakeRemoteRuntime(entry.url);
+        const fake = fakeRemoteRuntime(entry.url, { tabs: options.remoteTabs === true });
         remotes.set(entry.url, { entry, ...fake });
         return fake.runtime;
     };
@@ -833,6 +896,7 @@ describe('the overflow menu', () => {
             .filter((id) => id !== null && id.startsWith('phone-menu-') && id !== 'phone-menu-header-close');
         expect(labels).toEqual([
             'phone-menu-new-pane',
+            'phone-menu-new-tab',
             'phone-menu-rename-pane',
             'phone-menu-sync-input',
             'phone-menu-palette',
@@ -1449,6 +1513,21 @@ describe('needs you, across hosts', () => {
         expect(studio.calls.filter((call) => call === 'connect').length).toBe(dials + 1);
     });
 
+    it('says when the hosts refuse it for running another Kelpi version, and never promises a retry', () => {
+        const h = setup({ landing: true, storage: TWO_HOSTS });
+        const studio = h.remotes.get(PAIRING_URL);
+        if (studio === undefined) throw new Error('studio was not dialled');
+        act(() => {
+            studio.runtime.store.getState().setConnectionStatus('rejected', 'daemon speaks client protocol v3, client speaks v4', 'protocol-mismatch');
+            h.runtime.store.getState().setConnectionStatus('rejected', 'daemon speaks client protocol v3, client speaks v4', 'protocol-mismatch');
+        });
+        const card = screen.getByTestId('phone-home-unreachable');
+        expect(card.textContent).toContain('Your hosts run a different Kelpi version');
+        expect(screen.getByTestId('phone-home-unreachable-advice').textContent).toBe('Update both to the same version of Kelpi, then retry.');
+        expect(card.textContent).not.toContain('keeps retrying');
+        expect(document.body.textContent).toContain('different Kelpi version: update both');
+    });
+
     it('finds a pane on another host from Jump to…, and shows it there', () => {
         const h = setup({ landing: true, storage: TWO_HOSTS });
         tap('phone-bar-jump');
@@ -1660,5 +1739,83 @@ describe('every pane type', () => {
         await waitFor(() => {
             expect(bar()).not.toBeNull();
         });
+    });
+});
+
+describe('workspace tabs on the phone (workspace-feature.md §12)', () => {
+    const tabCommands = (h: Harness): Record<string, unknown>[] =>
+        h.commands().filter((command) => String(command['command']).startsWith('workspace-tab-'));
+    /**
+     * A closed sheet takes its history entry off with `history.back()`, whose popstate lands a
+     * task later; a person's next tap comes after it, so a test's must too.
+     */
+    const settleHistory = async (): Promise<void> => {
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        });
+    };
+
+    it('opens a new tab from the + after the chips, and from the menu with one tab', () => {
+        const h = setup({ state: tabbedState() });
+        tap('phone-tab-new');
+        expect(tabCommands(h).at(-1)).toMatchObject({ command: 'workspace-tab-new', workspace_id: W1 });
+        cleanup();
+        const single = setup();
+        expect(screen.queryByTestId('phone-tab-chips')).toBeNull();
+        tap('phone-more');
+        tap('phone-menu-new-tab');
+        expect(tabCommands(single).at(-1)).toMatchObject({ command: 'workspace-tab-new', workspace_id: W1 });
+    });
+
+    it("renames, duplicates, moves and closes a tab from its chip's sheet, on the origin", async () => {
+        const h = setup({ state: tabbedState() });
+        const openTabSheet = (): void => {
+            fireEvent.contextMenu(screen.getByTestId(`phone-tab-chip-${T2}`));
+        };
+        openTabSheet();
+        expect(screen.getByTestId('phone-menu').textContent).toContain('workers');
+        tap('phone-menu-rename-tab');
+        const field = screen.getByTestId('phone-prompt-field') as HTMLInputElement;
+        expect(field.value).toBe('workers');
+        fireEvent.change(field, { target: { value: 'builds' } });
+        fireEvent.submit(field.closest('form') as HTMLFormElement);
+        expect(tabCommands(h).at(-1)).toEqual({ command: 'workspace-tab-rename', workspace_id: W1, tab_id: T2, name: 'builds' });
+
+        await settleHistory();
+        openTabSheet();
+        tap('phone-menu-duplicate-tab');
+        expect(tabCommands(h).at(-1)).toMatchObject({ command: 'workspace-tab-duplicate', workspace_id: W1, tab_id: T2 });
+
+        await settleHistory();
+        openTabSheet();
+        tap('phone-menu-move-tab');
+        tap(`phone-menu-move-tab-to-${W2}`);
+        expect(tabCommands(h).at(-1)).toMatchObject({ command: 'workspace-tab-move-to-workspace', workspace_id: W1, tab_id: T2, to_workspace_id: W2 });
+
+        await settleHistory();
+        openTabSheet();
+        tap('phone-menu-close-tab');
+        expect(tabCommands(h).at(-1)).toEqual({ command: 'workspace-tab-close', workspace_id: W1, tab_id: T2 });
+    });
+
+    it("drives a paired daemon's tabs over that daemon's connection, never the origin's", async () => {
+        const h = setup({
+            remoteTabs: true,
+            storage: {
+                [PHONE_HOSTS_KEY]: JSON.stringify([{ id: 'h1', name: 'studio', url: PAIRING_URL }]),
+                [PHONE_PLACE_KEY]: JSON.stringify({ host: 'phone:h1', workspaceID: REMOTE_WS })
+            }
+        });
+        const before = tabCommands(h).length;
+        tap(`phone-tab-chip-${REMOTE_TAB}`);
+        fireEvent.contextMenu(screen.getByTestId(`phone-tab-chip-${REMOTE_TAB}`));
+        tap('phone-menu-close-tab');
+        await settleHistory();
+        tap('phone-tab-new');
+        const calls = (h.remotes.get(PAIRING_URL)?.calls ?? []).filter((call) => call.startsWith('tab:')).map((call) => JSON.parse(call.slice(4)) as Record<string, unknown>);
+        expect(calls.map((call) => call['command'])).toEqual(['workspace-tab-select', 'workspace-tab-close', 'workspace-tab-new']);
+        expect(calls.every((call) => call['workspace_id'] === REMOTE_WS)).toBe(true);
+        expect(calls[1]).toMatchObject({ tab_id: REMOTE_TAB });
+        expect(tabCommands(h).length).toBe(before);
     });
 });

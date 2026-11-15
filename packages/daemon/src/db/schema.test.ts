@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v27_workspace_status');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(27);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v28_workspace_tabs');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(28);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v27 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v28 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -74,7 +74,9 @@ describe('migration ledger', () => {
             'muted',
             'childOrderJSON',
             'childrenCollapsed',
-            'status'
+            'status',
+            'tabsJSON',
+            'activeTabID'
         ]);
         expect(columnNames(db, 'pane')).toEqual([
             'id',
@@ -233,6 +235,29 @@ describe('migration ledger', () => {
 
         expect(migrate(db).applied).toEqual(['v27_workspace_status']);
         expect(db.all('SELECT "name", "status" FROM "workspace"')).toEqual([{ name: 'kept', status: 'idle' }]);
+        db.close();
+    });
+
+    it('adds the tab columns (v28) leaving existing workspaces with none (one tab, layoutJSON)', () => {
+        const db = freshDatabase();
+        migrate(db);
+        db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE identifier = 'v28_workspace_tabs'`);
+        db.exec('ALTER TABLE "workspace" DROP COLUMN "activeTabID"');
+        db.exec('ALTER TABLE "workspace" DROP COLUMN "tabsJSON"');
+        db.run(
+            `INSERT INTO "workspace" ("id","name","color","layoutJSON","createdAt","lastAccessedAt") VALUES (?,?,?,?,?,?)`,
+            'W1',
+            'kept',
+            'blue',
+            '{"empty":{}}',
+            1,
+            1
+        );
+
+        expect(migrate(db).applied).toEqual(['v28_workspace_tabs']);
+        expect(db.all('SELECT "name", "tabsJSON", "activeTabID" FROM "workspace"')).toEqual([
+            { name: 'kept', tabsJSON: null, activeTabID: null }
+        ]);
         db.close();
     });
 

@@ -66,6 +66,8 @@ export interface PaneChromeActions {
     readonly onToggleScratchpadWrap?: ((paneID: string) => void) | undefined;
     readonly onCopyDocument?: ((paneID: string) => void) | undefined;
     readonly onNewWebPane?: ((paneID: string, direction: SplitDirection) => void) | undefined;
+    /** workspace-feature.md §12: Move to New Tab. */
+    readonly onMovePaneToNewTab?: ((paneID: string) => void) | undefined;
     /** Another plugin's `pane.header` item, activated by id (ratified decision 7). */
     readonly onRunHeaderItem?: ((paneID: string, itemID: string) => void) | undefined;
     readonly onPaneContextMenu?: ((paneID: string, event: MouseEvent<HTMLElement>) => void) | undefined;
@@ -190,6 +192,9 @@ export function createPaneChromeSurface(config: PaneChromeSurfaceConfig): PaneCh
                     return;
                 case 'wrap':
                     actions.onToggleScratchpadWrap?.(paneID);
+                    return;
+                case 'new-tab':
+                    actions.onMovePaneToNewTab?.(paneID);
                     return;
                 case 'split-right':
                 case 'split-down':

@@ -10,6 +10,7 @@ import { isActiveAgentStatus, summarizeAgentPanes, type WorkspaceAgentSummary } 
 import type { ResolveState } from '@kelpi/core/resolve';
 import { allPaneIDs, type Pane } from '@kelpi/core/layout';
 import { WORKSPACE_COLORS, type WorkspaceColor } from '@kelpi/protocol';
+import { onScreenPaneIDs, tabPaneIDs, workspaceTabs } from './tabs.js';
 import type { DaemonState, PaneLane, WorkspaceGroup, WorkspaceState } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -225,13 +226,15 @@ export function groupIDForWorkspace(state: DaemonState, workspaceID: string): st
 /**
  * The broadcast group RIGHT NOW (§1.10): shell panes only, minus the excluded set, and only
  * when at least two qualify (a lone terminal must never "sync" to itself). Non-shell panes are
- * excluded even when they host a terminal surface (markdown in $EDITOR mode).
+ * excluded even when they host a terminal surface (markdown in $EDITOR mode). Only the tab on
+ * screen takes part (workspace-feature.md §12): typing never reaches a pane you cannot see.
  */
 export function syncedPaneIDs(workspace: WorkspaceState): string[] {
     if (!workspace.isSyncInputActive) return [];
     const excluded = new Set(workspace.syncInputExcluded);
+    const onScreen = new Set(onScreenPaneIDs(workspace));
     const candidates = workspace.panes
-        .filter((pane) => pane.type === 'shell' && !excluded.has(pane.id))
+        .filter((pane) => pane.type === 'shell' && !excluded.has(pane.id) && onScreen.has(pane.id))
         .map((pane) => pane.id);
     return candidates.length >= 2 ? candidates : [];
 }
@@ -254,6 +257,35 @@ export function activeAgentCount(workspace: WorkspaceState): number {
 /** Workspace delete gate (§11): visible AND parked resumable/live agent panes. */
 export function workspaceAgentSummary(workspace: WorkspaceState): WorkspaceAgentSummary {
     return summarizeAgentPanes([...workspace.panes, ...workspace.parkedPanes]);
+}
+
+/**
+ * The close-tab gate (workspace-feature.md §12.5): the agents that closing these tabs would
+ * close, counted as the workspace gate counts them. That is every pane of the tabs and the
+ * shells a `--here` open parked behind them (the close ends those too). `except` leaves one
+ * pane out: the CLI caller closing its own tab is not asking about itself.
+ */
+export function tabsAgentSummary(
+    workspace: WorkspaceState,
+    tabIDs: readonly string[],
+    except?: string | null
+): WorkspaceAgentSummary {
+    const wanted = new Set(tabIDs);
+    const ids = new Set(workspaceTabs(workspace).filter((tab) => wanted.has(tab.id)).flatMap((tab) => tabPaneIDs(workspace, tab)));
+    const closing = workspace.panes.filter((pane) => ids.has(pane.id));
+    const parked: Pane[] = [];
+    const follow = (pane: Pane): void => {
+        const sourceID = pane.parkedSourcePaneID ?? null;
+        if (sourceID === null || ids.has(sourceID)) return;
+        const source = workspace.parkedPanes.find((candidate) => candidate.id === sourceID);
+        if (source === undefined) return;
+        ids.add(source.id);
+        parked.push(source);
+        follow(source);
+    };
+    for (const pane of closing) follow(pane);
+    const exempt = except === undefined || except === null ? null : except.toUpperCase();
+    return summarizeAgentPanes([...closing, ...parked].filter((pane) => exempt === null || pane.id.toUpperCase() !== exempt));
 }
 
 export interface ActiveAgentSummary {
@@ -303,7 +335,10 @@ export function chromeStatusSummary(state: DaemonState): ChromeStatusSummary {
     return { running, waiting, muted, inactive };
 }
 
-/** Pane ids in layout order (focus cycling, command palette, predefined rebuilds). */
+/**
+ * Pane ids of the tab ON SCREEN in layout order (focus cycling, command palette, predefined
+ * rebuilds). Every tab's panes, tab by tab, is `workspacePaneOrder` (`./tabs.ts`).
+ */
 export function layoutPaneOrder(workspace: WorkspaceState): string[] {
     return allPaneIDs(workspace.layout);
 }

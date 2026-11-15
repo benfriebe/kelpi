@@ -304,7 +304,7 @@ describe('close-pane', () => {
 });
 
 describe('content panes', () => {
-    it('QUIRK: opening markdown while zoomed does NOT un-zoom (Swift behaviour kept)', () => {
+    it('opening markdown while zoomed un-zooms first, so the pane joins the tree the tab keeps', () => {
         const h = harness(seededState());
         h.dispatch(
             { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
@@ -318,9 +318,11 @@ describe('content panes', () => {
             }
         );
         const workspace = ws(h.state());
-        expect(workspace.zoomedPaneID).toBe(PA); // still "zoomed" over a two-leaf layout
-        expect(workspace.savedLayout).not.toBeNull();
-        expect(allPaneIDs(workspace.layout)).toEqual([PA, PB]);
+        // The shipped app split the zoomed leaf and kept the zoom; with tabs that left the pane
+        // in no tab's tree (workspace-feature.md §7.4, §12.4).
+        expect(workspace.zoomedPaneID).toBeNull();
+        expect(workspace.savedLayout).toBeNull();
+        expect(allPaneIDs(workspace.layout)).toEqual([P0, PA, PB]);
     });
 
     it('names markdown panes after the file and diff panes after the scope', () => {
@@ -947,8 +949,11 @@ describe('move-pane-to-workspace', () => {
         const source = ws(h.state(), W1);
         expect(source.zoomedPaneID).toBe(PA);
         expect(source.layout).toEqual({ kind: 'leaf', paneID: PA });
-        // The saved layout still holds both leaves; only the visible tree lost P0.
-        expect(allPaneIDs(source.savedLayout ?? { kind: 'empty' })).toEqual([P0, PA]);
+        // The saved layout loses P0 too: un-zooming (or a save, which writes `savedLayout`)
+        // must not bring back a leaf whose pane now lives in another workspace.
+        expect(allPaneIDs(source.savedLayout ?? { kind: 'empty' })).toEqual([PA]);
+        h.dispatch({ type: 'toggle-zoom', workspaceID: W1 });
+        expect(allPaneIDs(ws(h.state(), W1).layout)).toEqual([PA]);
     });
 
     it('carries the web sidecar across', () => {
@@ -974,6 +979,24 @@ describe('move-pane-to-workspace', () => {
         );
         expect(ws(h.state(), W1).webPanes[PA]).toBeUndefined();
         expect(ws(h.state(), W2).webPanes[PA]?.tabs[0]?.url).toBe('https://example.com');
+    });
+
+    it('takes a --here pane\'s parked source with it, so closing the pane un-parks it there', () => {
+        const h = harness(seededState());
+        h.dispatch({ type: 'create-workspace', id: W2, paneID: id('dddddddd', 204), name: 'other', color: 'red', now: NOW });
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PB, sourcePaneID: P0, direction: 'horizontal', now: NOW },
+            { type: 'open-markdown-pane', workspaceID: W1, paneID: PA, filePath: '/docs/a.md', reusePaneID: P0, now: NOW },
+            { type: 'move-pane-to-workspace', paneID: PA, toWorkspaceID: W2 }
+        );
+        expect(ws(h.state(), W1).parkedPanes).toEqual([]);
+        expect(ws(h.state(), W2).parkedPanes.map((pane) => pane.id)).toEqual([P0]);
+
+        h.dispatch({ type: 'close-pane', workspaceID: W2, paneID: PA });
+        const target = ws(h.state(), W2);
+        expect(target.parkedPanes).toEqual([]);
+        expect(allPaneIDs(target.layout)).toContain(P0);
+        expect(target.panes.map((pane) => pane.id)).toContain(P0);
     });
 });
 

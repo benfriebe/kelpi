@@ -22,11 +22,14 @@ import { useCallback, useRef, useSyncExternalStore } from 'react';
 import type { WorkspaceState } from '@kelpi/daemon/store';
 
 import type { ConnectionStatus } from '../connection';
+import { isVersionMismatch } from '../state/bridge';
 import type { PhoneHostModel } from './model';
 
 export interface PhoneHostReading {
     readonly host: PhoneHostModel;
     readonly connection: ConnectionStatus;
+    /** Refused for running another Kelpi version (`isVersionMismatch`): only updating fixes it. */
+    readonly otherVersion: boolean;
     /** False until the host's first snapshot: its zero workspaces are "not heard from yet". */
     readonly known: boolean;
     readonly workspaces: readonly WorkspaceState[];
@@ -62,6 +65,7 @@ export function readHost(host: PhoneHostModel): PhoneHostReading {
     return {
         host,
         connection: state.ui.connection,
+        otherVersion: isVersionMismatch(state.ui),
         known: state.daemon.hasSnapshot,
         workspaces: state.daemon.state.workspaces
     };
@@ -87,11 +91,13 @@ export function usePhoneFleet(hosts: readonly PhoneHostModel[]): readonly PhoneH
         const readings = hosts.map((host, index): CachedReading => {
             const fresh = readHost(host);
             const before = previous?.readings[index];
-            if (before !== undefined && before.source === fresh.workspaces && before.reading.connection === fresh.connection && before.reading.known === fresh.known) {
+            const same = (reading: PhoneHostReading): boolean =>
+                reading.connection === fresh.connection && reading.known === fresh.known && reading.otherVersion === fresh.otherVersion;
+            if (before !== undefined && before.source === fresh.workspaces && same(before.reading)) {
                 return before;
             }
             const digest = before?.source === fresh.workspaces ? before.digest : fleetDigest(fresh.workspaces);
-            if (before !== undefined && before.digest === digest && before.reading.connection === fresh.connection && before.reading.known === fresh.known) {
+            if (before !== undefined && before.digest === digest && same(before.reading)) {
                 // Same picture, newer array: keep the reading the surfaces already drew from.
                 return { reading: before.reading, digest, source: fresh.workspaces };
             }

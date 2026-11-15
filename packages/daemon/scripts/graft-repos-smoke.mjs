@@ -126,7 +126,7 @@ async function connectWs(base, token) {
         });
 
     // The client-sync generation (`@kelpi/protocol` `WS_PROTOCOL_VERSION`), not the run-dir's.
-    socket.send(JSON.stringify({ type: 'hello', protocolVersion: 3, client: { kind: 'browser' } }));
+    socket.send(JSON.stringify({ type: 'hello', protocolVersion: 4, client: { kind: 'browser' } }));
     await waitJson((m) => m.type === 'welcome', 'welcome');
     const snapshot = await waitJson((m) => m.type === 'snapshot', 'snapshot');
 

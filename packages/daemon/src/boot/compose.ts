@@ -114,6 +114,7 @@ import {
     createPtyManager,
     createTerminalInput,
     chooseSplitDirectory,
+    estimateBackgroundGrid,
     createForegroundReader,
     createProcessCwdReader,
     createShellForegroundProbe,
@@ -123,6 +124,7 @@ import {
     shellGetsIntegration,
     withInputObserver,
     withSpawnGate,
+    type GridSize,
     type KelpiPtyManager,
     type ShellIntegration
 } from '../pty/index.js';
@@ -149,6 +151,7 @@ import {
     emptyDaemonState,
     findPaneAnywhere,
     fromSnapshot,
+    isPaneOnScreen,
     nextRandomColor,
     toSnapshot,
     visiblePane,
@@ -1256,8 +1259,18 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         persistence.saveNow(toSnapshot(store.getState()));
     };
 
-    const unsubscribe = store.subscribe(() => {
+    const unsubscribe = store.subscribe((events) => {
         persist();
+        /*
+         * workspace-feature.md §12.6: the PTY layer's broadcast group follows the derived one on
+         * EVERY dispatch that moves it. Handlers still refresh it themselves, but with tabs a lot of
+         * paths change which shells are on screen (a focus that switches tabs, a pane moved into a
+         * background tab, a shell exiting that empties the tab on screen), and a group left stale
+         * would mirror typing into a pane nobody can see.
+         */
+        for (const event of events) {
+            if (event.kind === 'sync-changed') pty.setSyncGroup(event.workspaceID, new Set(event.syncedPaneIDs));
+        }
     });
 
     const offData = pty.onData((paneID, data) => {
@@ -1286,19 +1299,35 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const helpersDir =
         options.spawn?.helpersDir ??
         (envHelpersDir !== undefined && envHelpersDir.length > 0 ? envHelpersDir : undefined);
+    /** Is this pane in a tab that is not on screen? (No client draws it, so none measures it.) */
+    const inBackgroundTab = (paneID: string): boolean => {
+        const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+        return workspace !== null && !isPaneOnScreen(workspace, paneID);
+    };
+    const backgroundGrid = (paneID: string): GridSize | null => {
+        const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+        if (workspace === null || isPaneOnScreen(workspace, paneID)) return null;
+        return estimateBackgroundGrid(workspace, paneID, (id) => geometry.get(id));
+    };
     const spawnDefaults: PaneSpawnDefaults = {
         ...(options.spawn ?? {}),
         ...(helpersDir !== undefined ? { helpersDir } : {}),
         // Read at env-build time (not captured): the route exists only once the run-dir
         // control server has bound its TCP listener, and it must survive a live re-bind.
         controlRoute: options.spawn?.controlRoute ?? paneRouteValue,
-        sizeFor: (paneID: string) => geometry.sizeFor(paneID),
+        // A pane in a background tab has no measurement coming (no client draws it), so its
+        // first size is estimated from the tab on screen rather than borrowed from whichever
+        // pane reported last (`pty/background-size.ts`, workspace-feature.md §12.6).
+        sizeFor: (paneID: string) => geometry.get(paneID) ?? backgroundGrid(paneID) ?? geometry.sizeFor(paneID),
         deferSpawn: (paneID, spawn) => {
             // `get`, not `sizeFor`: the fallback-to-latest read is a good GUESS for a brand-new
             // pane and a bad reason to skip waiting for the truth. A split's child is the case
             // that makes the difference — `latest` is its parent's full width, i.e. about twice
             // what the child will actually be rendered at.
             if (geometry.get(paneID) !== null) return false;
+            // Nobody will measure a pane in a background tab: waiting would only cost the gate's
+            // whole timeout before the same fallback, so it spawns now at `sizeFor`'s estimate.
+            if (inBackgroundTab(paneID)) return false;
             return spawnGate.defer(paneID, (size) => {
                 spawn(size);
             });
@@ -1341,6 +1370,20 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         writeInput: (paneID, data) => pty.writeDirect(paneID, data)
     });
     const ctx: PaneHandlerContext = {
+        // workspace-feature.md §12: read per command, so a Settings change governs the next one.
+        agentPanePlacement: () => settings.snapshot.general.agentPanePlacement,
+        newTabPosition: () => settings.snapshot.general.newTabPosition,
+        // What a bare new tab opens, and the agent a New Agent Tab starts (the New Workspace
+        // sheet's, else Claude): the window's ⌥⌘T and `kelpi tab new` answer alike.
+        newTabOpens: () => settings.snapshot.general.newTabOpens,
+        startAgent: (paneID, workspaceID) => {
+            const chosen = settings.snapshot.general.newWorkspaceAgent;
+            agentLauncher.start({
+                paneID,
+                workspaceID,
+                request: { kind: chosen === 'none' ? 'claude' : chosen, prompt: null, send: false, promptFile: null }
+            });
+        },
         prepareDocumentClose: paneIDs => {
             content.prepareClose(paneIDs);
             // A small csv file saves synchronously and a failure refuses the close; a large one
@@ -2685,6 +2728,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // which is why they cannot be composed inside `createWsServer`.
                 panes: createPaneLifecycleChannel({
                     ctx,
+                    // workspace-feature.md §12: what a bare ⌥⌘T opens, and the agent a New
+                    // Agent Tab starts (the New Workspace sheet's, else Claude).
+                    tabs: {
+                        ...(ctx.newTabOpens !== undefined ? { newTabOpens: ctx.newTabOpens } : {}),
+                        ...(ctx.startAgent !== undefined ? { startAgent: ctx.startAgent } : {})
+                    },
                     ...(onError !== undefined ? { onError } : {})
                 }),
                 // The workspace inspector's repo registry / association / worktree verbs.

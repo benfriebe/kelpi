@@ -47,6 +47,16 @@ export interface PaletteFeatureActions {
     toggleSyncInput(): boolean;
     newWorkspace(): boolean;
     setWorkspaceMuted(workspaceID: string, muted: boolean): boolean;
+    // workspace-feature.md §12.
+    newTab(kind?: 'terminal' | 'same' | 'agent' | 'web' | 'scratchpad'): boolean;
+    closeActiveTab(): boolean;
+    duplicateActiveTab(): boolean;
+    moveFocusedPaneToNewTab(): boolean;
+    closeOtherTabsOnScreen(): boolean;
+    mergeActiveTabIntoPrevious(): boolean;
+    splitActiveTabPanes(): boolean;
+    moveActiveTabToWorkspace(workspaceID: string): boolean;
+    moveTabTargets(): readonly { readonly id: string; readonly name: string }[];
 }
 
 export interface PaletteFeatureHost {
@@ -267,6 +277,29 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                 hint('toggle_sync_input'), () => act.toggleSyncInput()),
             commandEntry('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace',
                 hint('new_workspace'), () => act.newWorkspace()),
+            // workspace-feature.md §12: the workspace's own tabs.
+            commandEntry('cmd:new-tab', 'rectangle.stack', 'New Tab', 'a new tab in this workspace', hint('new_tab'),
+                () => act.newTab()),
+            commandEntry('cmd:new-agent-tab', 'rectangle.stack', 'New Agent Tab', 'a tab that starts an agent', undefined,
+                () => act.newTab('agent')),
+            commandEntry('cmd:new-web-tab', 'rectangle.stack', 'New Web Tab', 'a tab with a blank web pane', undefined,
+                () => act.newTab('web')),
+            commandEntry('cmd:close-tab', 'rectangle.stack', 'Close Tab', 'close the tab on screen and its panes', hint('close_tab'),
+                () => act.closeActiveTab()),
+            commandEntry('cmd:duplicate-tab', 'rectangle.stack', 'Duplicate Tab', 'a copy of the tab on screen, with new panes', undefined,
+                () => act.duplicateActiveTab()),
+            commandEntry('cmd:move-pane-to-new-tab', 'rectangle.stack', 'Move Pane to New Tab', 'take the focused pane out into a tab',
+                hint('move_pane_to_new_tab'), () => act.moveFocusedPaneToNewTab()),
+            // The tab menu's other rows, for the tab on screen, so the keyboard reaches them too.
+            commandEntry('cmd:close-other-tabs', 'rectangle.stack', 'Close Other Tabs', 'close every tab but the one on screen', undefined,
+                () => act.closeOtherTabsOnScreen()),
+            commandEntry('cmd:merge-tab-previous', 'rectangle.stack', 'Merge Into Previous Tab', 'move the tab on screen into the tab before it',
+                undefined, () => act.mergeActiveTabIntoPrevious()),
+            commandEntry('cmd:split-tab-panes', 'rectangle.stack', 'Give Each Pane Its Own Tab', 'one tab for every pane of the tab on screen',
+                undefined, () => act.splitActiveTabPanes()),
+            ...act.moveTabTargets().map((target) =>
+                commandEntry(`cmd:move-tab-to:${target.id}`, 'rectangle.stack', `Move Tab to ${target.name}`,
+                    'move the tab on screen, and its panes, to that workspace', undefined, () => act.moveActiveTabToWorkspace(target.id))),
             ...muteEntries,
             ...oldHostEntries,
             ...arrangementEntries(host.arrangement, hint),

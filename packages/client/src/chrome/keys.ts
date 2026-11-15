@@ -113,6 +113,8 @@ export interface KeyEventLike {
     readonly target?: unknown;
     /** False for a chord a web page or frame passed on to the window (it is re-dispatched here). */
     readonly isTrusted?: boolean;
+    /** `KeyboardEvent.getModifierState`, read for AltGraph (`typesAltGraphText`). */
+    getModifierState?(key: string): boolean;
     preventDefault?(): void;
     stopPropagation?(): void;
 }
@@ -269,6 +271,12 @@ export interface KeyDispatcherOptions {
     /** §7.2 step 3: nothing pane-related dispatches without an active workspace. */
     readonly hasActiveWorkspace?: (() => boolean) | undefined;
     /**
+     * workspace-feature.md §12: the title bar draws a workspace's tabs even where step 3 stands
+     * down, a paired daemon's workspace (§1.7), and the tab chords act on THAT workspace
+     * (`app/remote-tabs.ts`). True lets `WORKSPACE_TAB_ACTIONS` through step 3 then.
+     */
+    readonly hasTabWorkspace?: (() => boolean) | undefined;
+    /**
      * §7.2 step 2: Escape clears a workspace multi-selection BEFORE any binding lookup (so it
      * beats the default `escape=close_search`). Return true when a selection was cleared.
      */
@@ -280,6 +288,8 @@ export interface KeyDispatcherOptions {
      * consumed, `null`/absent not applicable → continue to the normal map.
      */
     readonly webPanePriority?: ((trigger: KeyTrigger, event: KeyEventLike) => boolean | null) | undefined;
+    /** The platform rule for AltGr (`typesAltGraphText`); defaults to this client's platform. */
+    readonly macLike?: boolean | undefined;
     /** Overridable for hosts with their own idea of "a text field is focused". */
     readonly isEditableTarget?: ((target: unknown) => boolean) | undefined;
 }
@@ -358,6 +368,25 @@ export function isEditableTarget(target: unknown): boolean {
     return typeof element.tagName === 'string' && EDITABLE_TAGS.has(element.tagName);
 }
 
+/**
+ * Off macOS, AltGr types a character on most non-US layouts, and Windows reports it as ctrl+alt:
+ * Czech AltGr+W is `|`, German AltGr+7, 8 and 9 are `{`, `[` and `]`. Such a keystroke is text,
+ * never a binding, though the off-mac defaults for the tab chords are ctrl+alt (config-
+ * keybindings.md section 3.5). Read from the AltGraph modifier state, and, as a backstop, from a
+ * letter or digit key that typed a symbol: under a real Ctrl+Alt those keys stay letters and
+ * digits on every layout. (A symbol key cannot be judged that way: on a US layout Ctrl+Alt+[
+ * types `[` and IS the previous-tab chord.)
+ */
+export function typesAltGraphText(event: KeyEventLike, macLike: boolean = CLIENT_MAC_LIKE): boolean {
+    if (macLike) return false;
+    if (event.getModifierState?.('AltGraph') === true) return true;
+    if (!event.ctrlKey || !event.altKey || event.metaKey || event.shiftKey) return false;
+    const key = event.key;
+    if (key === undefined || [...key].length !== 1) return false;
+    if (!/^(Key[A-Z]|Digit[0-9])$/.test(event.code)) return false;
+    return !/[\p{L}\p{N}]/u.test(key);
+}
+
 function resolve<T>(source: T | (() => T)): T {
     return typeof source === 'function' ? (source as () => T)() : source;
 }
@@ -377,6 +406,8 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         }
 
         const trigger = triggerFromEvent(event);
+        // AltGr typing a character is never a chord (off macOS; see `typesAltGraphText`).
+        if (typesAltGraphText(event, options.macLike)) return false;
 
         // 2. Escape clears an active multi-selection before any binding is consulted.
         if (event.code === 'Escape' && modifiersFromEvent(event).length === 0) {
@@ -390,7 +421,12 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         //    out, and a browser tab has no native menu to fall back on.
         const bindings = resolve(options.bindings ?? clientKeyBindings());
         const action = actionForTrigger(bindings, trigger);
-        if (options.hasActiveWorkspace?.() === false && (action === null || !WINDOW_ARRANGEMENT_ACTIONS.has(action))) return false;
+        if (
+            options.hasActiveWorkspace?.() === false &&
+            (action === null ||
+                !(WINDOW_ARRANGEMENT_ACTIONS.has(action) || (WORKSPACE_TAB_ACTIONS.has(action) && options.hasTabWorkspace?.() === true)))
+        )
+            return false;
 
         // 4. Never dispatch the in-app binding that shadows the global hotkey.
         const hotkey = options.globalHotkey?.();
@@ -504,14 +540,51 @@ export const WIRED_KEY_ACTIONS: readonly KelpiAction[] = [
     'switch_to_workspace_6',
     'switch_to_workspace_7',
     'switch_to_workspace_8',
-    'switch_to_workspace_9'
+    'switch_to_workspace_9',
+    // workspace-feature.md §12.
+    'new_tab',
+    'close_tab',
+    'next_tab',
+    'previous_tab',
+    'move_pane_to_new_tab',
+    'go_to_tab_1',
+    'go_to_tab_2',
+    'go_to_tab_3',
+    'go_to_tab_4',
+    'go_to_tab_5',
+    'go_to_tab_6',
+    'go_to_tab_7',
+    'go_to_tab_8',
+    'go_to_tab_9'
 ];
+
+/** workspace-feature.md §12: the tab chords, which act on whichever workspace's tabs are drawn. */
+export const WORKSPACE_TAB_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
+    'new_tab',
+    'close_tab',
+    'next_tab',
+    'previous_tab',
+    'move_pane_to_new_tab',
+    ...Array.from({ length: 9 }, (_, index) => `go_to_tab_${String(index + 1)}` as KelpiAction)
+]);
 
 /** `switch_to_workspace_N` → the 0-based index into `visibleWorkspaceOrder` (§3.2). */
 export function workspaceSwitchIndex(action: KelpiAction): number | null {
     const match = /^switch_to_workspace_([1-9])$/.exec(action);
     if (match === null) return null;
     return Number.parseInt(match[1] as string, 10) - 1;
+}
+
+/**
+ * The nine `go_to_tab_N` handlers (workspace-feature.md §12) from one 1-based callback; a
+ * number past the last tab returns false, so ⌥⌘7 with three tabs falls through.
+ */
+export function tabNumberHandlers(goTo: (number: number) => boolean): KeyActionRegistry {
+    const registry: KeyActionRegistry = {};
+    for (let number = 1; number <= 9; number += 1) {
+        registry[`go_to_tab_${String(number)}` as KelpiAction] = () => goTo(number);
+    }
+    return registry;
 }
 
 /**

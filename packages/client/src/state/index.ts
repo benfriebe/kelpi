@@ -120,6 +120,7 @@ export {
     connectStore,
     createKelpiRuntime,
     isTokenRejection,
+    isVersionMismatch,
     type KelpiRuntime,
     type KelpiRuntimeOptions,
     type StoreBridgeOptions

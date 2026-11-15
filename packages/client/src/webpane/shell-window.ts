@@ -67,6 +67,18 @@ export const TRAFFIC_LIGHT_INSET_PARAM = 'trafficLightInset';
 /** No sane frame needs more than this; a query string is user-editable. */
 const MAX_TRAFFIC_LIGHT_INSET = 200;
 
+/**
+ * shell-ui.md §3.3: `&fullscreen=1`, which the shell adds when it loads the page into a window
+ * that is already fullscreen. Later changes arrive as `window-fullscreen-on/off` menu commands.
+ */
+export function readFullScreen(search?: string): boolean {
+    return readParam('fullscreen', search) === '1';
+}
+
+/** The two relayed commands the shell sends when its window enters or leaves fullscreen. */
+export const WINDOW_FULLSCREEN_ON_COMMAND = 'window-fullscreen-on';
+export const WINDOW_FULLSCREEN_OFF_COMMAND = 'window-fullscreen-off';
+
 export function readTrafficLightInset(search?: string): number {
     const value = readParam(TRAFFIC_LIGHT_INSET_PARAM, search);
     if (value === null) return 0;

@@ -60,6 +60,7 @@ import {
     WS_SHELL_ACTIVATION_MESSAGE,
     WS_WORKSPACE_SELECTION_MESSAGE,
     WS_WINDOW_CHROME_MESSAGE,
+    WS_WINDOW_TABS_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
     decodeCsvEditOps,
@@ -105,6 +106,7 @@ import {
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/derived.js';
+import { activeTabIDOf, isPaneOnScreen } from '../store/tabs.js';
 import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor } from '../store/types.js';
 import {
     isAnsweredShellAction,
@@ -399,7 +401,7 @@ function parseClientInfo(value: unknown): WsClientInfo {
  * wire's snake_case convention so a client speaks one dialect for both kinds of command.
  *
  *   toggle-zoom          `pane_id`                       → focus-pane (if needed) + toggle-zoom
- *   set-split-ratio      `workspace_id`, `split_path`, `ratio` → update-split-ratio
+ *   set-split-ratio      `workspace_id`, `split_path`, `ratio`, optional `tab_id` → update-split-ratio
  *   set-group-collapsed  `group_id`, `collapsed`         → set-group-collapsed
  *   rename-workspace     `workspace_id`, `name`          → rename-workspace (the CLI's own
  *                        spelling, `workspace-rename`, came later with #266: a name-or-id
@@ -974,6 +976,14 @@ export function handleWsOnlyCommand(
         const ratio = payload['ratio'];
         if (typeof ratio !== 'number' || !Number.isFinite(ratio)) {
             return failure('set-split-ratio requires a numeric ratio');
+        }
+        // workspace-feature.md §12.6: a path only means something in the tree it was read off.
+        // A window names the tab it drew the divider in; if another client switched tabs before
+        // the drag landed, the same path may name a split of the tab now on screen, which is not
+        // the divider anybody moved. Without `tab_id` (a plugin) it is the tab on screen.
+        const tabID = text(payload['tab_id']);
+        if (tabID !== undefined && tabID.toUpperCase() !== activeTabIDOf(workspace).toUpperCase()) {
+            return failure(`tab '${tabID}' is no longer on screen`);
         }
         // A stale path is a no-op in the model (§9.1: "never an error"), which over a wire
         // would look like a silent success. Refuse it here instead: the client has just
@@ -2038,6 +2048,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_WINDOW_CHROME_MESSAGE:
                     windowChromeReport(parsed);
                     return;
+                case WS_WINDOW_TABS_MESSAGE:
+                    windowTabsReport(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -2381,6 +2394,17 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const paneID = typeof rawPane === 'string' && rawPane.length > 0 ? rawPane : null;
 
             this.focusedPaneID = paneID;
+            /*
+             * workspace-feature.md §12.6: a reconnect's replay is this connection's last report
+             * from before it went away, sent before it has the new snapshot. It is recorded for
+             * the suppression math and nothing else: dispatched, it would undo whatever another
+             * client did meanwhile, and a pane in a tab someone has since left would pull every
+             * client back onto that tab. The client re-reports once its snapshot has landed.
+             */
+            if (message['replay'] === true) {
+                this.activeWorkspaceID = workspaceID;
+                return;
+            }
             this.setActiveWorkspace(workspaceID);
 
             const workspace = workspaceByID(store.getState(), workspaceID);
@@ -2945,14 +2969,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
                 return;
             }
-            let reply: JsonObject;
+            let reply: JsonObject | Promise<JsonObject>;
             try {
                 reply = channel.run(command, payload);
             } catch (error) {
                 report(error, `ws-command ${command}`);
                 reply = { ...errorReply('handler failed') };
             }
-            this.send({ type: 'command-reply', id, reply });
+            if (!(reply instanceof Promise)) {
+                this.send({ type: 'command-reply', id, reply });
+                return;
+            }
+            // A new "same kind" tab or a duplicated tab asks the OS where its shells are first.
+            reply.then(
+                (settled) => {
+                    this.send({ type: 'command-reply', id, reply: settled });
+                },
+                (error: unknown) => {
+                    report(error, `ws-command ${command}`);
+                    this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                }
+            );
         }
 
         /**
@@ -3730,6 +3767,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (!this.ready || !this.documentVisible) return false;
             if (this.activeWorkspaceID !== workspaceID) return false;
             if (this.focusedPaneID !== paneID) return false;
+            // workspace-feature.md §12: a pane in a background tab is not being looked at, whatever
+            // this window last reported (a tab switch it has not reported yet).
+            const workspace = workspaceByID(options.store.getState(), workspaceID);
+            if (workspace !== null && !isPaneOnScreen(workspace, paneID)) return false;
             // An empty visibility set means the client never reported one; trust focus.
             return this.visiblePaneIDs.size === 0 || this.visiblePaneIDs.has(paneID);
         }
@@ -3964,6 +4005,25 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         revealPane({
             type: WS_WINDOW_CHROME_MESSAGE,
             titleBarHidden: hidden,
+            ...(windowID === undefined ? {} : { windowID })
+        });
+    }
+
+    /**
+     * The window's `window-tabs` report → every attached party, and NOT remembered: `window-chrome`
+     * again, with the tab count of the workspace the window draws, so its shell can grey the tab
+     * rows and leave a web page the tab chords the window would not use. Dropped, not guessed,
+     * when the count is not a whole number or the window id is unusable.
+     */
+    function windowTabsReport(message: Record<string, unknown>): void {
+        const tabs = message['tabs'];
+        if (typeof tabs !== 'number' || !Number.isInteger(tabs) || tabs < 0) return;
+        const rawWindowID = message['windowID'];
+        if (rawWindowID !== undefined && (typeof rawWindowID !== 'string' || rawWindowID.length === 0)) return;
+        const windowID = text(rawWindowID);
+        revealPane({
+            type: WS_WINDOW_TABS_MESSAGE,
+            tabs,
             ...(windowID === undefined ? {} : { windowID })
         });
     }

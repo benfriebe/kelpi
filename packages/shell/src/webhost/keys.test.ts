@@ -25,6 +25,7 @@ import {
     holdGestureChords,
     setForwardedKeybindLines,
     startsHeldGesture,
+    tabChordNeeds,
     type ChordInput
 } from './keys.js';
 
@@ -184,8 +185,11 @@ describe('keyboard layouts (#245)', () => {
         expect(forwardedChord(input('Equal', { key: '=' }), DEFAULTS)?.code).toBe('Equal');
         expect(forwardedChord(input('BracketRight', { key: ']' }), DEFAULTS)?.code).toBe('BracketRight');
         expect(forwardedChord(input('BracketLeft', { key: 'ü' }), DEFAULTS)?.code).toBe('BracketLeft');
-        // ⌥⌘ on the German `+` key is `alt+meta+BracketRight`, which nothing claims.
-        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), DEFAULTS)).toBeNull();
+        // ⌥⌘ on the German `+` key is `alt+meta+BracketRight`: a physical-key chord, and since
+        // workspace tabs (workspace-feature.md §12) it is next_tab's, forwarded as itself.
+        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), DEFAULTS)?.code).toBe('BracketRight');
+        // Unbinding it hands the key back to the page.
+        expect(forwardedChord(input('BracketRight', { key: '+', alt: true }), claimedChordsForLines(['alt+super+]=unbind']))).toBeNull();
     });
 });
 
@@ -247,6 +251,21 @@ describe('the set follows the config file', () => {
             'alt+meta+ArrowLeft', // focus_previous_pane
             'alt+meta+ArrowRight', // focus_next_pane
             'alt+meta+ArrowUp', // previous_workspace
+            // workspace-feature.md §12: the workspace's own tabs, all on ⌥⌘ so a page keeps ⌘T.
+            'alt+meta+BracketLeft', // previous_tab
+            'alt+meta+BracketRight', // next_tab
+            'alt+meta+Digit1',
+            'alt+meta+Digit2',
+            'alt+meta+Digit3',
+            'alt+meta+Digit4',
+            'alt+meta+Digit5',
+            'alt+meta+Digit6',
+            'alt+meta+Digit7',
+            'alt+meta+Digit8',
+            'alt+meta+Digit9', // go_to_tab_1…9
+            'alt+meta+KeyT', // new_tab
+            'alt+meta+KeyW', // close_tab
+            'alt+shift+meta+KeyT', // move_pane_to_new_tab
             'ctrl+Tab', // next_recent_workspace (a page's own ⌃Tab tab switching gives way)
             'ctrl+meta+Enter', // toggle_zen_mode (a page that binds ⌃⌘↩ gives it up to Zen Mode)
             'ctrl+shift+ArrowDown', // move_pane_down
@@ -402,5 +421,45 @@ describe('the chords that start a held gesture', () => {
             setForwardedKeybindLines([]);
         }
         expect(startsHeldGesture(chord('Tab', { ctrl: true }))).toBe(true);
+    });
+});
+
+/** workspace-feature.md §12: a tab chord the window's workspace could not use stays with the page. */
+describe('the workspace-tab chords', () => {
+    const needs = tabChordNeeds(DEFAULT_KEYBINDINGS);
+    const altMeta = { alt: true, meta: true };
+    const forward = (code: string, count: number | null): boolean =>
+        forwardedChord(input(code, altMeta), DEFAULTS, { needs, count }) !== null;
+
+    it('knows what each tab chord needs', () => {
+        expect(needs.get('alt+meta+Digit3')).toEqual({ kind: 'tab', number: 3 });
+        expect(needs.get('alt+meta+BracketRight')).toEqual({ kind: 'second-tab' });
+        expect(needs.get('alt+meta+KeyW')).toEqual({ kind: 'second-tab' });
+        // ⌥⌘T opens a tab whatever the count: not a chord the page gets back.
+        expect(needs.has('alt+meta+KeyT')).toBe(false);
+    });
+
+    it('takes ⌥⌘N only while the window has an Nth tab', () => {
+        expect(forward('Digit2', 3)).toBe(true);
+        expect(forward('Digit3', 3)).toBe(true);
+        expect(forward('Digit4', 3)).toBe(false);
+        expect(forward('Digit1', 0)).toBe(false);
+    });
+
+    it('takes ⌥⌘[ ⌥⌘] ⌥⌘W only with a second tab', () => {
+        for (const code of ['BracketLeft', 'BracketRight', 'KeyW']) {
+            expect(forward(code, 1)).toBe(false);
+            expect(forward(code, 2)).toBe(true);
+        }
+    });
+
+    it('takes every tab chord before the window has reported, as before tabs', () => {
+        expect(forward('Digit9', null)).toBe(true);
+        expect(forward('BracketLeft', null)).toBe(true);
+    });
+
+    it('leaves every other chord as it was', () => {
+        expect(forwardedChord(input('KeyD'), DEFAULTS, { needs, count: 1 })).not.toBeNull();
+        expect(forwardedChord(input('KeyT', altMeta), DEFAULTS, { needs, count: 1 })).not.toBeNull();
     });
 });

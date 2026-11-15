@@ -325,6 +325,11 @@ export interface PaneChromeInput {
     /** The pane's measured width, or undefined in a render with no layout (§S8, §S40). */
     readonly paneWidth?: number | undefined;
     readonly renaming?: boolean | undefined;
+    /**
+     * workspace-feature.md §12: the pane shares its tab, and the host can take it out into one of
+     * its own, so the header offers Move to New Tab. Absent or false: no such control.
+     */
+    readonly canMoveToNewTab?: boolean | undefined;
     readonly commands?: readonly PaneChromeCommandInput[] | undefined;
     /**
      * Another plugin's `pane.header` items, and the ONLY source for the contributions box.
@@ -571,6 +576,17 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
                       label: 'Refresh diff',
                       icon: 'refresh',
                       testID: `pane-refresh-${pane.id}`
+                  })
+              ]
+            : []),
+        ...(input.canMoveToNewTab === true
+            ? [
+                  control({
+                      key: 'new-tab',
+                      kind: 'action',
+                      label: 'Move to new tab (⇧⌥⌘T)',
+                      icon: 'new-tab',
+                      testID: `pane-new-tab-${pane.id}`
                   })
               ]
             : []),

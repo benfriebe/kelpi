@@ -14,15 +14,25 @@
  */
 
 import { captureResumeTuple, resetPaneAgentStateOnLoad, type ResumeTuple } from '@kelpi/core/agent';
-import { workspaceSidebarID, type IconRef, type SidebarID, type WebTab } from '@kelpi/core/codec';
 import {
+    workspaceSidebarID,
+    type IconRef,
+    type SidebarID,
+    type WebTab,
+    type WorkspaceTabRecord
+} from '@kelpi/core/codec';
+import {
+    allPaneIDs,
+    buildLayout,
     DEFAULT_MARKDOWN_FONT_SIZE,
+    removing,
     type AgentKind,
     type Pane,
     type PaneLayout,
     type PaneStatus,
     type PaneType
 } from '@kelpi/core/layout';
+import { backgroundStash, normalizeTabs, tabLayout, tabTree, workspaceTabs, activeTabIDOf } from './tabs.js';
 import type { WorkspaceColor } from '@kelpi/protocol';
 import type {
     DaemonState,
@@ -31,7 +41,8 @@ import type {
     RepoAssociation,
     WebPaneState,
     WorkspaceGroup,
-    WorkspaceState
+    WorkspaceState,
+    WorkspaceTab
 } from './types.js';
 
 /** Bumped only when the snapshot shape itself changes (independent of DB migrations). */
@@ -70,6 +81,9 @@ export interface PersistedPane {
     readonly webIsPrivate: boolean;
 }
 
+/** workspace-feature.md §12: one tab as saved, the `workspace.tabsJSON` entry shape. */
+export type PersistedTab = WorkspaceTabRecord;
+
 export interface PersistedWorkspace {
     readonly id: string;
     readonly name: string;
@@ -83,9 +97,19 @@ export interface PersistedWorkspace {
      * snapshot built by the legacy importer carries none; absent restores as idle.
      */
     readonly status?: PaneStatus | undefined;
-    /** The un-zoomed tree (a zoomed workspace persists `savedLayout`). */
+    /**
+     * The un-zoomed tree of the tab on screen (a zoomed workspace persists `savedLayout`).
+     * Still the whole story for a reader older than tabs, so it is always written.
+     */
     readonly layout: PaneLayout;
     readonly focusedPaneID: string | null;
+    /**
+     * §12: every tab, in order, the one on screen included. Optional because a snapshot built
+     * by the legacy importer, and a row an older daemon saved, carry none: absent restores as
+     * one tab holding `layout`.
+     */
+    readonly tabs?: readonly PersistedTab[] | undefined;
+    readonly activeTabID?: string | null | undefined;
     /** Epoch seconds. */
     readonly createdAt: number;
     /** Epoch seconds. */
@@ -180,6 +204,14 @@ function persistWorkspace(workspace: WorkspaceState): PersistedWorkspace {
         status: workspace.status,
         layout: workspace.savedLayout ?? workspace.layout,
         focusedPaneID: workspace.focusedPaneID,
+        tabs: workspaceTabs(workspace).map((tab) => ({
+            id: tab.id,
+            name: tab.name,
+            layout: tabTree(workspace, tab),
+            focusedPaneID: tabLayout(workspace, tab).focusedPaneID,
+            seen: tab.seen
+        })),
+        activeTabID: activeTabIDOf(workspace),
         createdAt: workspace.createdAt,
         lastAccessedAt: workspace.lastAccessedAt,
         labels: [...workspace.labels],
@@ -260,6 +292,91 @@ function restoreWebPanes(panes: readonly PersistedPane[]): Record<string, WebPan
         sidecars[record.id] = { tabs, activeTabID, isPrivate: record.webIsPrivate };
     }
     return sidecars;
+}
+
+/**
+ * The recovered tab's id: a real UUID (the `tabsJSON` decoder takes nothing else), derived from
+ * the workspace's so that the restore stays pure and a second boot recovers to the same id.
+ * The workspace id's hex digits reversed, with `attempt` added to the last, in UUID shape.
+ */
+export function recoveredTabID(workspaceID: string, attempt: number): string {
+    const hex = workspaceID.replace(/[^0-9a-fA-F]/g, '').toUpperCase().padEnd(32, '0').slice(0, 32);
+    const digits = [...hex].reverse();
+    const last = (parseInt(digits[31] as string, 16) + attempt) % 16;
+    digits[31] = last.toString(16).toUpperCase();
+    const flat = digits.join('');
+    return `${flat.slice(0, 8)}-${flat.slice(8, 12)}-${flat.slice(12, 16)}-${flat.slice(16, 20)}-${flat.slice(20, 32)}`;
+}
+
+interface RestoredTabs {
+    readonly tabs: readonly WorkspaceTab[];
+    readonly activeTabID: string;
+}
+
+/**
+ * workspace-feature.md §12, persistence.md §6: the tabs of a restored workspace, made to obey
+ * the invariants whatever the row says.
+ *
+ * - No saved tabs (an importer snapshot, a row from before tabs, or one an older daemon saved
+ *   after a newer one wrote tabs, since it drops the column) is one tab holding `layout`.
+ * - `layout` and `focusedPaneID` are the tab on screen's, whatever its `tabsJSON` entry says:
+ *   they are what an older daemon would have edited, so they are the freshest.
+ * - A pane belongs to one tab: the tab on screen claims first, then the others in order, and
+ *   a pane the workspace no longer has is dropped from every tree.
+ * - A pane in no tree at all (left behind by an older daemon, which keeps every pane but only
+ *   the tree on screen) goes into one recovered tab at the end, so it is never invisible. An
+ *   empty tab on screen takes them itself.
+ */
+function restoreTabs(record: PersistedWorkspace, paneIDs: readonly string[]): RestoredTabs & {
+    readonly layout: PaneLayout;
+} {
+    const live = new Set(paneIDs);
+    let layout = record.layout;
+    for (const id of allPaneIDs(layout)) if (!live.has(id)) layout = removing(layout, id);
+    const claimed = new Set(allPaneIDs(layout));
+
+    const saved = record.tabs ?? [];
+    const activeID = record.activeTabID ?? null;
+    const usable = activeID !== null && saved.some((tab) => tab.id === activeID);
+    const tabs: WorkspaceTab[] = [];
+    const ids = new Set<string>();
+    if (usable) {
+        for (const entry of saved) {
+            if (ids.has(entry.id)) continue;
+            ids.add(entry.id);
+            if (entry.id === activeID) {
+                tabs.push({ id: entry.id, name: entry.name, stash: null, seen: true });
+                continue;
+            }
+            let tree = entry.layout;
+            for (const id of allPaneIDs(tree)) {
+                if (claimed.has(id) || !live.has(id)) tree = removing(tree, id);
+            }
+            const kept = allPaneIDs(tree);
+            if (kept.length === 0) continue;
+            kept.forEach((id) => claimed.add(id));
+            const focused = entry.focusedPaneID !== null && kept.includes(entry.focusedPaneID) ? entry.focusedPaneID : (kept[0] as string);
+            tabs.push({ id: entry.id, name: entry.name, stash: backgroundStash(tree, focused), seen: entry.seen });
+        }
+    } else {
+        tabs.push({ id: record.id, name: null, stash: null, seen: true });
+    }
+    const activeTabID = usable ? (activeID as string) : record.id;
+
+    const orphans = paneIDs.filter((id) => !claimed.has(id));
+    if (orphans.length > 0) {
+        const tree = buildLayout('tiled', orphans);
+        if (allPaneIDs(layout).length === 0) {
+            layout = tree;
+        } else {
+            let recoveredID = recoveredTabID(record.id, 0);
+            for (let attempt = 1; ids.has(recoveredID) || recoveredID === activeTabID; attempt++) {
+                recoveredID = recoveredTabID(record.id, attempt);
+            }
+            tabs.push({ id: recoveredID, name: null, stash: backgroundStash(tree, orphans[0] as string), seen: false });
+        }
+    }
+    return { tabs, activeTabID, layout };
 }
 
 export interface FromSnapshotOptions {
@@ -345,7 +462,12 @@ export function fromSnapshot(
 ): DaemonState {
     const workspaces: WorkspaceState[] = (snapshot.workspaces ?? []).map((record) => {
         const panes = (record.panes ?? []).filter(pane => !pane.parked).map(restorePane);
-        return {
+        const restored = restoreTabs(record, panes.map((pane) => pane.id));
+        const focusedPaneID =
+            record.focusedPaneID !== null && allPaneIDs(restored.layout).includes(record.focusedPaneID)
+                ? record.focusedPaneID
+                : (allPaneIDs(restored.layout)[0] ?? null);
+        return normalizeTabs({
             id: record.id,
             name: record.name,
             slug: record.slug,
@@ -356,8 +478,10 @@ export function fromSnapshot(
             status: record.status ?? 'idle',
             panes,
             parkedPanes: (record.panes ?? []).filter(pane => pane.parked).map(restorePane),
-            layout: record.layout,
-            focusedPaneID: record.focusedPaneID,
+            tabs: restored.tabs,
+            activeTabID: restored.activeTabID,
+            layout: restored.layout,
+            focusedPaneID,
             focusHistory: [],
             repoAssociations: record.repoAssociations ?? [],
             recentlyClosedPanes: [],
@@ -377,7 +501,7 @@ export function fromSnapshot(
             isSyncInputActive: false,
             syncInputExcluded: [],
             pullRequests: []
-        } satisfies WorkspaceState;
+        } satisfies WorkspaceState);
     });
 
     // §5.5: a group's repo must still be in the registry. A row naming a repo that is gone (a

@@ -286,6 +286,35 @@ export function claimedChords(bindings: KeyBindingMap, platform: string = proces
     return claimed;
 }
 
+/**
+ * The workspace-tab chords, and what each needs to do anything (workspace-feature.md §12):
+ * ⌥⌘N needs an Nth tab, ⌥⌘[ / ⌥⌘] / ⌥⌘W a second one. The claimed set takes them all, as it
+ * takes every bound chord; `forwardedChord` then hands one back to the page while the window's
+ * workspace could not use it, so a page that binds ⌘⌥1-6 for headings or ⌥⌘[ ] for folding keeps
+ * them in a workspace with fewer tabs. The window reports its tab count (`window-tabs`).
+ */
+type TabChordNeed = { readonly kind: 'tab'; readonly number: number } | { readonly kind: 'second-tab' };
+
+const GO_TO_TAB = /^go_to_tab_([1-9])$/;
+const SECOND_TAB_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['next_tab', 'previous_tab', 'close_tab']);
+
+export function tabChordNeeds(bindings: KeyBindingMap): ReadonlyMap<string, TabChordNeed> {
+    const needs = new Map<string, TabChordNeed>();
+    for (const binding of bindings.values()) {
+        const match = GO_TO_TAB.exec(binding.action);
+        const need: TabChordNeed | null =
+            match !== null ? { kind: 'tab', number: Number(match[1]) } : SECOND_TAB_ACTIONS.has(binding.action) ? { kind: 'second-tab' } : null;
+        if (need === null) continue;
+        const key = relayableChordKey(binding.trigger);
+        if (key !== null) needs.set(key, need);
+    }
+    return needs;
+}
+
+function tabChordUsable(need: TabChordNeed, tabCount: number): boolean {
+    return need.kind === 'tab' ? need.number <= tabCount : tabCount > 1;
+}
+
 /** The actions whose gesture ends on the RELEASE of the trigger's modifiers (config-keybindings.md §7.8). */
 const HOLD_GESTURE_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['next_recent_workspace', 'previous_recent_workspace']);
 
@@ -341,12 +370,28 @@ function bindingsForLines(lines: readonly string[]): KeyBindingMap {
  */
 let forwarded: ReadonlySet<string> = claimedChords(DEFAULT_KEYBINDINGS);
 let holdChords: ReadonlySet<string> = holdGestureChords(DEFAULT_KEYBINDINGS);
+let tabNeeds: ReadonlyMap<string, TabChordNeed> = tabChordNeeds(DEFAULT_KEYBINDINGS);
+/** The window's tab count, from its page's `window-tabs` report; null until it reports. */
+let windowTabCount: number | null = null;
 
 /** Apply the daemon's `keybind` lines. Called on `welcome` and on every `settings-changed`. */
 export function setForwardedKeybindLines(lines: readonly string[]): void {
     const bindings = bindingsForLines(lines);
     forwarded = claimedChords(bindings);
     holdChords = holdGestureChords(bindings);
+    tabNeeds = tabChordNeeds(bindings);
+}
+
+/** Apply the window's `window-tabs` report (`../main.ts`). */
+export function setWindowTabCount(count: number): void {
+    windowTabCount = count;
+}
+
+/** The tab half of the decision, as a parameter of `forwardedChord` so tests need no module state. */
+export interface TabChordState {
+    readonly needs: ReadonlyMap<string, TabChordNeed>;
+    /** Null = the window has not said, so every tab chord is the window's, as before tabs. */
+    readonly count: number | null;
 }
 
 /** Does this forwarded chord start a hold-and-release gesture (`holdGestureChords`)? */
@@ -365,7 +410,9 @@ export function forwardedChordKeys(): ReadonlySet<string> {
  * Rules, in order:
  *   - key-downs only (a forwarded key-up would double-fire the binding);
  *   - at least one of ⌘/⌃/⌥ (see the module header: shift alone and bare keys are the page's);
- *   - the exact (key + modifiers) pair is claimed by the set above.
+ *   - the exact (key + modifiers) pair is claimed by the set above;
+ *   - a workspace-tab chord the window's workspace could not use stays with the page
+ *     (`tabChordNeeds`).
  *
  * The key is `chordKeyIdentity`'s (#245), the same one the client's dispatcher reads: on a German
  * layout ⌘+ is physically `BracketRight`, and it is taken as `shift+meta+Equal` (the zoom-in the
@@ -375,7 +422,11 @@ export function forwardedChordKeys(): ReadonlySet<string> {
  * `claimed` is a parameter only so the set can be tested without module state; callers pass
  * nothing and get the live one.
  */
-export function forwardedChord(input: ChordInput, claimed: ReadonlySet<string> = forwarded): ForwardedChord | null {
+export function forwardedChord(
+    input: ChordInput,
+    claimed: ReadonlySet<string> = forwarded,
+    tabs: TabChordState = { needs: tabNeeds, count: windowTabCount }
+): ForwardedChord | null {
     if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return null;
     const identity = chordKeyIdentity({ code: input.code, key: input.key, altKey: input.alt, shiftKey: input.shift });
     const chord = {
@@ -386,6 +437,9 @@ export function forwardedChord(input: ChordInput, claimed: ReadonlySet<string> =
         shift: identity.shiftKey
     };
     if (!chord.meta && !chord.ctrl && !chord.alt) return null;
-    if (!claimed.has(chordKey(chord.code, chord))) return null;
+    const key = chordKey(chord.code, chord);
+    if (!claimed.has(key)) return null;
+    const need = tabs.needs.get(key);
+    if (need !== undefined && tabs.count !== null && !tabChordUsable(need, tabs.count)) return null;
     return chord;
 }

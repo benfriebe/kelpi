@@ -23,11 +23,14 @@ import type { JsonObject, JsonValue } from '@kelpi/protocol';
 import { forCommand, uuidOut } from '../handlers/app/common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from '../handlers/app/context.js';
 import {
+    isPaneOnScreen,
     normalizeURLInput,
+    onScreenPaneIDs,
     resolveStateOf,
     visiblePane,
     workspaceByID,
-    workspaceContainingVisiblePane
+    workspaceContainingVisiblePane,
+    workspacePaneOrder
 } from '../store/index.js';
 import type { DaemonState, WorkspaceState } from '../store/index.js';
 import type { ReplyHandle } from '../seams.js';
@@ -123,11 +126,28 @@ function reusableWebPane(workspace: WorkspaceState): string | null {
         visiblePane(workspace, paneID)?.type === 'web' &&
         workspace.webPanes[paneID]?.isPrivate === false;
     const recent = [workspace.focusedPaneID, ...[...workspace.focusHistory].reverse()];
+    // workspace-feature.md §12: the tab on screen first, so a link joins the web pane the user can
+    // see rather than pulling them into another tab; any tab's after that.
     return (
         recent.find(reusable) ??
-        workspace.panes.map((pane) => pane.id).find(reusable) ??
+        onScreenPaneIDs(workspace).find(reusable) ??
+        workspacePaneOrder(workspace).find(reusable) ??
         null
     );
+}
+
+/**
+ * Focus a web pane and make sure it can be seen: focusing it brings its tab on screen
+ * (workspace-feature.md §12.3), and THEN a zoom on another pane of that tab ends, since the tab
+ * would otherwise open where nobody can see it. In that order, so the zoom tested is the one in
+ * the pane's own tab, never the tab the user is leaving.
+ */
+function focusAndShow(ctx: AppContext, workspaceID: string, paneID: string): void {
+    ctx.store.dispatch({ type: 'focus-pane', workspaceID, paneID });
+    const shown = workspaceByID(ctx.store.getState(), workspaceID);
+    if (shown !== null && shown.zoomedPaneID !== null && shown.zoomedPaneID !== paneID) {
+        ctx.store.dispatch({ type: 'toggle-zoom', workspaceID });
+    }
 }
 
 export interface WebHandlerDeps {
@@ -238,7 +258,15 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 workspace !== null &&
                 visiblePane(workspace, msg.target) !== null
                     ? msg.target
-                    : undefined;
+                    : // workspace-feature.md §12.3: an agent in a BACKGROUND tab opens beside itself,
+                      // in its own tab, as `open` and `diff` do. On screen the focused pane stays the
+                      // anchor (the Swift parity above).
+                      msg.pane_id !== undefined &&
+                        workspace !== null &&
+                        visiblePane(workspace, msg.pane_id) !== null &&
+                        !isPaneOnScreen(workspace, msg.pane_id)
+                      ? msg.pane_id
+                      : undefined;
             /*
              * Issue #50 (web-02), §3.1/§3.2: the GUI's New Web Pane (globe, context menu, ⌘⇧O)
              * is a BLANK open, but the wire requires a non-empty url (§8.2), so the client
@@ -284,12 +312,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                     url: normalizeURLInput(url),
                     makeActive: true
                 });
-                if (msg.focus === true) {
-                    if (workspace.zoomedPaneID !== null && workspace.zoomedPaneID !== reuseID) {
-                        ctx.store.dispatch({ type: 'toggle-zoom', workspaceID });
-                    }
-                    ctx.store.dispatch({ type: 'focus-pane', workspaceID, paneID: reuseID });
-                }
+                if (msg.focus === true) focusAndShow(ctx, workspaceID, reuseID);
                 persist();
                 return;
             }
@@ -511,11 +534,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
             if (msg.focus === true) {
                 // Shown as well as focused, as `web-open`'s reuse does: a zoom on some other pane
                 // would hide the tab and its URL bar behind it.
-                const zoomed = target.workspace.zoomedPaneID;
-                if (zoomed !== null && zoomed !== target.paneID) {
-                    ctx.store.dispatch({ type: 'toggle-zoom', workspaceID: target.workspace.id });
-                }
-                ctx.store.dispatch({ type: 'focus-pane', workspaceID: target.workspace.id, paneID: target.paneID });
+                focusAndShow(ctx, target.workspace.id, target.paneID);
             }
             ctx.store.dispatch({
                 type: 'web-tab-open',

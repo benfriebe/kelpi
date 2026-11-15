@@ -10,8 +10,9 @@
  *     `--name --json` sets the name to the literal `--json`;
  *   - a flag in FINAL position has no value: it returns null and is LEFT in argv, where the
  *     leftover check rejects it as an unknown option;
- *   - `--` tails exist only for `web click|type|select` and `group create|rename|delete`, where
- *     every word after it is a name, so `kelpi group delete -- --help` can name a group `--help`;
+ *   - `--` tails exist only for `web click|type|select`, `group create|rename|delete`, the
+ *     `tab` verbs and `pane move-to-tab`, where every word after it is a name, so
+ *     `kelpi group delete -- --help` can name a group `--help`;
  *   - `rejectLeftoverArgs` is what makes `kelpi pane capture <uuid>` fail loudly instead of
  *     silently capturing the caller (issue #237).
  *
@@ -107,9 +108,25 @@ export function isHelpToken(token: string): boolean {
     return token === '-h' || token === '--help' || token === 'help';
 }
 
-/** `--help` / `-h` ANYWHERE in argv — the form `pane`/`workspace` subcommands use. */
+/**
+ * `--help` / `-h` ANYWHERE in argv before a `--`: the form `pane`/`workspace` subcommands use.
+ * A word after `--` is a value even when it reads as a flag (`kelpi tab rename 2 -- --help`).
+ */
 export function hasHelpFlag(args: readonly string[]): boolean {
-    return args.includes('--help') || args.includes('-h');
+    const end = args.indexOf('--');
+    const options = end < 0 ? args : args.slice(0, end);
+    return options.includes('--help') || options.includes('-h');
+}
+
+/**
+ * A value that is there but blank: an unset shell variable far more often than a choice
+ * (`kelpi tab close "$T"`). Where absent means "the caller's own", sending it would act on the
+ * caller's own tab or workspace, so it is refused before anything is sent.
+ */
+export function rejectBlankValue(command: string, what: string, value: string | null | undefined): void {
+    if (value === null || value === undefined || value.trim() !== '') return;
+    errLine(`${command}: ${what} is empty (an unset variable?)`);
+    exit(1);
 }
 
 /**

@@ -128,7 +128,7 @@ const options = {
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const HEADER_BYTES = 17;
 const PROTOCOL_VERSION = 2;
-const WS_PROTOCOL_VERSION = 3; // the WebSocket hello's version (packages/protocol ws/messages.ts)
+const WS_PROTOCOL_VERSION = 4; // the WebSocket hello's version (packages/protocol ws/messages.ts)
 const encoder = new TextEncoder();
 
 const uuidToBytes = (uuid) => {

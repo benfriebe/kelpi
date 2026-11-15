@@ -6,6 +6,7 @@
  */
 
 import {
+    allPaneIDs,
     leaf,
     nextLayoutIndex,
     nextPaneID,
@@ -17,9 +18,17 @@ import {
 import type { DaemonState, DomainAction, WorkspaceState } from '../types.js';
 import { findVisiblePane, restoreZoomIfNeeded, setFocus, updateWorkspace } from './helpers.js';
 
-/** cycle/select share everything but the target index; both need >= 2 visible panes. */
+/**
+ * Panes in the tab on screen (workspace-feature.md §12): the lane holds every tab's panes, but
+ * a layout, a zoom and a cycle only ever arrange this tab's.
+ */
+function onScreenCount(workspace: WorkspaceState): number {
+    return allPaneIDs(workspace.savedLayout ?? workspace.layout).length;
+}
+
+/** cycle/select share everything but the target index; both need >= 2 panes on screen. */
 function applyPredefinedLayout(workspace: WorkspaceState, index: number): WorkspaceState {
-    if (workspace.panes.length <= 1) return workspace;
+    if (onScreenCount(workspace) <= 1) return workspace;
     const kind = predefinedLayoutAtIndex(index);
     if (kind === null) return workspace;
     const unzoomed = restoreZoomIfNeeded(workspace);
@@ -41,7 +50,7 @@ function toggleZoom(workspace: WorkspaceState): WorkspaceState {
         };
     }
     const focused = workspace.focusedPaneID;
-    if (focused === null || workspace.panes.length <= 1) return workspace;
+    if (focused === null || onScreenCount(workspace) <= 1) return workspace;
     return {
         ...workspace,
         savedLayout: workspace.layout,

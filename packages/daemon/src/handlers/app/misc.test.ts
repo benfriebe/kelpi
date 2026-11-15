@@ -427,8 +427,13 @@ describe('sync-group bookkeeping', () => {
 describe('handler table', () => {
     it('covers every non-pane wire command', () => {
         const table = harness().table;
+        // The workspace-tab verbs are the pane family's too (`handlers/pane/tabs.ts`).
         const missing = WIRE_COMMANDS.filter(
-            (command) => !command.startsWith('pane-') && command !== 'plugin' && !table.has(command)
+            (command) =>
+                !command.startsWith('pane-') &&
+                !command.startsWith('workspace-tab-') &&
+                command !== 'plugin' &&
+                !table.has(command)
         );
         expect(missing).toEqual([]);
     });

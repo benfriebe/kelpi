@@ -225,6 +225,26 @@ export function parseWindowChrome(message: Record<string, unknown>): WindowChrom
 }
 
 // ---------------------------------------------------------------------------
+// The window's tab count (workspace-feature.md §12)
+// ---------------------------------------------------------------------------
+
+/** `window-tabs`, decoded (protocol `WS_WINDOW_TABS_MESSAGE`). */
+export interface WindowTabsReport {
+    /** How many tabs the reporting window's workspace has; 0 when it draws none. */
+    readonly tabs: number;
+    /** Which shell window it is about; null = whichever shell hears it. */
+    readonly windowID: string | null;
+}
+
+/** Read a `window-tabs` frame, or null when it is not one (a count that is not a whole number is refused). */
+export function parseWindowTabs(message: Record<string, unknown>): WindowTabsReport | null {
+    if (message['type'] !== 'window-tabs') return null;
+    const tabs = message['tabs'];
+    if (typeof tabs !== 'number' || !Number.isInteger(tabs) || tabs < 0) return null;
+    return { tabs, windowID: readString(message, 'windowID') };
+}
+
+// ---------------------------------------------------------------------------
 // Finder "Open With" (CONT-123 / CONT-124)
 // ---------------------------------------------------------------------------
 

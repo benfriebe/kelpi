@@ -453,6 +453,27 @@ input {
 }
 
 /*
+ * workspace-feature.md §12: the hold before a tab under a dragged pane opens (spring-loading).
+ * The wash fills the tab from the left over the hold, 600 ms (`TAB_SPRING_MS`), so the wait
+ * reads as a countdown. Reduced motion keeps the wash, whole, and the hold still opens the tab.
+ */
+@keyframes kelpi-tab-spring {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.kelpi-tab-spring {
+  transform-origin: left center;
+  animation: kelpi-tab-spring 600ms linear forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kelpi-tab-spring {
+    animation: none;
+  }
+}
+
+/*
  * #286: the update sheet's download bar. Squirrel.Mac reports no progress, so like WEB-033's strip
  * it is indeterminate: the same sweep, inside a rounded track.
  */
@@ -594,9 +615,20 @@ input {
 [data-titlebar-drag='true'] select,
 [data-titlebar-drag='true'] textarea,
 [data-titlebar-drag='true'] [role='menu'],
-[data-titlebar-drag='true'] [role='menuitem'] {
+[data-titlebar-drag='true'] [role='menuitem'],
+[data-titlebar-drag='true'] [role='tab'] {
   -webkit-app-region: no-drag;
 }
+
+/*
+ * workspace-feature.md §12 / shell-ui.md §3.3: a workspace tab opts out WHOLE, its padding
+ * included (a tab is a `div`, not a button, so the button rule above would only carve out its ×
+ * and leave its edges dragging the window). The tab list itself does not: the gaps between tabs
+ * and the bar's space after + keep dragging, as does the 4px above and below each 24px tab.
+ *
+ * While a pane or a tab is being dragged the bar sets `data-titlebar-drag='false'`, so it is no
+ * drag region at all and the whole bar can take the drop.
+ */
 
 /*
  * UI-FIDELITY H19 — the command palette arrives and leaves.

@@ -97,7 +97,13 @@ const REMOTE_GAPS: readonly string[] = [
      * listed value gap. Both of these are inert without a search to report on.
      */
     'onPaneSearchFailure',
-    'onReleaseSearchCaret'
+    'onReleaseSearchCaret',
+    /*
+     * A pane drag taking the window's keyboard back from a web page (§12): the remote grid draws
+     * a paired daemon's web panes with no native page (`embedded={false}`), so no page in it can
+     * hold the keyboard.
+     */
+    'onPaneDragStart'
 ];
 
 /**

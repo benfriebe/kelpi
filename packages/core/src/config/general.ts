@@ -259,6 +259,22 @@ export interface GeneralSettings {
      * sending submits the prompt with no chance to edit it.
      */
     readonly newWorkspaceSendPrompt: boolean;
+    /**
+     * workspace-feature.md §12's three tab rules (Settings ▸ Workspaces ▸ Tabs):
+     *
+     * - `new-tab-opens`, default `terminal`: what ⌥⌘T and the + button open. `terminal` is a
+     *   shell in the workspace's folder, `same` the kind of the focused pane (a terminal where
+     *   it is), `agent` a terminal that starts the New Workspace sheet's agent (Claude when
+     *   that is None).
+     * - `new-tab-position`, default `after-current`: a new tab goes just after the tab on
+     *   screen, or at the `end`.
+     * - `agent-pane-placement`, default `own-tab`: a pane an agent creates in the background
+     *   (`kelpi pane split` without `--focus`) goes into the agent's own tab, or into a
+     *   `new-tab` of its own.
+     */
+    readonly newTabOpens: 'terminal' | 'same' | 'agent';
+    readonly newTabPosition: 'after-current' | 'end';
+    readonly agentPanePlacement: 'own-tab' | 'new-tab';
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -294,7 +310,10 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     agentClaudeCommand: DEFAULT_AGENT_COMMANDS.claude,
     agentCodexCommand: DEFAULT_AGENT_COMMANDS.codex,
     newWorkspaceAgent: 'none',
-    newWorkspaceSendPrompt: false
+    newWorkspaceSendPrompt: false,
+    newTabOpens: 'terminal',
+    newTabPosition: 'after-current',
+    agentPanePlacement: 'own-tab'
 };
 
 /** A week: past that a tab is as good as never discarded, and timers stay well inside range. */
@@ -444,6 +463,21 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'new-workspace-send-prompt':
                 settings = { ...settings, newWorkspaceSendPrompt: lowered === 'true' };
+                break;
+            case 'new-tab-opens':
+                if (lowered === 'terminal' || lowered === 'same' || lowered === 'agent') {
+                    settings = { ...settings, newTabOpens: lowered };
+                }
+                break;
+            case 'new-tab-position':
+                if (lowered === 'after-current' || lowered === 'end') {
+                    settings = { ...settings, newTabPosition: lowered };
+                }
+                break;
+            case 'agent-pane-placement':
+                if (lowered === 'own-tab' || lowered === 'new-tab') {
+                    settings = { ...settings, agentPanePlacement: lowered };
+                }
                 break;
             default:
                 break;

@@ -101,12 +101,28 @@ function WaitingCard(props: { readonly item: PhoneAttentionItem; readonly homeDi
 
 /**
  * Every host out of reach: nothing on this page can be trusted to be current, so it says so first,
- * says what usually causes it, and offers to dial them all again. Kelpi retries on its own anyway
- * (`connection/socket.ts` backs off between attempts); the button is for a person who has just
- * fixed their network and does not want to wait out the backoff.
+ * says what usually causes it, and offers to dial them all again. Kelpi retries a network failure
+ * on its own (`connection/socket.ts` backs off between attempts), so the button is for a person
+ * who has just fixed their network. A REFUSAL is final: a host on another Kelpi version, or one
+ * that no longer accepts this phone, is never retried, so the card says what to fix instead.
  */
 function Unreachable(props: PhoneHomeProps): ReactElement {
     const amber = tokens.activeAgent;
+    const only = props.fleet.length === 1 ? props.fleet[0] : undefined;
+    const allOtherVersion = props.fleet.length > 0 && props.fleet.every((reading) => reading.otherVersion);
+    const anyRefused = props.fleet.some((reading) => reading.connection === 'rejected');
+    const headline = allOtherVersion
+        ? only !== undefined
+            ? `${only.host.name} runs a different Kelpi version`
+            : 'Your hosts run a different Kelpi version'
+        : only !== undefined
+          ? `Can't reach ${only.host.name}`
+          : "Can't reach any host";
+    const advice = allOtherVersion
+        ? 'Update both to the same version of Kelpi, then retry.'
+        : anyRefused
+          ? 'Check this phone is on your tailnet or the same network as your hosts, and that each still lets it in.'
+          : 'Check this phone is on your tailnet or the same network as your hosts. Kelpi keeps retrying.';
     return (
         <div
             role="status"
@@ -115,9 +131,9 @@ function Unreachable(props: PhoneHomeProps): ReactElement {
             style={{ background: `color-mix(in srgb, ${amber} 8%, ${tokens.windowBackground})`, borderColor: `color-mix(in srgb, ${amber} 30%, ${tokens.windowBackground})` }}
         >
             <span className="flex flex-col gap-1">
-                <span className="text-[16px] font-bold">{props.fleet.length === 1 ? `Can't reach ${props.fleet[0]?.host.name ?? 'the host'}` : "Can't reach any host"}</span>
-                <span className="text-[14px] leading-5" style={{ color: tokens.textSecondary }}>
-                    Check this phone is on your tailnet or the same network as your hosts. Kelpi keeps retrying.
+                <span className="text-[16px] font-bold">{headline}</span>
+                <span className="text-[14px] leading-5" style={{ color: tokens.textSecondary }} data-testid="phone-home-unreachable-advice">
+                    {advice}
                 </span>
             </span>
             <button
@@ -213,7 +229,7 @@ function HostCard(props: { readonly reading: PhoneHostReading; readonly waiting:
                     <span className="truncate text-[20px] font-bold tracking-[-0.3px]">{host.name}</span>
                     <span className="flex items-center gap-[6px] truncate text-[12px]" style={{ color: tokens.textSecondary }} data-testid={`phone-landing-summary-${host.key}`}>
                         <HostDot status={connection} />
-                        {`${hostKindLabel(host.kind)} · ${hostReachability(connection)}`}
+                        {`${hostKindLabel(host.kind)} · ${hostReachability(connection, props.reading.otherVersion)}`}
                     </span>
                 </span>
             </button>

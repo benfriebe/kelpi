@@ -36,9 +36,11 @@ function rig(presence: RunningPresence) {
     let clock = 0;
     let next: RunningScan = { services: [service(100 * 1_048_576)], scannedAt: 0, warnings: [] };
     const scans: number[] = [];
+    const since: (number | undefined)[] = [];
     const scanner: RunningScanner = {
-        scan: () => {
+        scan: (options) => {
             scans.push(clock);
+            since.push(options?.since);
             return Promise.resolve({ ...next, scannedAt: clock });
         }
     };
@@ -54,6 +56,7 @@ function rig(presence: RunningPresence) {
     return {
         monitor,
         scans,
+        since,
         sent,
         state,
         advance: async (ms: number) => {
@@ -93,6 +96,8 @@ describe('createRunningMonitor', () => {
         await r.advance(RUNNING_POKE_DELAY_MS - 1);
         await r.advance(1);
         expect(r.scans).toEqual([0, RUNNING_POKE_DELAY_MS]);
+        // The poke's scan must have begun after the poke, never the scanner's cached one.
+        expect(r.since).toEqual([undefined, 0]);
     });
 
     it('broadcasts only when the list changes, ignoring memory below a MiB', async () => {

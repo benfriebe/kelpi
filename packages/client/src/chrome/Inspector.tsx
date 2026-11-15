@@ -633,6 +633,7 @@ export function Inspector(props: InspectorProps): ReactElement {
                         scannedAt={props.runningScannedAt ?? null}
                         homeDirectory={props.homeDirectory ?? ''}
                         bucket={bucket}
+                        ownsFolders={(props.associations?.length ?? 0) > 0}
                         onOpenPort={props.onOpenServicePort}
                         onShowPane={props.onFocusPane}
                     />

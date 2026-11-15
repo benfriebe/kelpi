@@ -258,7 +258,7 @@ describe('Inspector feature view binding', () => {
         const actions: InspectorViewActions = {
             ...createInspectorActions({ commands: rpc, activeWorkspace: () => workspace(), focusedPaneID: () => 'w1-p2', run: () => true, refresh }),
             toggleInspector: vi.fn(), renameWorkspace: vi.fn(), setWorkspaceColor: vi.fn(), setWorkspaceProfile: vi.fn(),
-            setWorkspaceMuted: vi.fn(), focusPane: vi.fn(), closePane: vi.fn(), openLinkInWebPane: vi.fn()
+            setWorkspaceMuted: vi.fn(), focusPane: vi.fn(), closePane: vi.fn()
         };
         const controller = { toggle: vi.fn().mockResolvedValue(undefined), confirmSwap: vi.fn().mockResolvedValue(undefined),
             cancelSwap: vi.fn(), recoverOrphan: vi.fn().mockResolvedValue(undefined), dismissOrphan: vi.fn().mockResolvedValue(undefined),

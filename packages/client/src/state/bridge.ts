@@ -146,7 +146,8 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             store.getState().setRunningServices({
                 services: Array.isArray(services) ? (services as never) : [],
                 scannedAt: typeof scannedAt === 'string' ? scannedAt : null,
-                warnings: Array.isArray(warnings) ? warnings.filter((entry): entry is string => typeof entry === 'string') : []
+                warnings: Array.isArray(warnings) ? warnings.filter((entry): entry is string => typeof entry === 'string') : [],
+                receivedAt: Date.now()
             });
         })
     );

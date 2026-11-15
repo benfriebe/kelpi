@@ -59,6 +59,8 @@ export {
     BADGE_COST,
     HEADER_TAIL_MAX,
     PANE_CHROME_SPLITS,
+    portsChipCost,
+    portsChipText,
     agentBadge,
     badgeFit,
     basename,

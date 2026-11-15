@@ -239,7 +239,7 @@ describe('PaneHeader rendering', () => {
         expect(chip.textContent).toBe(':3000 +1 ↗');
         expect(chip.getAttribute('title')).toBe('Open localhost:3000 in a web pane (:3000 :3001)');
         fireEvent.click(chip);
-        expect(onOpenServicePort).toHaveBeenCalledWith(ports[0]);
+        expect(onOpenServicePort).toHaveBeenCalledWith('a', ports[0]);
         cleanup();
         // Nothing listening, or no way to open it: no chip.
         renderHeader(testPane('a'), { servicePorts: [], onOpenServicePort });

@@ -1441,9 +1441,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             syncActive={syncActive}
                             syncExcluded={excluded.has(pane.id)}
                             servicePorts={props.servicePortsFor?.(pane.id)}
-                            {...(props.onOpenServicePort === undefined
-                                ? {}
-                                : { onOpenServicePort: (port: RunningServicePort) => props.onOpenServicePort?.(pane.id, port) })}
+                            {...(props.onOpenServicePort === undefined ? {} : { onOpenServicePort: props.onOpenServicePort })}
                             homeDirectory={homeDirectory}
                             height={band}
                             // §N26: a hidden pane's band must not park a visible pane's page. The

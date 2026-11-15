@@ -30,7 +30,7 @@ import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
 import { useOverlayPresence } from './modal-presence';
 import { RunningServicesChip } from './RunningServicesChip';
-import type { WorkspaceLook } from './running';
+import { scanClock, type WorkspaceLook } from './running';
 import { Sparkline, SystemStatGauge, type SparklineStyle } from './SystemStatGauge';
 import { systemStatMeta, visibleStatKinds } from './stats';
 import {
@@ -259,7 +259,10 @@ export interface StatusFooterProps {
      * Running services (docs/running-services.md §7): the daemon's last scan. Absent or empty
      * draws no chip.
      */
-    readonly running?: { readonly services: readonly RunningServiceEntry[]; readonly scannedAt: string | null } | null | undefined;
+    readonly running?:
+        | { readonly services: readonly RunningServiceEntry[]; readonly scannedAt: string | null; readonly receivedAt?: number | undefined }
+        | null
+        | undefined;
     /** Each workspace's color and icon, for the popover's avatars. */
     readonly runningLooks?: ReadonlyMap<string, WorkspaceLook> | undefined;
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
@@ -940,7 +943,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                     {props.running === null || props.running === undefined ? null : (
                         <RunningServicesChip
                             services={props.running.services}
-                            scannedAt={props.running.scannedAt}
+                            scannedAt={scanClock(props.running)}
                             homeDirectory={home}
                             bucket={bucket}
                             looks={props.runningLooks}

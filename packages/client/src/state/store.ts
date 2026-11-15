@@ -192,8 +192,11 @@ export interface DaemonSlice {
     readonly runningServices: RunningServicesState | null;
 }
 
-/** The `running-services` message, minus its type tag. */
-export type RunningServicesState = Omit<WsRunningServicesMessage, 'type'>;
+/**
+ * The `running-services` message, minus its type tag, and when it arrived here (this clock), so
+ * an uptime keeps counting between broadcasts (`scanClock`).
+ */
+export type RunningServicesState = Omit<WsRunningServicesMessage, 'type'> & { readonly receivedAt?: number | undefined };
 
 export interface Toast {
     /** `kelpi-<paneID>` for pane notifications: a re-post REPLACES rather than stacks. */

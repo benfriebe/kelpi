@@ -67,7 +67,8 @@ export function createRunningMonitor(options: RunningMonitorOptions): RunningMon
     let current: WsRunningServicesMessage = { type: WS_RUNNING_SERVICES_MESSAGE, services: [], scannedAt: null, warnings: [] };
     let announced = changeKey([], []);
     let lastScanAt = Number.NEGATIVE_INFINITY;
-    let pokedFor: number | null = null;
+    /** A pending poke: when it is due, and when it was asked for (the scan must start after). */
+    let poked: { readonly due: number; readonly since: number } | null = null;
     let scanning = false;
     let disposed = false;
 
@@ -77,13 +78,15 @@ export function createRunningMonitor(options: RunningMonitorOptions): RunningMon
         if (presence.clients === 0) return;
         const at = now();
         const interval = presence.anyVisible ? RUNNING_VISIBLE_INTERVAL_MS : RUNNING_HIDDEN_INTERVAL_MS;
-        const due = at - lastScanAt >= interval || (pokedFor !== null && at >= pokedFor);
-        if (!due) return;
+        const pokeDue = poked !== null && at >= poked.due;
+        if (!pokeDue && at - lastScanAt < interval) return;
+        const since = poked?.since;
         scanning = true;
-        pokedFor = null;
+        poked = null;
         lastScanAt = at;
         try {
-            const scan = await options.scanner.scan();
+            // A poke's scan must not be the scanner's cached answer from before the change.
+            const scan = await options.scanner.scan(since === undefined ? undefined : { since });
             const services = scan.services.map(toWireService);
             current = {
                 type: WS_RUNNING_SERVICES_MESSAGE,
@@ -109,8 +112,8 @@ export function createRunningMonitor(options: RunningMonitorOptions): RunningMon
     return {
         current: () => current,
         poke() {
-            const at = now() + RUNNING_POKE_DELAY_MS;
-            pokedFor = pokedFor === null ? at : Math.min(pokedFor, at);
+            const at = now();
+            poked = poked === null ? { due: at + RUNNING_POKE_DELAY_MS, since: at } : { due: poked.due, since: Math.max(poked.since, at) };
         },
         tick,
         dispose() {

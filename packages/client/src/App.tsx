@@ -333,6 +333,8 @@ import {
 
 /** Command-error toasts clear themselves; a failed command is news, not a permanent banner. */
 const ERROR_TOAST_MS = 6000;
+/** A pane running nothing: one array, so its header's props stay equal between renders. */
+const NO_PORTS: readonly RunningServicePort[] = [];
 
 let errorSequence = 0;
 
@@ -4105,15 +4107,25 @@ function Shell(props: AppProps): ReactElement {
     const statusActions = useStatusbarActions({ runtime, activateWorkspace: activateWorkspaceAndReveal, handBackCaret: handBackPaneCaret, isPrimarySelected: primarySelected });
     const statusModel = useMemo(() => statusbarModel(kelpi, inspectorData.associations), [kelpi, inspectorData.associations]);
     // docs/running-services.md §7: a service's port in a web pane, beside the pane that started
-    // it when that pane still exists, else beside the focused pane.
+    // it when that pane still exists, else in the service's own workspace (its focused pane),
+    // else beside the focused pane. One rule for the row menu, the Inspector and the footer.
     const openServicePort = useCallback((service: RunningServiceEntry, port: RunningServicePort): void => {
         const current = store.getState();
+        const workspaces = current.daemon.state.workspaces;
         const wanted = service.pane_id?.toUpperCase();
-        const started = wanted === undefined ? undefined : current.daemon.state.workspaces
-            .flatMap(workspace => workspace.panes).find(pane => pane.id.toUpperCase() === wanted)?.id;
-        const anchor = started ?? selectFocusedPaneID(current);
+        const started = wanted === undefined ? undefined
+            : workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id.toUpperCase() === wanted)?.id;
+        const owner = service.workspace_id === null ? undefined
+            : workspaces.find(workspace => workspace.id.toUpperCase() === service.workspace_id?.toUpperCase());
+        const ownPane = owner === undefined ? undefined
+            : owner.panes.find(pane => pane.id === owner.focusedPaneID)?.id ?? owner.panes[0]?.id;
+        const anchor = started ?? ownPane ?? selectFocusedPaneID(current);
         if (anchor !== null) act.openLinkInWebPane(anchor, portURL(port));
     }, [act, store]);
+    /** The pane header chip's port, beside its own pane; stable so `memo(PaneHeader)` holds. */
+    const openPanePort = useCallback((paneID: string, port: RunningServicePort): void => {
+        act.openLinkInWebPane(paneID, portURL(port));
+    }, [act]);
     /** The wire's workspace ids are uppercase; the mirror's are whatever the daemon minted. */
     const selectWorkspaceByWireID = useCallback((workspaceID: string): void => {
         const target = store.getState().daemon.state.workspaces.find(workspace => workspace.id.toUpperCase() === workspaceID.toUpperCase());
@@ -4128,7 +4140,7 @@ function Shell(props: AppProps): ReactElement {
             const key = service.pane_id.toUpperCase();
             byPane.set(key, [...(byPane.get(key) ?? []), ...service.ports]);
         }
-        return (paneID: string): readonly RunningServicePort[] => byPane.get(paneID.toUpperCase()) ?? [];
+        return (paneID: string): readonly RunningServicePort[] => byPane.get(paneID.toUpperCase()) ?? NO_PORTS;
     }, [runningServices]);
 
     // ── pane context menu (TERM-106…TERM-111) ───────────────────────────────────────
@@ -5159,7 +5171,7 @@ function Shell(props: AppProps): ReactElement {
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
-                    running: daemon.runningServices, homeDirectory: daemon.info?.home ?? '',
+                    running: daemon.runningServices, homeDirectory: daemon.info?.home ?? '', openServicePort,
                     // #283: Add Repository ▸ Choose…, desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }) }),
                 bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null, tabs: tabBar, leadWidth: tabLeadWidth, leadAnimated: tabLeadAnimated },
@@ -5422,7 +5434,7 @@ function Shell(props: AppProps): ReactElement {
                     <PaneGrid
                         visible={context.visible}
                         servicePortsFor={servicePortsFor}
-                        onOpenServicePort={(paneID, port) => { act.openLinkInWebPane(paneID, portURL(port)); }}
+                        onOpenServicePort={openPanePort}
                         // §10: the daemon's config file drives hover-focus; the grid owns the
                         // cancel-on-re-hover timer semantics.
                         focusFollowsMouse={settings.general.focusFollowsMouse}

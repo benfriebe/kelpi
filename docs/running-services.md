@@ -151,7 +151,9 @@ reused for 1.5 s, so an agent polling `kelpi ps` costs one set of probes. A full
 but none is visible, off with no clients; plus one scan 1 s after a trigger. About 1.3% of one
 core while visible. The trigger built so far is an agent event (a hook fired, a turn ended); a
 pane's command finishing and a stop completing are to come with phase 3. The loop looks at who is
-attached once a second and scans only when one is due, and never runs two scans at once.
+attached once a second and scans only when one is due, and never runs two scans at once. A
+trigger's scan must begin after the trigger, so it never gets the reused answer or a scan already
+in flight from before the change.
 
 The list goes to clients as its own WebSocket message, never through the domain store (every
 store dispatch rewrites SQLite):
@@ -238,7 +240,9 @@ Built:
   zero.
 
 Opening a port puts a web pane beside the pane that started the service when that pane still
-exists, otherwise beside the focused pane.
+exists, otherwise beside the focused pane of the service's own workspace, otherwise beside the
+focused pane. Uptimes keep counting between broadcasts: the client measures them against the
+daemon's clock (the scan's time plus what has passed since it arrived).
 
 Changed from the design: the status bar chip opens a popover, not the bottom panel. The bottom
 panel band (`panel.bottom`) is visible by default, so a bundled view in it would appear for every

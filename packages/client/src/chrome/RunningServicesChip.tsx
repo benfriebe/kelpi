@@ -18,7 +18,7 @@ import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
 import { useDismissable } from './dismissable';
 import { avatarLetter, ChromeIcon, iconGlyph, iconIsTintable } from './icons';
 import { useOverlayPresence } from './modal-presence';
-import { memoryText, portURL, uptimeText, type WorkspaceLook } from './running';
+import { ageText, memoryText, portURL, uptimeText, type WorkspaceLook } from './running';
 import { ROUNDED_FONT_STACK } from './Sidebar';
 import { SIDEBAR_TINT_VARS, tintedColor, withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -107,15 +107,6 @@ function serviceNote(service: RunningServiceEntry): string | null {
 function basename(path: string): string {
     const trimmed = path.endsWith('/') && path.length > 1 ? path.slice(0, -1) : path;
     return trimmed.slice(trimmed.lastIndexOf('/') + 1);
-}
-
-/** `9 days`, `3 hours`: a leftover worktree's age, in words. */
-function ageText(startedAt: string | null, scannedAt: string | null): string | null {
-    const match = /^(\d+)([smhd])$/.exec(uptimeText(startedAt, scannedAt));
-    if (match === null) return null;
-    const count = Number(match[1]);
-    const unit = { s: 'second', m: 'minute', h: 'hour', d: 'day' }[match[2] as 's' | 'm' | 'h' | 'd'];
-    return `${String(count)} ${unit}${count === 1 ? '' : 's'}`;
 }
 
 interface LeftoverGroup {

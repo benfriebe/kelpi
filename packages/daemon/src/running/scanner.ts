@@ -50,7 +50,12 @@ export interface ScanContext {
 }
 
 export interface RunningScanner {
-    scan(): Promise<RunningScan>;
+    /**
+     * The latest scan, shared and briefly cached. With `since`, only one that began at or after
+     * it: a caller that knows something just changed (an agent ended a turn) must not get a scan
+     * taken before the change.
+     */
+    scan(options?: { readonly since?: number | undefined }): Promise<RunningScan>;
 }
 
 export interface RunningScannerOptions {
@@ -71,8 +76,8 @@ export function createRunningScanner(options: RunningScannerOptions): RunningSca
     const cacheMs = options.cacheMs ?? RUNNING_SCAN_CACHE_MS;
     const deadlineMs = options.deadlineMs ?? PROBE_DEADLINE_MS;
     const { probes } = options;
-    let inFlight: Promise<RunningScan> | null = null;
-    let last: RunningScan | null = null;
+    let inFlight: { readonly promise: Promise<RunningScan>; readonly startedAt: number } | null = null;
+    let last: { readonly scan: RunningScan; readonly startedAt: number } | null = null;
     /** `${pid}:${startedAt}` → working directory. Pruned to the live processes each scan. */
     let cwdCache = new Map<string, string>();
 
@@ -145,21 +150,31 @@ export function createRunningScanner(options: RunningScannerOptions): RunningSca
         return { services, scannedAt: now(), warnings };
     }
 
-    return {
-        scan() {
-            if (inFlight !== null) return inFlight;
-            if (last !== null && now() - last.scannedAt < cacheMs) return Promise.resolve(last);
-            inFlight = runScan()
-                .then((scan) => {
-                    last = scan;
-                    return scan;
-                })
-                .finally(() => {
-                    inFlight = null;
-                });
-            return inFlight;
+    function scan(scanOptions?: { readonly since?: number | undefined }): Promise<RunningScan> {
+        const since = scanOptions?.since ?? Number.NEGATIVE_INFINITY;
+        if (inFlight !== null) {
+            if (inFlight.startedAt >= since) return inFlight.promise;
+            // It began before what the caller waits to see: let it land, then take a new one.
+            return inFlight.promise.then(
+                () => scan(scanOptions),
+                () => scan(scanOptions)
+            );
         }
-    };
+        if (last !== null && last.startedAt >= since && now() - last.scan.scannedAt < cacheMs) return Promise.resolve(last.scan);
+        const startedAt = now();
+        const promise = runScan()
+            .then((result) => {
+                last = { scan: result, startedAt };
+                return result;
+            })
+            .finally(() => {
+                inFlight = null;
+            });
+        inFlight = { promise, startedAt };
+        return promise;
+    }
+
+    return { scan };
 }
 
 /** A scanner that finds nothing: the default for handler tables built without a host (tests). */

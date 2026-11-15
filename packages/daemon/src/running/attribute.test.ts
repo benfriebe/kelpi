@@ -350,6 +350,15 @@ describe('helpers', () => {
         expect(worktreeOf(null, false, input)).toBeNull();
     });
 
+    it('keeps two deleted worktrees apart once their base is gone too, and an app folder with its worktree', () => {
+        const gone = new Set(['/w/trees/shop', '/w/trees/shop/a', '/w/trees/shop/a/web', '/w/trees/shop/b', '/w/trees/shop/b/web', '/w/trees/shop/live/apps/old']);
+        const input = { knownFolders: ['/w/shop'], worktreeBases: ['/w/trees/shop'], pathExists: (path: string) => !gone.has(path) };
+        expect(worktreeOf('/w/trees/shop/a/web', true, input)).toBe('/w/trees/shop/a');
+        expect(worktreeOf('/w/trees/shop/b/web', true, input)).toBe('/w/trees/shop/b');
+        // Only an app folder inside a live worktree went: it stays with that worktree.
+        expect(worktreeOf('/w/trees/shop/live/apps/old', true, input)).toBe('/w/trees/shop/live');
+    });
+
     it("prefers the owner when workspaces share a folder (two workspaces on one repo)", () => {
         const shared: WorkspaceFolders[] = [
             { id: 'web', name: 'web', folders: ['/w/shop'] },

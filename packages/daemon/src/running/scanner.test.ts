@@ -87,6 +87,35 @@ describe('createRunningScanner', () => {
         expect(probes.calls.table).toBe(2);
     });
 
+    it('never answers `since` with a scan that began before it, cached or in flight', async () => {
+        let clock = 1_000;
+        const probes = fakeProbes();
+        const scanner = createRunningScanner({ probes, context: () => context, now: () => clock, cacheMs: 1_500 });
+        const cached = await scanner.scan();
+        clock += 500;
+        // Inside the cache window, but asked for after the change: a new scan.
+        const after = await scanner.scan({ since: clock });
+        expect(after).not.toBe(cached);
+        expect(probes.calls.table).toBe(2);
+        // A scan already running when the change happened is waited out, then one more is taken.
+        let open: () => void = () => {};
+        probes.gate = new Promise((resolve) => {
+            open = resolve;
+        });
+        clock += 2_000;
+        const running = scanner.scan();
+        clock += 100;
+        const waiting = scanner.scan({ since: clock });
+        probes.gate = null;
+        open();
+        const [early, late] = await Promise.all([running, waiting]);
+        expect(late).not.toBe(early);
+        expect(probes.calls.table).toBe(4);
+        // And one that began after it is shared.
+        expect(await scanner.scan({ since: clock })).toBe(late);
+        expect(probes.calls.table).toBe(4);
+    });
+
     it('looks up a working directory once per process', async () => {
         let clock = 0;
         const probes = fakeProbes();

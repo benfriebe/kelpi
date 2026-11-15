@@ -53,6 +53,7 @@ import {
     paneChromeGlyph,
     paneChromeModel,
     paneChromeRow,
+    portsChipText,
     usePaneChromeParking,
     usePaneChromeWithdrawal,
     usePublishedPaneChrome,
@@ -80,6 +81,7 @@ export {
     headerOverflowCount,
     homeAbbreviated,
     paneDisplayTitle,
+    portsChipCost,
     splitHeaderTitle,
     type AgentBadgeModel,
     type AgentBadgeTone,
@@ -485,7 +487,7 @@ export interface PaneHeaderProps extends PaneActions {
      * that opens the first in a web pane. Dropped with the branch badge when the header is narrow.
      */
     readonly servicePorts?: readonly RunningServicePort[] | undefined;
-    readonly onOpenServicePort?: ((port: RunningServicePort) => void) | undefined;
+    readonly onOpenServicePort?: ((paneID: string, port: RunningServicePort) => void) | undefined;
     readonly homeDirectory?: string | undefined;
     /** Pins the elapsed clock (tests); omit to subscribe to the shared 1 s ticker. */
     readonly nowSeconds?: number | undefined;
@@ -698,7 +700,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
         ...(props.changes === undefined ? {} : { changes: props.changes }),
         canCopyDocument: onCopyDocument !== undefined,
-        servicePorts: props.onOpenServicePort === undefined ? 0 : (props.servicePorts?.length ?? 0),
+        servicePorts: props.onOpenServicePort === undefined ? [] : (props.servicePorts ?? []).map((port) => port.port),
         csv: csvFacts,
         renderer: rendererFacts
     });
@@ -1008,11 +1010,11 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     testID={`pane-ports-${chrome.paneID}`}
                     color={tokens.statusRunning}
                     fill={12}
-                    text={`:${String(props.servicePorts?.[0]?.port ?? '')}${(props.servicePorts?.length ?? 0) > 1 ? ` +${String((props.servicePorts?.length ?? 1) - 1)}` : ''} ↗`}
+                    text={portsChipText((props.servicePorts ?? []).map((port) => port.port))}
                     title={`Open localhost:${String(props.servicePorts?.[0]?.port ?? '')} in a web pane (${(props.servicePorts ?? []).map((port) => `:${String(port.port)}`).join(' ')})`}
                     onClick={() => {
                         const first = props.servicePorts?.[0];
-                        if (first !== undefined) props.onOpenServicePort?.(first);
+                        if (first !== undefined) props.onOpenServicePort?.(chrome.paneID, first);
                     }}
                 />
             )}

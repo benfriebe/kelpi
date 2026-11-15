@@ -161,11 +161,12 @@ describe('store bridge', () => {
         expect(h.store.getState().daemon.runningServices).toEqual({
             services: [entry],
             scannedAt: '2026-11-15T03:00:00.000Z',
+            receivedAt: expect.any(Number),
             warnings: ['docker: no socket']
         });
 
         h.sockets.last().emit({ type: 'running-services', services: 'nope', scannedAt: 7, warnings: [1, 'kept'] });
-        expect(h.store.getState().daemon.runningServices).toEqual({ services: [], scannedAt: null, warnings: ['kept'] });
+        expect(h.store.getState().daemon.runningServices).toEqual({ services: [], scannedAt: null, warnings: ['kept'], receivedAt: expect.any(Number) });
     });
 
     it('renders daemon notifications through the manager', () => {

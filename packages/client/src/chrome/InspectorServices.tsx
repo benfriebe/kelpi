@@ -32,6 +32,8 @@ export interface InspectorServicesProps {
     readonly scannedAt: string | null;
     readonly homeDirectory: string;
     readonly bucket: ChromeBucket;
+    /** The workspace has a repository, so a service outside its folders ran elsewhere. */
+    readonly ownsFolders?: boolean | undefined;
     /** Open a port's URL in a web pane beside the pane that started the service. */
     readonly onOpenPort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     /** Focus the pane that started the service. */
@@ -59,6 +61,7 @@ function ServiceRow(props: {
     readonly scannedAt: string | null;
     readonly homeDirectory: string;
     readonly bucket: ChromeBucket;
+    readonly ownsFolders: boolean;
     readonly onOpenPort?: InspectorServicesProps['onOpenPort'];
     readonly onShowPane?: InspectorServicesProps['onShowPane'];
 }): ReactElement {
@@ -68,7 +71,7 @@ function ServiceRow(props: {
     const folder = service.directory === null ? null : pathTail(service.directory, props.homeDirectory);
     const warning = service.directory_missing
         ? `folder deleted: ${folder ?? ''}`
-        : runsElsewhere(service)
+        : runsElsewhere(service, props.ownsFolders)
           ? `runs in ${folder ?? ''}`
           : null;
     const shown = open ? service.ports : service.ports.slice(0, PORTS_SHOWN);
@@ -185,6 +188,7 @@ export function InspectorServices(props: InspectorServicesProps): ReactElement {
                     scannedAt={props.scannedAt}
                     homeDirectory={props.homeDirectory}
                     bucket={props.bucket}
+                    ownsFolders={props.ownsFolders ?? true}
                     onOpenPort={props.onOpenPort}
                     onShowPane={props.onShowPane}
                 />

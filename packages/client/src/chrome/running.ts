@@ -20,8 +20,19 @@ export interface WorkspaceRunning {
     readonly rssBytes: number;
 }
 
+/**
+ * One grouping per scan: the callers rebuild their models on every store change, and a new
+ * `WorkspaceRunning` each time would re-render every memoized sidebar row that runs something.
+ */
+const groupedByScan = new WeakMap<readonly RunningServiceEntry[], ReadonlyMap<string, WorkspaceRunning>>();
+const totalsByGrouping = new WeakMap<ReadonlyMap<string, WorkspaceRunning>, Map<string, WorkspaceRunning | undefined>>();
+const NO_RUNNING: ReadonlyMap<string, WorkspaceRunning> = new Map();
+
 /** A workspace's services, keyed by workspace id (uppercase, as the wire sends it). */
 export function runningByWorkspace(services: readonly RunningServiceEntry[]): ReadonlyMap<string, WorkspaceRunning> {
+    if (services.length === 0) return NO_RUNNING;
+    const known = groupedByScan.get(services);
+    if (known !== undefined) return known;
     const grouped = new Map<string, RunningServiceEntry[]>();
     for (const service of services) {
         if (service.category !== 'workspace' || service.workspace_id === null) continue;
@@ -38,6 +49,7 @@ export function runningByWorkspace(services: readonly RunningServiceEntry[]): Re
             rssBytes: list.reduce((sum, service) => sum + (service.rss_bytes ?? 0), 0)
         });
     }
+    groupedByScan.set(services, out);
     return out;
 }
 
@@ -63,13 +75,21 @@ export function runningOfWorkspaces(
     map: ReadonlyMap<string, WorkspaceRunning> | undefined,
     workspaceIDs: readonly string[]
 ): WorkspaceRunning | undefined {
+    if (map === undefined) return undefined;
+    const key = workspaceIDs.map((id) => id.toUpperCase()).join(' ');
+    const totals = totalsByGrouping.get(map) ?? new Map<string, WorkspaceRunning | undefined>();
+    totalsByGrouping.set(map, totals);
+    if (totals.has(key)) return totals.get(key);
     const parts = workspaceIDs.map((id) => runningFor(map, id)).filter((part): part is WorkspaceRunning => part !== undefined);
-    if (parts.length === 0) return undefined;
-    return {
-        services: parts.flatMap((part) => part.services),
-        portCount: parts.reduce((sum, part) => sum + part.portCount, 0),
-        rssBytes: parts.reduce((sum, part) => sum + part.rssBytes, 0)
-    };
+    const total = parts.length === 0
+        ? undefined
+        : {
+              services: parts.flatMap((part) => part.services),
+              portCount: parts.reduce((sum, part) => sum + part.portCount, 0),
+              rssBytes: parts.reduce((sum, part) => sum + part.rssBytes, 0)
+          };
+    totals.set(key, total);
+    return total;
 }
 
 /** The services a pane started (its process tree reaches the pane's shell). */
@@ -83,16 +103,45 @@ export function memoryText(bytes: number | null | undefined): string {
     return bytes === null || bytes === undefined || bytes <= 0 ? '-' : formatBytes(bytes);
 }
 
-/** `40s`, `12m`, `5h`, `3d`: the time since `startedAt`, against the scan's own clock. */
-export function uptimeText(startedAt: string | null, scannedAt: string | null): string {
+/**
+ * The daemon's clock now: its last scan's time plus what has passed here since the scan arrived.
+ * The daemon broadcasts only when the list changes, so its `scannedAt` alone would hold every
+ * uptime at what it was then; measuring from the daemon's clock keeps a remote client's skew out.
+ */
+export function scanClock(
+    running: { readonly scannedAt: string | null; readonly receivedAt?: number | undefined } | null | undefined,
+    now = Date.now()
+): string | null {
+    if (running === null || running === undefined || running.scannedAt === null) return null;
+    const at = Date.parse(running.scannedAt);
+    if (!Number.isFinite(at) || running.receivedAt === undefined) return running.scannedAt;
+    return new Date(at + Math.max(0, now - running.receivedAt)).toISOString();
+}
+
+type Elapsed = { readonly count: number; readonly unit: 'second' | 'minute' | 'hour' | 'day' };
+
+/** The time since `startedAt` in its largest whole unit, against the daemon's clock (`scanClock`). */
+function elapsed(startedAt: string | null, scannedAt: string | null): Elapsed | null {
     const start = startedAt === null ? Number.NaN : Date.parse(startedAt);
     const end = scannedAt === null ? Date.now() : Date.parse(scannedAt);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return '-';
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
     const seconds = Math.max(0, Math.floor((end - start) / 1000));
-    if (seconds < 60) return `${String(seconds)}s`;
-    if (seconds < 3600) return `${String(Math.floor(seconds / 60))}m`;
-    if (seconds < 86_400) return `${String(Math.floor(seconds / 3600))}h`;
-    return `${String(Math.floor(seconds / 86_400))}d`;
+    if (seconds < 60) return { count: seconds, unit: 'second' };
+    if (seconds < 3600) return { count: Math.floor(seconds / 60), unit: 'minute' };
+    if (seconds < 86_400) return { count: Math.floor(seconds / 3600), unit: 'hour' };
+    return { count: Math.floor(seconds / 86_400), unit: 'day' };
+}
+
+/** `40s`, `12m`, `5h`, `3d`. */
+export function uptimeText(startedAt: string | null, scannedAt: string | null): string {
+    const time = elapsed(startedAt, scannedAt);
+    return time === null ? '-' : `${String(time.count)}${time.unit.charAt(0)}`;
+}
+
+/** `9 days`, `3 hours`: a leftover worktree's age, in words. */
+export function ageText(startedAt: string | null, scannedAt: string | null): string | null {
+    const time = elapsed(startedAt, scannedAt);
+    return time === null ? null : `${String(time.count)} ${time.unit}${time.count === 1 ? '' : 's'}`;
 }
 
 /** Who started it, for a sub-line: `Claude`, `Codex`, `pane`, `compose`. */
@@ -134,9 +183,14 @@ export function portURL(port: RunningServicePort): string {
     return `http://${host}:${String(port.port)}/`;
 }
 
-/** The folder a service runs in, when it is not its own workspace's (an agent ran it elsewhere). */
-export function runsElsewhere(service: RunningServiceEntry): boolean {
-    return service.directory !== null && service.directory_workspace_id?.toUpperCase() !== service.workspace_id?.toUpperCase();
+/**
+ * The folder a service runs in, when it is not its own workspace's (an agent ran it elsewhere).
+ * A workspace with no repository owns no folders, so for it only another workspace's folder counts.
+ */
+export function runsElsewhere(service: RunningServiceEntry, ownsFolders = true): boolean {
+    if (service.directory === null) return false;
+    if (service.directory_workspace_id === null) return ownsFolders;
+    return service.directory_workspace_id.toUpperCase() !== service.workspace_id?.toUpperCase();
 }
 
 /** The sidebar glyph's tooltip: `3 running · 1.4G · ports 3200 3201 +4`. */

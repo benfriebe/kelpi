@@ -24,7 +24,8 @@ import {
     PaneHeader,
     badgeFit,
     headerChrome,
-    headerOverflowCount
+    headerOverflowCount,
+    portsChipCost
 } from './PaneHeader';
 import { PaneSearchOverlay } from './PaneSearchOverlay';
 import { testPane } from './testing';
@@ -174,6 +175,16 @@ describe('S8 — a squeezed badge is an ellipsis or nothing, never a colour stub
         });
         // A pane outside a git repo keeps its ports chip on its own.
         expect(badgeFit({ ...both, branch: false, paneWidth: 130 + BADGE_COST.ports }).ports).toBe(true);
+    });
+
+    it('budgets a longer ports chip at its own width', () => {
+        // `:3000 ↗` is the default cost; `:51234 +2 ↗` is four cells wider and does not shrink.
+        expect(portsChipCost([3000])).toBe(BADGE_COST.ports);
+        const wide = portsChipCost([51234, 51235, 51236]);
+        expect(wide).toBe(BADGE_COST.ports + 4 * 6);
+        const both = { label: false, agent: false, branch: true, ports: true, buttons: 4 };
+        expect(badgeFit({ ...both, portsCost: wide, paneWidth: 130 + BADGE_COST.branch + BADGE_COST.ports }).ports).toBe(false);
+        expect(badgeFit({ ...both, portsCost: wide, paneWidth: 130 + BADGE_COST.branch + wide }).ports).toBe(true);
     });
 
     it('keeps a lone badge far longer than a header carrying three', () => {

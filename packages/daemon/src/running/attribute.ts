@@ -232,9 +232,11 @@ function parentOf(path: string): string {
 /**
  * The worktree a folder is in, so the leftovers of one worktree list together.
  *
- * A deleted folder is grouped by the topmost folder that is gone, which is the worktree that
- * `git worktree remove` took, whether or not this daemon knows its repo. An existing one by the
- * folder one level under a known repo's worktree base, else by the known repo holding it.
+ * Under a known repo's worktree base it is the folder one level down, deleted or not, so two
+ * removed worktrees stay apart even once the base itself is gone, and a deleted app folder in a
+ * live worktree stays with that worktree. Otherwise a deleted folder is grouped by the topmost
+ * folder that is gone, which is the worktree that `git worktree remove` took, whether or not
+ * this daemon knows its repo; an existing one by the known repo holding it.
  */
 export function worktreeOf(
     directory: string | null,
@@ -242,6 +244,12 @@ export function worktreeOf(
     input: Pick<BuildInput, 'knownFolders' | 'worktreeBases' | 'pathExists'>
 ): string | null {
     if (directory === null) return null;
+    const longestFirst = (folders: readonly string[]): string[] => [...folders].sort((a, b) => b.length - a.length);
+    for (const base of longestFirst(input.worktreeBases ?? [])) {
+        if (directory === base || !isPathInside(directory, base)) continue;
+        const prefix = base.endsWith('/') ? base : `${base}/`;
+        return `${prefix}${directory.slice(prefix.length).split('/')[0] ?? ''}`;
+    }
     if (missing) {
         let top = directory;
         let parent = parentOf(top);
@@ -250,12 +258,6 @@ export function worktreeOf(
             parent = parentOf(parent);
         }
         return top;
-    }
-    const longestFirst = (folders: readonly string[]): string[] => [...folders].sort((a, b) => b.length - a.length);
-    for (const base of longestFirst(input.worktreeBases ?? [])) {
-        if (directory === base || !isPathInside(directory, base)) continue;
-        const prefix = base.endsWith('/') ? base : `${base}/`;
-        return `${prefix}${directory.slice(prefix.length).split('/')[0] ?? ''}`;
     }
     return longestFirst(input.knownFolders).find((folder) => isPathInside(directory, folder)) ?? null;
 }

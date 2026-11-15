@@ -2124,6 +2124,18 @@ again" turns that setting off, for workspaces and tabs alike. The WS verbs thems
 
 - **Layouts and zoom.** `cycle-layout`, `select-layout` and `toggle-zoom` need two or more
   panes ON SCREEN (they counted the lane before tabs).
+- **Divider drags.** `set-split-ratio` addresses a split by path, which means something only in
+  the tree it was read off, so the window names the tab it drew the divider in (`tab_id`) and
+  the daemon refuses the drag once another tab is on screen (pane-layout.md §7.4). A
+  `pane-resize`, which names a pane, already resolves that pane's own tab.
+- **First spawn size.** No client draws a pane in a background tab, so none measures it, and
+  the spawn gate (`pty/spawn-gate.ts`) does not hold its shell for a measurement that will
+  never come. It starts at once, at an estimate of the grid it will be drawn at
+  (`pty/background-size.ts`): the pane area is read off a measured pane of the tab on screen
+  (its grid over its share of the tree), and the pane gets its own share of its tab's tree.
+  A new tab's only pane gets the whole area; a Duplicate Tab copy of a split keeps the
+  split's proportions. With nothing on screen measured, it falls back to the last size any
+  pane reported. The client's measurement once the tab is shown resizes it as for any pane.
 - **Focus.** A fallback focus (`popFocusFromHistory`, `focusCreatedPane`'s background rule)
   only ever lands on a pane in the tab on screen.
 - **Sync input.** The broadcast group (1.10) is the on-screen tab's shells; switching tabs

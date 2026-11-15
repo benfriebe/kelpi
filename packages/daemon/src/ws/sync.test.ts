@@ -761,6 +761,40 @@ describe('WS-only commands', () => {
             expect(layoutOf(f)).toEqual(before);
         });
 
+        /*
+         * workspace-feature.md §12.6: the path names a split in the tab the client drew. If
+         * another client switched tabs before the drag landed, the same path can name a split
+         * in the tab now on screen, and that is not the divider anybody moved.
+         */
+        it('refuses a drag drawn in a tab that is no longer on screen, rather than move another tab\'s divider', () => {
+            const f = tiled();
+            const drawnIn = f.store.state().workspaces[0]?.activeTabID as string;
+            const other = 'FFFFFFFF-0000-4000-8000-0000000000EE';
+            const PANE_E = '44444444-5555-4666-8777-888888888888';
+            const PANE_F = '55555555-6666-4777-8888-999999999999';
+            f.store.dispatch({
+                type: 'create-tab',
+                workspaceID: W1,
+                tabID: other,
+                create: { type: 'create-pane', workspaceID: W1, paneID: PANE_E, now: NOW }
+            });
+            f.store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PANE_F, sourcePaneID: PANE_E, direction: 'horizontal', now: NOW });
+            // The other tab is on screen now, with a split of its own at the root.
+            expect(f.store.state().workspaces[0]?.activeTabID).toBe(other);
+            const before = ratioAtPath(layoutOf(f), 'd');
+            expect(before).not.toBeNull();
+
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: W1, tab_id: drawnIn, split_path: 'd', ratio: 0.8 })
+            ).toEqual({ ok: false, error: `tab '${drawnIn}' is no longer on screen` });
+            expect(ratioAtPath(layoutOf(f), 'd')).toBe(before);
+
+            // Naming the tab on screen moves its divider as before.
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: W1, tab_id: other, split_path: 'd', ratio: 0.8 })
+            ).toMatchObject({ ok: true, ratio: 0.8 });
+        });
+
         it('refuses an unknown workspace, a missing path and a non-numeric ratio', () => {
             const f = tiled();
             expect(

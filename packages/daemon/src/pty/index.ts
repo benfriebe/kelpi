@@ -34,6 +34,7 @@ export {
     createPaneGeometryStore
 } from './geometry.js';
 export type { GridSize, PaneGeometryStore, PaneGeometryStoreOptions } from './geometry.js';
+export { estimateBackgroundGrid } from './background-size.js';
 
 export {
     DEFAULT_SPAWN_DEFER_TIMEOUT_MS,

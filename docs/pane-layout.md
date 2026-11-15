@@ -502,7 +502,7 @@ in `packages/client/src/grid/PaneGrid.tsx`, with the gesture maths in
     else `second`), the same `resizePaneShare` pipeline as §12.5
     (`commands.setSplitRatio`, `packages/client/src/connection/commands.ts:475-477`);
   - if both children are splits (e.g. the root divider of a 2×2 tiled layout), the WS-only
-    verb `set-split-ratio {workspace_id, split_path, ratio}`
+    verb `set-split-ratio {workspace_id, split_path, ratio, tab_id?}`
     (`commands.setSplitRatioAtPath`, `commands.ts:757-769`;
     `packages/daemon/src/ws/sync.ts:777-802`), which dispatches the store's
     `update-split-ratio`.
@@ -1193,4 +1193,9 @@ it does where the reason is not obvious from the behaviour alone.
     (`packages/core/src/layout/ratio.ts`); the `set-split-ratio` wire verb checks first
     and replies `{"ok":false,"error":"no split at path '<path>'"}`
     (`packages/daemon/src/ws/sync.ts:788-793`) so a client that previewed against a stale
-    tree finds out rather than seeing a silent success.
+    tree finds out rather than seeing a silent success. A path names a split only in the tab
+    it was read off (workspace-feature.md §12.6): the window and a paired daemon's grid send
+    the tab they drew as `tab_id`, and a drag whose tab is no longer on screen is refused with
+    `tab '<id>' is no longer on screen` rather than moving the divider at the same path in the
+    tab another client switched to. Without `tab_id` (a plugin's `layout.setSplitRatio`) the
+    path is read in the tab on screen, as before.

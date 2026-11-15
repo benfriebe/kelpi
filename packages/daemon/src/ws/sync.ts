@@ -105,7 +105,7 @@ import {
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/derived.js';
-import { isPaneOnScreen } from '../store/tabs.js';
+import { activeTabIDOf, isPaneOnScreen } from '../store/tabs.js';
 import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor } from '../store/types.js';
 import {
     isAnsweredShellAction,
@@ -400,7 +400,7 @@ function parseClientInfo(value: unknown): WsClientInfo {
  * wire's snake_case convention so a client speaks one dialect for both kinds of command.
  *
  *   toggle-zoom          `pane_id`                       → focus-pane (if needed) + toggle-zoom
- *   set-split-ratio      `workspace_id`, `split_path`, `ratio` → update-split-ratio
+ *   set-split-ratio      `workspace_id`, `split_path`, `ratio`, optional `tab_id` → update-split-ratio
  *   set-group-collapsed  `group_id`, `collapsed`         → set-group-collapsed
  *   rename-workspace     `workspace_id`, `name`          → rename-workspace (the CLI's own
  *                        spelling, `workspace-rename`, came later with #266: a name-or-id
@@ -975,6 +975,14 @@ export function handleWsOnlyCommand(
         const ratio = payload['ratio'];
         if (typeof ratio !== 'number' || !Number.isFinite(ratio)) {
             return failure('set-split-ratio requires a numeric ratio');
+        }
+        // workspace-feature.md §12.6: a path only means something in the tree it was read off.
+        // A window names the tab it drew the divider in; if another client switched tabs before
+        // the drag landed, the same path may name a split of the tab now on screen, which is not
+        // the divider anybody moved. Without `tab_id` (a plugin) it is the tab on screen.
+        const tabID = text(payload['tab_id']);
+        if (tabID !== undefined && tabID.toUpperCase() !== activeTabIDOf(workspace).toUpperCase()) {
+            return failure(`tab '${tabID}' is no longer on screen`);
         }
         // A stale path is a no-op in the model (§9.1: "never an error"), which over a wire
         // would look like a silent success. Refuse it here instead: the client has just

@@ -16,7 +16,7 @@ import { WebSocket } from 'ws';
 
 import { probeControlPing } from '../control/index.js';
 import { createPersistence } from '../db/index.js';
-import { spawnEnvVars } from '../handlers/pane/index.js';
+import { spawnEnvVars, spawnPaneIfShell } from '../handlers/pane/index.js';
 import { mintDevice, readToken, revokeDevice } from '../lifecycle/index.js';
 import { WS_CLOSE_CODES } from '../ws/sync.js';
 import type { PersistedSnapshot } from '../store/index.js';
@@ -111,6 +111,57 @@ function seedDatabase(dbPath: string, home: string, sessionID: string): void {
                         agentKind: 'claude',
                         agentProfileName: null,
                         status: 'running',
+                        filePath: null,
+                        scratchpadContent: null,
+                        webTabs: null,
+                        webActiveTabID: null,
+                        webIsPrivate: false
+                    }
+                ],
+                repoAssociations: []
+            }
+        ],
+        groups: [],
+        topLevelOrder: [{ kind: 'workspace', id: WORKSPACE }],
+        activeWorkspaceID: WORKSPACE,
+        repos: [],
+        labelPresets: []
+    };
+    const persistence = createPersistence({ path: dbPath });
+    expect(persistence.saveNow(snapshot)).toBe(true);
+    persistence.close();
+}
+
+/** One idle shell, `PANE` in `WORKSPACE`, with no agent to resume. */
+function seedIdleShell(dbPath: string, home: string): void {
+    const snapshot: PersistedSnapshot = {
+        version: 1,
+        workspaces: [
+            {
+                id: WORKSPACE,
+                name: 'dev',
+                slug: 'dev',
+                color: 'blue',
+                icon: null,
+                profileName: null,
+                muted: false,
+                layout: leaf(PANE),
+                focusedPaneID: PANE,
+                createdAt: 1_700_000_000,
+                lastAccessedAt: 1_700_000_000,
+                labels: [],
+                panes: [
+                    {
+                        id: PANE,
+                        label: null,
+                        type: 'shell',
+                        workingDirectory: home,
+                        createdAt: 1_700_000_000,
+                        lastActivityAt: 1_700_000_000,
+                        agentSessionID: null,
+                        agentKind: null,
+                        agentProfileName: null,
+                        status: 'idle',
                         filePath: null,
                         scratchpadContent: null,
                         webTabs: null,
@@ -487,6 +538,52 @@ describe('createDaemon', () => {
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
         expect(daemon.pty.pid(paneID)).toEqual(expect.any(Number));
+    }, 20_000);
+
+    /*
+     * workspace-feature.md §12.6: no client draws a pane in a background tab, so none will ever
+     * measure it, and holding its shell would only cost the gate's whole timeout before the same
+     * fallback. It spawns at once, at the share of the pane area the tab on screen measures
+     * (`pty/background-size.ts`), not at whichever pane reported last.
+     */
+    it('never holds a shell opened in a background tab, and sizes it from the tab on screen', async () => {
+        const paths = scratch();
+        seedIdleShell(paths.dbPath, paths.home);
+        // The pane on screen was last drawn at 200x50; some other pane reported 57x13 since.
+        fs.writeFileSync(
+            path.join(path.dirname(paths.dbPath), 'pane-geometry.json'),
+            JSON.stringify({ version: 1, panes: { [PANE]: { cols: 200, rows: 50, at: 1 } }, latest: { cols: 57, rows: 13 } })
+        );
+        // A window is expected for the whole test, so the gate would hold any pane it is offered.
+        const daemon = daemonFor(paths, { bootDeferWindowMs: 60_000, spawnDeferTimeoutMs: 60_000 });
+        await daemon.start();
+
+        const background = 'CCCCCCCC-0000-4000-8000-000000000001';
+        daemon.store.dispatch({
+            type: 'create-tab',
+            workspaceID: WORKSPACE,
+            tabID: 'CCCCCCCC-0000-4000-8000-0000000000AA',
+            focus: false,
+            create: { type: 'create-pane', workspaceID: WORKSPACE, paneID: background, now: 1_700_000_000, workingDirectory: paths.home }
+        });
+        spawnPaneIfShell(daemon.ctx, WORKSPACE, background);
+        expect(daemon.pty.pid(background)).toEqual(expect.any(Number));
+        expect(daemon.ctx.spawn?.sizeFor?.(background)).toEqual({ cols: 200, rows: 50 });
+
+        // A split on screen is still worth waiting for: a window will measure it.
+        const onScreen = 'CCCCCCCC-0000-4000-8000-000000000002';
+        daemon.store.dispatch({
+            type: 'split-pane',
+            workspaceID: WORKSPACE,
+            paneID: onScreen,
+            sourcePaneID: PANE,
+            direction: 'horizontal',
+            now: 1_700_000_000,
+            focus: false
+        });
+        spawnPaneIfShell(daemon.ctx, WORKSPACE, onScreen);
+        expect(daemon.pty.pid(onScreen)).toBeUndefined();
+        expect(daemon.pty.has(onScreen)).toBe(true);
     }, 20_000);
 
     /**

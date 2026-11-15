@@ -1144,14 +1144,17 @@ export class CommandClient {
      * (the root divider of a 2×2 `tiled` layout); this can move any of them.
      */
     setSplitRatioAtPath(
-        input: { workspaceID: string; splitPath: string; ratio: number },
+        input: { workspaceID: string; splitPath: string; ratio: number; tabID?: string },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('set-split-ratio', {
                 workspace_id: input.workspaceID,
                 split_path: input.splitPath,
-                ratio: input.ratio
+                ratio: input.ratio,
+                // The tab the divider was drawn in: a path names a split only in that tree, so
+                // the daemon refuses the drag if another client has switched tabs since.
+                tab_id: input.tabID
             }),
             options ?? {}
         );

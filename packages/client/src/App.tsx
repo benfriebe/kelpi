@@ -2089,11 +2089,11 @@ function Shell(props: AppProps): ReactElement {
              * (the root of a 2×2 `tiled` layout) is unreachable through it.
              */
             setSplitRatioAtPath(splitPath: string, ratio: number): boolean {
-                const id = activeWorkspaceID();
-                if (id === null) return false;
+                const workspace = activeWorkspace();
+                if (workspace === null) return false;
                 return run(
                     'Resize pane',
-                    commands.setSplitRatioAtPath({ workspaceID: id, splitPath, ratio })
+                    commands.setSplitRatioAtPath({ workspaceID: workspace.id, splitPath, ratio, tabID: activeTabIDOf(workspace) })
                 );
             },
 

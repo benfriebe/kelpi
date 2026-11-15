@@ -29,6 +29,7 @@ import { useEffect, useMemo, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
 import { wireEdgeForDropZone } from '@kelpi/core/layout';
+import { activeTabIDOf } from '@kelpi/daemon/store';
 import { onScreenPanes } from '../chrome/workspace-tabs';
 import { createWorkspaceTabActions } from '../features/workspace-tabs-actions';
 
@@ -242,7 +243,12 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 // socket, so the verb reaches it exactly as `toggleZoom` above does. Dropping the
                 // commit here made the divider preview and snap back on release (#54).
                 if (commit.paneID === null) {
-                    void runtime.commands.setSplitRatioAtPath({ workspaceID, splitPath, ratio });
+                    void runtime.commands.setSplitRatioAtPath({
+                        workspaceID,
+                        splitPath,
+                        ratio,
+                        ...(workspace === null ? {} : { tabID: activeTabIDOf(workspace) })
+                    });
                     return;
                 }
                 void runtime.commands.setSplitRatio(commit.paneID, commit.share);

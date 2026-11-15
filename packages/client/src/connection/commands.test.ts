@@ -221,6 +221,15 @@ describe('CommandClient RPC', () => {
             split_path: 'd',
             ratio: 0.42
         });
+        // …and with the tab the divider was drawn in, when the caller knows it.
+        void h.client.setSplitRatioAtPath({ workspaceID: 'W1', splitPath: 'd', ratio: 0.42, tabID: 'T2' });
+        expect(h.lastCommand()).toEqual({
+            command: 'set-split-ratio',
+            workspace_id: 'W1',
+            tab_id: 'T2',
+            split_path: 'd',
+            ratio: 0.42
+        });
 
         void h.client.moveWorkspace({ workspace: 'dev' });
         // `group` omitted entirely = "move to top level"; never sent as null.

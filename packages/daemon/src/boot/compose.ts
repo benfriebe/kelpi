@@ -114,6 +114,7 @@ import {
     createPtyManager,
     createTerminalInput,
     chooseSplitDirectory,
+    estimateBackgroundGrid,
     createForegroundReader,
     createProcessCwdReader,
     createShellForegroundProbe,
@@ -123,6 +124,7 @@ import {
     shellGetsIntegration,
     withInputObserver,
     withSpawnGate,
+    type GridSize,
     type KelpiPtyManager,
     type ShellIntegration
 } from '../pty/index.js';
@@ -149,6 +151,7 @@ import {
     emptyDaemonState,
     findPaneAnywhere,
     fromSnapshot,
+    isPaneOnScreen,
     nextRandomColor,
     toSnapshot,
     visiblePane,
@@ -1296,19 +1299,35 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const helpersDir =
         options.spawn?.helpersDir ??
         (envHelpersDir !== undefined && envHelpersDir.length > 0 ? envHelpersDir : undefined);
+    /** Is this pane in a tab that is not on screen? (No client draws it, so none measures it.) */
+    const inBackgroundTab = (paneID: string): boolean => {
+        const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+        return workspace !== null && !isPaneOnScreen(workspace, paneID);
+    };
+    const backgroundGrid = (paneID: string): GridSize | null => {
+        const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+        if (workspace === null || isPaneOnScreen(workspace, paneID)) return null;
+        return estimateBackgroundGrid(workspace, paneID, (id) => geometry.get(id));
+    };
     const spawnDefaults: PaneSpawnDefaults = {
         ...(options.spawn ?? {}),
         ...(helpersDir !== undefined ? { helpersDir } : {}),
         // Read at env-build time (not captured): the route exists only once the run-dir
         // control server has bound its TCP listener, and it must survive a live re-bind.
         controlRoute: options.spawn?.controlRoute ?? paneRouteValue,
-        sizeFor: (paneID: string) => geometry.sizeFor(paneID),
+        // A pane in a background tab has no measurement coming (no client draws it), so its
+        // first size is estimated from the tab on screen rather than borrowed from whichever
+        // pane reported last (`pty/background-size.ts`, workspace-feature.md §12.6).
+        sizeFor: (paneID: string) => geometry.get(paneID) ?? backgroundGrid(paneID) ?? geometry.sizeFor(paneID),
         deferSpawn: (paneID, spawn) => {
             // `get`, not `sizeFor`: the fallback-to-latest read is a good GUESS for a brand-new
             // pane and a bad reason to skip waiting for the truth. A split's child is the case
             // that makes the difference — `latest` is its parent's full width, i.e. about twice
             // what the child will actually be rendered at.
             if (geometry.get(paneID) !== null) return false;
+            // Nobody will measure a pane in a background tab: waiting would only cost the gate's
+            // whole timeout before the same fallback, so it spawns now at `sizeFor`'s estimate.
+            if (inBackgroundTab(paneID)) return false;
             return spawnGate.defer(paneID, (size) => {
                 spawn(size);
             });

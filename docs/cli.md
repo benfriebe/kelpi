@@ -33,7 +33,7 @@ executable), symlinked into `/usr/local/bin` (or `$KELPI_INSTALL_DIR`) by
    silent, fast, and never fail (exit 0 even when the app is not running). Claude Code's
    PermissionRequest hook also calls it, and waits for its answer (section 8.7).
 2. **Scripting/orchestration surface**: everything else (`pane`, `workspace`, `group`,
-   `layout`, `open`, `md`, `diff`, `document`, `graft`, `web`, `plugin`, `doctor`, `install-hooks`). These are used
+   `layout`, `open`, `md`, `diff`, `document`, `graft`, `web`, `ps`, `plugin`, `doctor`, `install-hooks`). These are used
    by humans and by orchestrator agents (the `kelpi-agentic` skill), and mostly follow
    request/response semantics with meaningful exit codes.
 
@@ -99,8 +99,8 @@ kelpi <subcommand> [args...]
 ```
 
 Top-level subcommands: `event`, `pane`, `workspace`, `group`, `tab` (§12a), `layout`, `open`, `md`,
-`diff`, `document`, `graft`, `web`, `plugin` ([plugin commands](#plugin-commands)), `doctor`,
-`install-hooks` (section 17), plus the pseudo-subcommands
+`diff`, `document`, `graft`, `web`, `ps` ([running services](#running-services-kelpi-ps)),
+`plugin` ([plugin commands](#plugin-commands)), `doctor`, `install-hooks` (section 17), plus the pseudo-subcommands
 `--version`/`version` (`packages/cli/src/cli.ts:43`) and `--help`/`-h`/`help`
 (`packages/cli/src/cli.ts:47`, via `isHelpToken`, `packages/cli/src/args.ts:103`).
 
@@ -140,7 +140,7 @@ reply.
 | `KELPI_REPLY_TIMEOUT` | reply reading | Positive integer seconds; overrides the default request/response read timeout of **5 seconds**. Non-integer or <=0 values are ignored. |
 | `KELPI_SILENT` | fire-and-forget failure path | If set (to anything), fully suppress the transport-failure `Warning:` stderr lines on fire-and-forget commands. Exit code is unchanged (0). |
 | `KELPI_VERBOSE_HOOKS` | `kelpi event ...` only | `kelpi event` auto-suppresses fire-and-forget warnings (hooks fire constantly and would spam terminals when Kelpi is closed). Setting `KELPI_VERBOSE_HOOKS` (to anything) re-enables the warnings for event commands. |
-| `HOME` | table rendering, doctor | Used to render `~`-relative cwd in `pane list`, and to resolve `~/.claude` / `~/.codex` in doctor's hooks checks (falls back to the passwd-database home directory when `HOME` is unset). |
+| `HOME` | table rendering, doctor | Used to render `~`-relative cwd in `pane list` and `~`-relative folders in `ps`'s NOTE column, and to resolve `~/.claude` / `~/.codex` in doctor's hooks checks (falls back to the passwd-database home directory when `HOME` is unset). |
 | `KELPI_REQUIRE_SOCKET` | transport selection | If set (to anything), the silent Unix fallback above becomes a refusal to dial: a `KELPI_SOCKET` without a well-formed `tcp:` route fails with `requiredSocketUnmet` (request/response commands exit 1; fire-and-forget commands keep their exit-0 warning contract), and `/tmp/kelpi.sock` is never touched. Used by isolated test instances and plugin backends/managed processes to preserve their daemon route. Set it with the printed private socket when developing plugins beside the installed app; see [development](plugin-development.md#start-a-private-instance). |
 | `KELPI_PROFILE` | `kelpi event ...` only | The effective profile name the pane's PTY was spawned with (injected by the daemon). Hooks attach it beside `session_id` (the wire `profile` field) so the daemon can resume the session under the same profile (agent-lifecycle.md §6.1). Non-empty only; every other command ignores it. |
 | `KELPI_CLI_VERSION` / `KELPI_CLI_BUILD` | `--version`, doctor | Runtime overrides for the compiled-in `CLI_VERSION` / `CLI_BUILD` (3.1), for a packaging step to stamp identity without a rebuild. Trimmed; empty means no override (`packages/cli/src/version.ts:21`). |
@@ -208,6 +208,8 @@ messages.
     longer (a start makes the first sync pass; a stop waits for the in-flight pass, then
     restores the parent and pops the stash). A slow start or stop that succeeds must not
     read as "no response" (#271). `graft status` keeps the default.
+  - `ps`: at least 15 seconds, or `KELPI_REPLY_TIMEOUT` when that is longer (a scan runs four
+    host probes, each capped at 3 seconds).
   - `web wait`: `max(ceil(--timeout seconds) + 5, defaultTimeout)`.
   - `web exec`: `max(ceil(--timeout seconds) + 5, defaultTimeout)` with `--timeout`
     defaulting to 30.
@@ -411,7 +413,7 @@ Commands wired to `rejectLeftoverArgs`: `pane split`, `pane create`, `pane resiz
 `pane move` (adjacent form), `pane list`, `pane capture`, `workspace list`,
 `workspace create`, `workspace label`, `workspace mute`, `workspace rename` (hint `quote a
 new name that contains spaces`), `workspace icon` (hint `an icon is one emoji`),
-`workspace color` (hint `a workspace has one color`),
+`workspace color` (hint `a workspace has one color`), `ps` (label `kelpi ps`, with its usage),
 `group reorder`, `group sort`, `install-hooks` (hint `this
 command takes options only`). Several other
 commands implement equivalent bespoke checks (`pane close`, `pane name`, `pane send-key`,
@@ -426,7 +428,7 @@ most `web` verbs, `md`/`open` after the first positional).
   `workspace` (group-level and per subcommand), `group` (group-level, plus
   `create`/`rename`/`delete`/`reorder`/`sort`/`set-repo`), `layout` (group-level, also
   `help`, plus `cycle`/`select`, all of them outside a pane too), `web` (group-level, also
-  `help`), `web cookies`, `md`, `open`, `graft`, `install-hooks`. Help goes to **stdout**,
+  `help`), `web cookies`, `md`, `open`, `graft`, `ps`, `install-hooks`. Help goes to **stdout**,
   exit 0. (Exception: `graft` help goes to stderr and exits 0; the top-level `kelpi --help`
   usage goes to stderr and exits 0.)
 - For `group create/rename/delete`, every word after a `--` is a name, even one that looks
@@ -2689,7 +2691,7 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
 `workspace-delete`, `workspace-nest`, `workspace-label`, `workspace-mute`, `workspace-rename`,
 `workspace-icon`, `workspace-color`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
-`graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
+`graft-start`, `graft-stop`, `graft-status`, `running-list`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
 `web-tab-select`, `web-console` (streaming with `follow:true`), `web-inspect`,
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
@@ -2786,13 +2788,13 @@ state keep working; each explains why the code does something that would otherwi
 16. **doctor's hooks checks are CLI-local filesystem reads** (`~/.claude`, `~/.codex`);
     they inspect the machine where the CLI (and thus the agent CLIs) run, which stays
     correct with a remote daemon. They stay CLI-local.
-17. **Table renderers** (pane list, workspace list, group list, web tabs, cookies;
+17. **Table renderers** (pane list, workspace list, group list, ps, web tabs, cookies;
     `packages/cli/src/table.ts`) are
     parsed by humans and occasionally by scripts with `--no-header`; they keep column order,
     the `…` short-uuid form, `-` placeholders, the `●` active marker, and full pane UUIDs
     in `pane list` (issue #240).
 18. **Timeout envelope**: default 5s (`KELPI_REPLY_TIMEOUT` override), 2s ping, 120s
-    worktree create, at least 120s for graft start/stop, `wait`/`exec` padded by +5s over
+    worktree create, at least 120s for graft start/stop, at least 15s for `ps`, `wait`/`exec` padded by +5s over
     their logical timeouts, and 35s for one-shot plugin/document requests. `plugin dev`
     installations disable the CLI read timeout so their temporary source remains available
     until the daemon replies. A daemon reply path that can exceed these must be extended in
@@ -2808,6 +2810,96 @@ state keep working; each explains why the code does something that would otherwi
     replacement must do the same.
 
 ---
+
+## Running services (`kelpi ps`)
+
+```
+kelpi ps [--workspace <name-or-id> | --current] [--all] [--json] [--no-header]
+```
+
+Source: `packages/cli/src/commands/ps.ts`, with the table in `printServicesTable`
+(`packages/cli/src/table.ts`). Lists the dev servers, listening processes and Docker containers
+running on the daemon's machine, each under the workspace whose pane started it
+(docs/running-services.md). A process stack (pnpm, turbo and the servers under it) is one row,
+and so is a compose project. It is a read: nothing changes, and the daemon scans when asked.
+
+- `-h` / `--help` anywhere: usage to stdout, exit 0, nothing sent.
+- Leftovers are rejected (§7.5) under the label `kelpi ps`, followed by the usage on stderr:
+  `kelpi ps: unknown option <x>` for a dash-prefixed token, else `kelpi ps: unexpected argument
+  '<x>'`; exit 1. A trailing `--workspace` with no value is left in args and rejected as an
+  unknown option.
+- `--workspace` and `--current` together: `kelpi ps: --workspace and --current are mutually
+  exclusive`, exit 1, nothing sent.
+- `--current` needs `KELPI_PANE_ID`. Outside a pane it exits 0 without asking the daemon,
+  printing `[]` with `--json` (so a script's JSON parse still succeeds) and nothing otherwise.
+  In a pane the payload gains `"pane_id"` and `"scope":"current"`.
+- `--all` adds `"all":true`.
+- Payload: `{"command":"running-list", workspace?, pane_id?, scope?, all?}`, each key only when
+  its flag was given, so a bare `kelpi ps` sends `{"command":"running-list"}`.
+- Request/response, with a read timeout of at least 15 seconds (§5.3).
+
+What is listed (server contract, wire-protocol.md §6.11):
+
+- By default, every workspace's services, plus services in a worktree or repo folder that no
+  workspace owns, or in a folder that is gone (category `unattached`: a deleted worktree's
+  stack, say).
+- `--all` also lists services started outside Kelpi (`outside`) and agents' own local ports
+  (`agent`).
+- `--workspace` or `--current` lists every service of that one workspace, its agents' own ports
+  included, with or without `--all`.
+
+Output:
+
+- Warnings first: each string in the reply's `warnings` (a probe that could not run, such as
+  `lsof` missing or Docker timing out) goes to stderr as `kelpi ps: warning: <text>`. Warnings
+  never change the exit code, and the rest of the list is still printed, so `--json` on stdout
+  stays one parseable array.
+- `--json`: the `services` array **unwrapped**, compact, sorted keys, exit 0. Each entry carries
+  every key of `RunningServiceEntry` (wire-protocol.md §6.11), so scripts may rely on all of
+  them.
+- Table (`--no-header` omits the header row), columns `WORKSPACE  SERVICE  PORTS  UP  MEM
+  STARTED BY  NOTE`:
+  - WORKSPACE: `workspace_name`; else `(no workspace)` for an `unattached` service, `(outside
+    Kelpi)` for an `outside` one, `-` otherwise. Clipped to 24 characters, the last one `…`.
+  - SERVICE: `name`, clipped to 32 characters the same way.
+  - PORTS: the first four ports, space-separated, then `+N` for the rest; `-` with none.
+  - UP: the time from `started_at` to the reply's `scanned_at` (the daemon's clock, which can
+    differ from this machine's over the TCP route) in its largest whole unit (`40s`, `12m`,
+    `5h`, `11d`); `-` when unknown.
+  - MEM: `rss_bytes`, the resident memory of the whole process stack, as `1.4G` (one decimal
+    from 1024 MiB up) or `212M` (whole MiB, at least `1M`); `-` for containers.
+  - STARTED BY: `agent` for an agent's own port; else the `agent` that started it (`claude`,
+    `codex`); else `pane (foreground)` or `pane` for a pane's shell (foreground: Ctrl-C in that
+    pane stops it); `compose` for a compose project; `-` otherwise.
+  - NOTE, joined with `; `: `in <directory>` for a service with no workspace, plus ` (deleted)`
+    when that folder is gone; `runs in <directory>` when the folder is not its workspace's own
+    (`directory_workspace_id` differs from `workspace_id`); `reachable on network` when any
+    port is exposed. A leading `$HOME` in a directory prints as `~`.
+  - Column widths: max of header (when shown) and data lengths; two-space gutter. NOTE is last,
+    unpadded, and never sets a width; a row with no note ends at STARTED BY, unpadded, so no
+    line ends in whitespace.
+
+Exit codes: 0 on success, an empty list and warnings included, and for `--current` outside a
+pane (`[]` with `--json`, nothing otherwise). 1 for a usage error, a transport failure, or `ok:false` from the daemon, printed
+as `kelpi ps: <error>` (§6.2): `workspace not found: <x>`, `workspace name is ambiguous: <x>
+(use the id)`, `no workspace contains the requesting pane`, `running-list failed: <message>`.
+Against a daemon that predates the verb: `kelpi ps: no response from Kelpi (upgrade
+required?)`, exit 1 (§6.1).
+
+```
+$ kelpi ps --all
+WORKSPACE        SERVICE                PORTS                   UP   MEM   STARTED BY         NOTE
+checkout         pnpm run dev:prebuilt  3200 3201 3202 3204 +1  11d  1.4G  claude             runs in ~/kelpi/worktrees/shop/feature-flags; reachable on network
+notes            pnpm start             4400                    2h   212M  pane (foreground)
+(no workspace)   shop-400               54721                   9d   -     compose            in ~/kelpi/worktrees/shop/old-branch/packages (deleted)
+(outside Kelpi)  ollama serve           -                       -    -     -                  in /
+```
+
+```bash
+kelpi ps --workspace feat-x                 # one workspace's services
+kelpi ps --current --json                   # the calling pane's workspace, for a script or agent
+kelpi ps --current --json | jq -r '.[] | "\(.name)\t\([.ports[].port | tostring] | join(" "))"'
+```
 
 ## Daemon commands (#311)
 

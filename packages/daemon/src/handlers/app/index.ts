@@ -25,6 +25,7 @@ import { pingHandlerEntries } from './ping.js';
 import { stubHandlerEntries } from './stubs.js';
 import { workspaceHandlerEntries } from './workspaces.js';
 import { webHandlerEntries } from '../../webpane/handlers.js';
+import { runningHandlerEntries } from '../../running/handlers.js';
 import {
     handlerTable,
     resolveAppDeps,
@@ -43,6 +44,7 @@ export function createAppHandlers(options: AppHandlerOptions = {}): AppHandlerTa
         ...permissionHandlerEntries(deps),
         ...graftHandlerEntries(deps),
         ...webHandlerEntries(deps),
+        ...runningHandlerEntries(deps),
         ...pingHandlerEntries(),
         ...stubHandlerEntries()
     ]);

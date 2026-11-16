@@ -977,6 +977,30 @@ describe('workspace and group commands', () => {
         });
     });
 
+    it('decodes running-list from a plain shell, leaving scope and workspace to the handler', () => {
+        // Explicit chain: `kelpi ps` works outside a pane; only `--current` sends a pane_id.
+        expect(ok({ command: 'running-list' })).toEqual({
+            command: 'running-list',
+            pane_id: undefined,
+            workspace: undefined,
+            scope: undefined,
+            all: false
+        });
+        expect(ok({ command: 'running-list', pane_id: PANE, scope: 'current', all: true })).toEqual({
+            command: 'running-list',
+            pane_id: PANE_UPPER,
+            workspace: undefined,
+            scope: 'current',
+            all: true
+        });
+        // An unknown scope or workspace is the handler's refusal, so its reply can say which.
+        expect(ok({ command: 'running-list', workspace: 'ghost', scope: 'everything' })).toMatchObject({
+            workspace: 'ghost',
+            scope: 'everything'
+        });
+        expect(rejected({ command: 'running-list', all: 'yes' }).field).toBe('all');
+    });
+
     it('decodes workspace-color from a plain shell, keeping color verbatim for the handler', () => {
         // Explicit chain: no pane_id needed, so an agent outside a pane can recolor a workspace.
         expect(ok({ command: 'workspace-color', name: 'feat-x', color: 'purple' })).toEqual({

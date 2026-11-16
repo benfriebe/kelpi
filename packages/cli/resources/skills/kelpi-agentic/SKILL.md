@@ -497,6 +497,31 @@ kelpi pane move-to-new-tab [--target P] [--at <n> | --end] [--focus]
 - `tab new` lands just after your tab (or at the end, per the user's
   setting); `--kind same` copies YOUR pane, a shell opening where it is now.
 
+### `kelpi ps`: find and reuse a running dev server
+
+Before you start a dev server, check whether your workspace already runs
+one, and on which port:
+
+```bash
+# Your pane's workspace: its dev servers, listening processes and containers
+kelpi ps --current --json
+
+# Name and ports of each
+kelpi ps --current --json | jq -r '.[] | "\(.name)\t\([.ports[].port | tostring] | join(" "))"'
+```
+
+If the server you need is listed, use it at that port instead of starting
+a second copy on another port. Start one only when none is listed. Each
+entry has `name`, `kind` (`process`, `compose`, `container`), `ports`
+(`port`, `address`, `exposed`), `started_by` (`agent`, `pane`, `compose`),
+`agent`, `foreground` (Ctrl-C in its pane stops it), `directory`,
+`started_at` and `pane_id`. Plain `kelpi ps` prints a table of every
+workspace's services; `--workspace <name-or-id>` narrows it to one and
+`--all` adds services started outside Kelpi. A probe that could not run
+(`lsof` missing, Docker not answering) prints a warning on stderr, and
+stdout still lists what the other probes found. Outside a Kelpi pane,
+`--current --json` prints `[]` and exits 0.
+
 ### Event Commands (Agent Lifecycle)
 
 ```bash

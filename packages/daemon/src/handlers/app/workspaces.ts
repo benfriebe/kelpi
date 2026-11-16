@@ -1049,7 +1049,7 @@ function groupEcho(existing: { readonly name: string } | null, trimmedGroup: str
  * nothing fell through to a name match, and several workspaces named after one UUID is not a
  * case worth a message of its own.
  */
-function unresolvedWorkspaceError(scope: WorkspaceScope, nameOrID: string): string {
+export function unresolvedWorkspaceError(scope: WorkspaceScope, nameOrID: string): string {
     if (!isUUIDToken(nameOrID) && workspacesMatchingName(scope, nameOrID).length > 1) {
         return `workspace name is ambiguous: ${nameOrID} (use the id)`;
     }

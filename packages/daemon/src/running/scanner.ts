@@ -1,0 +1,165 @@
+/**
+ * The scan: probes in parallel, attribution, one `RunningScan`. Concurrent callers share the
+ * scan in flight, and a result is reused for `cacheMs`, so a burst of `kelpi ps` runs (an agent
+ * polling) costs one set of probes. Working directories are cached per process (pid and start
+ * time), so only processes new since the last scan are looked up.
+ *
+ * Phase 1 scans on demand only. The periodic loop and the WebSocket broadcast come with the UI
+ * (docs/running-services.md §8).
+ */
+
+import { buildServices, planProcessStacks } from './attribute.js';
+import { PROBE_TIMEOUT_MS, type RunningProbes } from './probes.js';
+import type { ContainerRow, ListenSocket, PaneShellRef, ProcessRow, RunningScan, WorkspaceFolders } from './types.js';
+
+/** How long one scan's answer is reused. */
+export const RUNNING_SCAN_CACHE_MS = 1_500;
+
+/**
+ * The most any probe may take, past its own timeout. A child that outlives even SIGKILL, or a
+ * socket that never closes, must not leave the shared scan (and every later caller) pending.
+ */
+const PROBE_DEADLINE_MS = PROBE_TIMEOUT_MS + 2_000;
+
+function withDeadline<T>(promise: Promise<T>, label: string, ms: number): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+            reject(new Error(`${label} did not finish`));
+        }, ms);
+        timer.unref();
+    });
+    return Promise.race([promise, deadline]).finally(() => {
+        clearTimeout(timer);
+    });
+}
+
+/** Everything a scan needs from the daemon, read at the moment the scan starts. */
+export interface ScanContext {
+    /** Pane shell pid → its pane. */
+    readonly paneShells: ReadonlyMap<number, PaneShellRef>;
+    readonly workspaces: readonly WorkspaceFolders[];
+    /** Worktree and repo folders: services there with no workspace are listed as unattached. */
+    readonly knownFolders: readonly string[];
+    /** Kelpi's own processes (the daemon): never services. */
+    readonly selfPids: ReadonlySet<number>;
+    /** Workspace ids in sidebar order, for sorting. */
+    readonly workspaceOrder: readonly string[];
+}
+
+export interface RunningScanner {
+    scan(): Promise<RunningScan>;
+}
+
+export interface RunningScannerOptions {
+    readonly probes: RunningProbes;
+    readonly context: () => ScanContext;
+    readonly now?: (() => number) | undefined;
+    readonly cacheMs?: number | undefined;
+    /** Per-probe deadline (tests). */
+    readonly deadlineMs?: number | undefined;
+}
+
+function describe(error: unknown, probe: string): string {
+    return `${probe}: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+export function createRunningScanner(options: RunningScannerOptions): RunningScanner {
+    const now = options.now ?? (() => Date.now());
+    const cacheMs = options.cacheMs ?? RUNNING_SCAN_CACHE_MS;
+    const deadlineMs = options.deadlineMs ?? PROBE_DEADLINE_MS;
+    const { probes } = options;
+    let inFlight: Promise<RunningScan> | null = null;
+    let last: RunningScan | null = null;
+    /** `${pid}:${startedAt}` → working directory. Pruned to the live processes each scan. */
+    let cwdCache = new Map<string, string>();
+
+    async function runScan(): Promise<RunningScan> {
+        const context = options.context();
+        const warnings: string[] = [];
+        const [processes, listeners, containers] = await Promise.all([
+            withDeadline(probes.processTable(), 'ps', deadlineMs).catch((error: unknown): ProcessRow[] => {
+                warnings.push(describe(error, 'processes'));
+                return [];
+            }),
+            withDeadline(probes.listeners(), 'lsof', deadlineMs).catch((error: unknown): Map<number, ListenSocket[]> => {
+                warnings.push(describe(error, 'listening ports'));
+                return new Map();
+            }),
+            withDeadline(probes.containers(), 'docker', deadlineMs).catch((error: unknown): ContainerRow[] => {
+                warnings.push(describe(error, 'docker'));
+                return [];
+            })
+        ]);
+        const containerRows = (containers ?? []).map((row) =>
+            row.directory !== null && probes.pathExists(row.directory) ? { ...row, directory: probes.realpath(row.directory) } : row
+        );
+        const containerPorts = new Set(containerRows.flatMap((row) => row.ports.map((port) => port.port)));
+
+        const planInput = {
+            processes,
+            listeners,
+            paneShells: context.paneShells,
+            selfPids: context.selfPids,
+            containerPorts
+        };
+        const stacks = planProcessStacks(planInput);
+
+        const started = new Map(processes.map((row) => [row.pid, row.startedAt]));
+        const key = (pid: number): string => `${String(pid)}:${String(started.get(pid) ?? 0)}`;
+        const wanted = [...new Set(stacks.flatMap((stack) => [stack.rootPid, ...stack.listenerPids]))];
+        const missing = wanted.filter((pid) => !cwdCache.has(key(pid)));
+        if (missing.length > 0) {
+            try {
+                const found = await withDeadline(probes.cwds(missing), 'lsof', deadlineMs);
+                for (const [pid, cwd] of found) cwdCache.set(key(pid), cwd);
+            } catch (error) {
+                warnings.push(describe(error, 'working directories'));
+            }
+        }
+        const cwds = new Map<number, string>();
+        const kept = new Map<string, string>();
+        for (const pid of wanted) {
+            const cwd = cwdCache.get(key(pid));
+            if (cwd === undefined) continue;
+            cwds.set(pid, cwd);
+            kept.set(key(pid), cwd);
+        }
+        cwdCache = kept;
+
+        const services = buildServices(
+            {
+                ...planInput,
+                stacks,
+                cwds,
+                containers: containerRows,
+                workspaces: context.workspaces,
+                knownFolders: context.knownFolders,
+                pathExists: (path) => probes.pathExists(path)
+            },
+            context.workspaceOrder
+        );
+        return { services, scannedAt: now(), warnings };
+    }
+
+    return {
+        scan() {
+            if (inFlight !== null) return inFlight;
+            if (last !== null && now() - last.scannedAt < cacheMs) return Promise.resolve(last);
+            inFlight = runScan()
+                .then((scan) => {
+                    last = scan;
+                    return scan;
+                })
+                .finally(() => {
+                    inFlight = null;
+                });
+            return inFlight;
+        }
+    };
+}
+
+/** A scanner that finds nothing: the default for handler tables built without a host (tests). */
+export const INERT_RUNNING_SCANNER: RunningScanner = {
+    scan: () => Promise.resolve({ services: [], scannedAt: Date.now(), warnings: [] })
+};

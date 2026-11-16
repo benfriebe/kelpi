@@ -36,6 +36,7 @@ import { remoteWorkspaceOf, tabTargetFor, useRemoteWorkspace, type TabTarget } f
 import { actionsDuringGesture, createRecentSwitcher, heldModifiersFromEvent } from './app/recent-switcher';
 import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
 import { RecentWorkspaceSwitcherHost } from './chrome/RecentWorkspaceSwitcher';
+import { portURL } from './chrome/running';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
 import { resolveSidebarViews, resolveSlot, selectWorkbenchView } from './plugins/registry';
@@ -84,7 +85,7 @@ import { renderRegisteredView } from './plugins/renderers';
 
 import { canonicalTriggerForPlatform, chordKeyIdentity, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
-import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type WsOldTerminalHost } from '@kelpi/protocol';
+import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type RunningServiceEntry, type RunningServicePort, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
     layoutPaneOrder,
@@ -332,6 +333,8 @@ import {
 
 /** Command-error toasts clear themselves; a failed command is news, not a permanent banner. */
 const ERROR_TOAST_MS = 6000;
+/** A pane running nothing: one array, so its header's props stay equal between renders. */
+const NO_PORTS: readonly RunningServicePort[] = [];
 
 let errorSequence = 0;
 
@@ -4103,6 +4106,47 @@ function Shell(props: AppProps): ReactElement {
     const primarySelected = useCallback(() => remoteSelectionRef.current === null, []);
     const statusActions = useStatusbarActions({ runtime, activateWorkspace: activateWorkspaceAndReveal, handBackCaret: handBackPaneCaret, isPrimarySelected: primarySelected });
     const statusModel = useMemo(() => statusbarModel(kelpi, inspectorData.associations), [kelpi, inspectorData.associations]);
+    // docs/running-services.md §7: a service's port in a web pane, beside the pane that started
+    // it when that pane still exists, else in the service's own workspace (its focused pane),
+    // else beside the focused pane. One rule for the row menu, the Inspector and the footer.
+    // The window goes to that workspace first: from another workspace's row menu or the footer,
+    // the new web pane would otherwise open where nobody is looking.
+    const openServicePort = useCallback((service: RunningServiceEntry, port: RunningServicePort): void => {
+        const current = store.getState();
+        const workspaces = current.daemon.state.workspaces;
+        const wanted = service.pane_id?.toUpperCase();
+        const started = wanted === undefined ? undefined
+            : workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id.toUpperCase() === wanted)?.id;
+        const owner = service.workspace_id === null ? undefined
+            : workspaces.find(workspace => workspace.id.toUpperCase() === service.workspace_id?.toUpperCase());
+        const ownPane = owner === undefined ? undefined
+            : owner.panes.find(pane => pane.id === owner.focusedPaneID)?.id ?? owner.panes[0]?.id;
+        const anchor = started ?? ownPane ?? selectFocusedPaneID(current);
+        if (anchor === null) return;
+        const home = workspaces.find(workspace => workspace.panes.some(pane => pane.id === anchor));
+        if (home !== undefined && home.id !== selectActiveWorkspace(current)?.id) activateWorkspaceAndReveal(home.id);
+        act.openLinkInWebPane(anchor, portURL(port));
+    }, [act, activateWorkspaceAndReveal, store]);
+    /** The pane header chip's port, beside its own pane; stable so `memo(PaneHeader)` holds. */
+    const openPanePort = useCallback((paneID: string, port: RunningServicePort): void => {
+        act.openLinkInWebPane(paneID, portURL(port));
+    }, [act]);
+    /** The wire's workspace ids are uppercase; the mirror's are whatever the daemon minted. */
+    const selectWorkspaceByWireID = useCallback((workspaceID: string): void => {
+        const target = store.getState().daemon.state.workspaces.find(workspace => workspace.id.toUpperCase() === workspaceID.toUpperCase());
+        if (target !== undefined) activateWorkspaceAndReveal(target.id);
+    }, [activateWorkspaceAndReveal, store]);
+    // docs/running-services.md §7: each pane header's port chip, from the daemon's last scan.
+    const runningServices = kelpi.daemon.runningServices;
+    const servicePortsFor = useMemo(() => {
+        const byPane = new Map<string, RunningServicePort[]>();
+        for (const service of runningServices?.services ?? []) {
+            if (service.category === 'agent' || service.pane_id === null) continue;
+            const key = service.pane_id.toUpperCase();
+            byPane.set(key, [...(byPane.get(key) ?? []), ...service.ports]);
+        }
+        return (paneID: string): readonly RunningServicePort[] => byPane.get(paneID.toUpperCase()) ?? NO_PORTS;
+    }, [runningServices]);
 
     // ── pane context menu (TERM-106…TERM-111) ───────────────────────────────────────
 
@@ -5124,18 +5168,23 @@ function Shell(props: AppProps): ReactElement {
                     worktreeCleanup: worktreeCleanupSource,
                     openSettings: section => openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB),
                     reportFailure: notifyFailure,
+                    openServicePort,
+                    showServices: (workspaceID: string) => { selectWorkspaceByWireID(workspaceID); setInspectorVisible(true); },
                     // app-state-core.md §5.5: the group repository sheet's Choose Folder…,
                     // desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder })
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
+                    running: daemon.runningServices, homeDirectory: daemon.info?.home ?? '', openServicePort,
                     // #283: Add Repository ▸ Choose…, desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }) }),
                 bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null, tabs: tabBar, leadWidth: tabLeadWidth, leadAnimated: tabLeadAnimated },
                     contributions: contributionItems('workspace.header'), execute: executeChrome }),
                 bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
-                    contributionsKey: JSON.stringify(pluginCommands.items('statusbar')), selectPane: (workspaceID, paneID) => executeChrome('kelpi.pane.focus', { workspaceID, paneID }) })
+                    contributionsKey: JSON.stringify(pluginCommands.items('statusbar')), selectPane: (workspaceID, paneID) => executeChrome('kelpi.pane.focus', { workspaceID, paneID }),
+                    // docs/running-services.md §7: the footer's services popover.
+                    openServicePort, selectWorkspace: selectWorkspaceByWireID })
             ]}>
         <div
             data-testid="kelpi-app"
@@ -5389,6 +5438,8 @@ function Shell(props: AppProps): ReactElement {
                     ) : (
                     <PaneGrid
                         visible={context.visible}
+                        servicePortsFor={servicePortsFor}
+                        onOpenServicePort={openPanePort}
                         // §10: the daemon's config file drives hover-focus; the grid owns the
                         // cancel-on-re-hover timer semantics.
                         focusFollowsMouse={settings.general.focusFollowsMouse}

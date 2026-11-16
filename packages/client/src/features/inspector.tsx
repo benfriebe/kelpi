@@ -4,6 +4,9 @@
  * and graft events must remain current while the Inspector is closed.
  */
 
+import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
+import { runningByWorkspace, runningFor, scanClock } from '../chrome/running';
+import type { RunningServicesState } from '../state/store';
 import type { WorkspaceState } from '@kelpi/daemon/store';
 import { useMemo, type ReactElement, type ReactNode } from 'react';
 
@@ -196,6 +199,12 @@ export interface InspectorFeatureViewProps {
      * browser, where the sheet's typed path is the only input and no Choose… button is drawn.
      */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /** The daemon's last running-services scan (docs/running-services.md); null before one. */
+    readonly running?: RunningServicesState | null | undefined;
+    /** The daemon's home, for `~`-abbreviated folders. */
+    readonly homeDirectory?: string | undefined;
+    /** App's one rule for where a service's port opens (docs/running-services.md §7). */
+    readonly openServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
 }
 
 /** The existing Inspector remains the pure view; all feature-specific binding lives here. */
@@ -203,6 +212,7 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
     const { model, actions } = props;
     const workspace = model.workspace;
     if (workspace === null) return null;
+    const running = runningFor(runningByWorkspace(props.running?.services ?? []), workspace.id);
     return <Inspector
         side={props.side ?? 'right'}
         viewPicker={props.viewPicker}
@@ -228,6 +238,10 @@ export function InspectorFeatureView(props: InspectorFeatureViewProps): ReactEle
         onCreateWorktree={actions.addWorktree}
         onFocusPane={actions.focusPane}
         onClosePane={actions.closePane}
+        running={running}
+        runningScannedAt={scanClock(props.running)}
+        homeDirectory={props.homeDirectory ?? ''}
+        onOpenServicePort={props.openServicePort}
         graftSessions={model.graft.state.sessions}
         graftOrphans={model.graft.state.orphans}
         graftSwapPrompt={model.graft.state.swapPrompt}

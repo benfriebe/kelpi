@@ -44,5 +44,8 @@ export function buildScanContext(sources: ScanContextSources): ScanContext {
             ])
         )
     ];
-    return { paneShells, workspaces, knownFolders, selfPids: sources.selfPids, workspaceOrder: sources.workspaceOrder };
+    const worktreeBases = [
+        ...new Set(state.repos.map((repo) => realpath(resolvedWorktreeBasePath(sources.worktreeBasePath, repo.path, sources.home))))
+    ];
+    return { paneShells, workspaces, knownFolders, worktreeBases, selfPids: sources.selfPids, workspaceOrder: sources.workspaceOrder };
 }

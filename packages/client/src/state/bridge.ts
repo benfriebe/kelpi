@@ -136,6 +136,23 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        // Running services (docs/running-services.md): the daemon's last scan, broadcast when it
+        // changes and replayed after each snapshot.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'running-services') return;
+            const services = message['services'];
+            const warnings = message['warnings'];
+            const scannedAt = message['scannedAt'];
+            store.getState().setRunningServices({
+                services: Array.isArray(services) ? (services as never) : [],
+                scannedAt: typeof scannedAt === 'string' ? scannedAt : null,
+                warnings: Array.isArray(warnings) ? warnings.filter((entry): entry is string => typeof entry === 'string') : [],
+                receivedAt: Date.now()
+            });
+        })
+    );
+
+    offs.push(
         // §AGNT-005's live re-bind: the daemon moved (or dropped) a listener while we were
         // attached. Its own message rather than a field on `settings-changed` because the two
         // say different things — the file's request vs what the listener actually did — and

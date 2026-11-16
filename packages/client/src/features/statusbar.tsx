@@ -3,6 +3,7 @@ import type { WorkspaceState } from '@kelpi/daemon/store';
 import { StatusFooter, type AgentBucket, type FooterAssociation, type StatusBarItem, type StatusFooterProps, type SystemStatsView } from '../chrome/StatusFooter';
 import type { ChromePane } from '../chrome/types';
 import { selectActiveWorkspace, selectAgentSummary, selectFocusedPaneID, type KelpiRuntime, type KelpiState } from '../state';
+import { workspaceLooks } from '../chrome/running';
 import { STATUSBAR_FEATURE } from './definitions';
 import type { BundledFeatureBinding } from './feature';
 
@@ -27,6 +28,9 @@ export function statusbarModel(state: KelpiState, associations: readonly FooterA
     } : undefined;
     return { summary: selectAgentSummary(state), focusedPane, associations, systemStats,
         homeDirectory: state.daemon.info?.home,
+        // docs/running-services.md §7: the footer's services chip.
+        running: state.daemon.runningServices,
+        runningLooks: workspaceLooks(state.daemon.state.workspaces),
         bucketItems: (bucket: AgentBucket) => statusItems(state.daemon.state.workspaces, bucket) };
 }
 export interface StatusbarActionHost {
@@ -70,7 +74,9 @@ export function useStatusbarActions(host: StatusbarActionHost) {
     return actions;
 }
 export function bindStatusbarFeature(input: { model: ReturnType<typeof statusbarModel>; presentation: Pick<StatusFooterProps, 'bucket'>;
-    contributions: ReactNode; contributionsKey: string; selectPane(workspaceID: string, paneID: string): void }): BundledFeatureBinding {
+    contributions: ReactNode; contributionsKey: string; selectPane(workspaceID: string, paneID: string): void;
+    openServicePort?: StatusFooterProps['onOpenServicePort']; selectWorkspace?: StatusFooterProps['onSelectWorkspace'] }): BundledFeatureBinding {
     return { definition: STATUSBAR_FEATURE, render: () => <StatusFooter {...input.model} {...input.presentation}
-        contributions={input.contributions} contributionsKey={input.contributionsKey} onSelectPane={input.selectPane} /> };
+        contributions={input.contributions} contributionsKey={input.contributionsKey} onSelectPane={input.selectPane}
+        onOpenServicePort={input.openServicePort} onSelectWorkspace={input.selectWorkspace} /> };
 }

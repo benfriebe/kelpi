@@ -1,4 +1,4 @@
-import { pluginObject, type PluginContext, type WsOldTerminalHostsMessage } from '@kelpi/protocol';
+import { pluginObject, type PluginContext, type WsOldTerminalHostsMessage, type WsRunningServicesMessage } from '@kelpi/protocol';
 import type { PluginChannel } from '../plugins/service.js';
 /**
  * The state-sync half of the client socket (WP2.7).
@@ -257,6 +257,12 @@ export interface SyncHubOptions {
      * the host retired drops its notice). Absent = this daemon never drains anything.
      */
     readonly oldTerminalHosts?: (() => WsOldTerminalHostsMessage) | undefined;
+    /**
+     * Running services (docs/running-services.md): the last scanned list, replayed after each
+     * snapshot like the draining hosts, so a client that attaches between scans has one.
+     * Absent = this daemon does not scan.
+     */
+    readonly runningServices?: (() => WsRunningServicesMessage) | undefined;
     /**
      * Terminal scrollback search (`ws/search.ts`) — the daemon side of ⌘F over a shell pane.
      * Absent = `terminal-search` answers "terminal search is not available".
@@ -2332,6 +2338,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // Sent empty too, so a client that reconnects after the host retired drops its notice.
             const oldHosts = options.oldTerminalHosts?.();
             if (oldHosts !== undefined) this.send(oldHosts as unknown as JsonObject);
+
+            // Running services: the last scan, so the sidebar and Inspector have it at once.
+            const running = options.runningServices?.();
+            if (running !== undefined) this.send(running as unknown as JsonObject);
 
             // Sugar for the Electron shell: claiming the host role in the handshake saves a
             // round-trip and removes the window where the daemon has a client but no host.

@@ -61,6 +61,10 @@ export type ChromeIconName =
     | 'pull-request-draft'
     | 'pull-request-merged'
     | 'pull-request-closed'
+    // Running services (docs/running-services.md): a plug, the way an editor's ports view marks them.
+    | 'plug'
+    /** docs/running-services.md §7: services left running after their worktree went. */
+    | 'warning'
     // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
     // `memorychip`, `gauge.with.dots.needle.33percent`, `network`,
     // `externaldrive.badge.timemachine`, `internaldrive`) redrawn at this file's 12×12 grid.
@@ -238,6 +242,19 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
         </>
     ),
     /** A die with pins — the SF `cpu` silhouette at 12px. */
+    plug: (
+        <>
+            <path d="M4.6 1.6v2.2M7.4 1.6v2.2" />
+            <path d="M3 3.8h6v2.1a2.4 2.4 0 0 1-2.4 2.4H5.4A2.4 2.4 0 0 1 3 5.9z" />
+            <path d="M6 8.3v2.1" />
+        </>
+    ),
+    warning: (
+        <>
+            <path d="M6 1.8 10.8 10H1.2z" />
+            <path d="M6 5v2.2M6 8.6v.1" />
+        </>
+    ),
     cpu: (
         <>
             <rect x="3.2" y="3.2" width="5.6" height="5.6" rx="0.8" />

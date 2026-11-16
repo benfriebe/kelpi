@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildServices, isPathInside, mergePorts, planProcessStacks, workspaceForPath, type BuildInput } from './attribute.js';
+import { buildServices, isPathInside, mergePorts, planProcessStacks, workspaceForPath, worktreeOf, type BuildInput } from './attribute.js';
 import type { ContainerRow, ListenSocket, PaneShellRef, ProcessRow, RunningService, WorkspaceFolders } from './types.js';
 
 const W1 = 'W1-DEMO';
@@ -119,7 +119,7 @@ const containers: ContainerRow[] = [
     container('otel-collector', { ports: [{ port: 4317, address: '127.0.0.1', containerPort: 4317 }] })
 ];
 
-const missing = new Set(['/w/shop/gone-tree', '/w/shop/gone-branch', '/w/shop/old-branch/apps/api-server']);
+const missing = new Set(['/w/shop/gone-tree', '/w/shop/gone-branch', '/w/shop/old-branch', '/w/shop/old-branch/apps', '/w/shop/old-branch/apps/api-server']);
 const containerPorts = new Set(containers.flatMap((row) => row.ports.map((port) => port.port)));
 
 const planInput = { processes, listeners, paneShells, selfPids: new Set([500]), containerPorts };
@@ -279,6 +279,8 @@ describe('buildServices', () => {
     it('lists stacks in a deleted worktree as unattached', () => {
         expect(byID(services, 'process:61000:1061000')).toMatchObject({ category: 'unattached', directoryMissing: true, workspaceID: null });
         expect(byID(services, 'compose:shop-400')).toMatchObject({ category: 'unattached', directoryMissing: true, attribution: 'none' });
+        // Grouped by the worktree that was removed, not by each stack's own subfolder.
+        expect(byID(services, 'compose:shop-400').worktree).toBe('/w/shop/old-branch');
     });
 
     it("treats a desktop app as started outside Kelpi, wherever it was launched, and drops containers' ports from it", () => {
@@ -333,6 +335,41 @@ describe('helpers', () => {
         expect(workspaceForPath('/w/repo/worktrees/x/src', nested)?.id).toBe('inner');
         expect(workspaceForPath('/w/repo/src', nested)?.id).toBe('outer');
         expect(workspaceForPath(null, nested)).toBeNull();
+    });
+
+    it('finds the worktree a folder is in, or the worktree that was deleted', () => {
+        const gone = new Set(['/w/trees/shop/old', '/w/trees/shop/old/apps', '/w/trees/shop/old/apps/api', '/x/tmp/gone']);
+        const input = { knownFolders: ['/w/shop', '/w/trees/shop'], worktreeBases: ['/w/trees/shop'], pathExists: (path: string) => !gone.has(path) };
+        expect(worktreeOf('/w/trees/shop/old/apps/api', true, input)).toBe('/w/trees/shop/old');
+        // A deleted folder of a repo this daemon does not know is still grouped by what was removed.
+        expect(worktreeOf('/x/tmp/gone', true, input)).toBe('/x/tmp/gone');
+        expect(worktreeOf('/w/trees/shop/spike/apps/web', false, input)).toBe('/w/trees/shop/spike');
+        expect(worktreeOf('/w/shop/apps/web', false, input)).toBe('/w/shop');
+        expect(worktreeOf('/w/trees/shop', false, input)).toBe('/w/trees/shop');
+        expect(worktreeOf('/elsewhere', false, input)).toBeNull();
+        expect(worktreeOf(null, false, input)).toBeNull();
+    });
+
+    it('keeps two deleted worktrees apart once their base is gone too, and an app folder with its worktree', () => {
+        const gone = new Set(['/w/trees/shop', '/w/trees/shop/a', '/w/trees/shop/a/web', '/w/trees/shop/b', '/w/trees/shop/b/web', '/w/trees/shop/live/apps/old']);
+        const input = { knownFolders: ['/w/shop'], worktreeBases: ['/w/trees/shop'], pathExists: (path: string) => !gone.has(path) };
+        expect(worktreeOf('/w/trees/shop/a/web', true, input)).toBe('/w/trees/shop/a');
+        expect(worktreeOf('/w/trees/shop/b/web', true, input)).toBe('/w/trees/shop/b');
+        // Only an app folder inside a live worktree went: it stays with that worktree.
+        expect(worktreeOf('/w/trees/shop/live/apps/old', true, input)).toBe('/w/trees/shop/live');
+    });
+
+    it("prefers the owner when workspaces share a folder (two workspaces on one repo)", () => {
+        const shared: WorkspaceFolders[] = [
+            { id: 'web', name: 'web', folders: ['/w/shop'] },
+            { id: 'api', name: 'api', folders: ['/w/shop'] },
+            { id: 'spike', name: 'spike', folders: ['/w/shop/worktrees/spike'] }
+        ];
+        const api = shared[1] as WorkspaceFolders;
+        expect(workspaceForPath('/w/shop/apps/api', shared)?.id).toBe('web');
+        expect(workspaceForPath('/w/shop/apps/api', shared, api)?.id).toBe('api');
+        // A longer folder still wins over the preferred workspace's shorter one.
+        expect(workspaceForPath('/w/shop/worktrees/spike/src', shared, api)?.id).toBe('spike');
     });
 
     it('folds a port bound on IPv4 and IPv6, keeping the exposed one', () => {

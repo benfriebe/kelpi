@@ -150,6 +150,25 @@ describe('store bridge', () => {
         expect(h.store.getState().daemon.oldTerminalHosts).toEqual([]);
     });
 
+    it('mirrors the running-services scan, and tolerates a malformed one (docs/running-services.md)', () => {
+        const h = harness();
+        h.connection.connect();
+        completeHandshake(h.sockets.last(), { clientID: 'client-1', state: snapshotState() as never });
+        expect(h.store.getState().daemon.runningServices).toBeNull();
+
+        const entry = { id: 'process:1:1', name: 'web', category: 'workspace', ports: [], members: [] };
+        h.sockets.last().emit({ type: 'running-services', services: [entry], scannedAt: '2026-11-15T03:00:00.000Z', warnings: ['docker: no socket'] });
+        expect(h.store.getState().daemon.runningServices).toEqual({
+            services: [entry],
+            scannedAt: '2026-11-15T03:00:00.000Z',
+            receivedAt: expect.any(Number),
+            warnings: ['docker: no socket']
+        });
+
+        h.sockets.last().emit({ type: 'running-services', services: 'nope', scannedAt: 7, warnings: [1, 'kept'] });
+        expect(h.store.getState().daemon.runningServices).toEqual({ services: [], scannedAt: null, warnings: ['kept'], receivedAt: expect.any(Number) });
+    });
+
     it('renders daemon notifications through the manager', () => {
         const h = harness();
         h.connection.connect();

@@ -103,7 +103,11 @@ const REMOTE_GAPS: readonly string[] = [
      * a paired daemon's web panes with no native page (`embedded={false}`), so no page in it can
      * hold the keyboard.
      */
-    'onPaneDragStart'
+    'onPaneDragStart',
+    // A pane header's ports chip (docs/running-services.md §7). The ports come from THIS
+    // machine's scan, and a remote daemon's panes run their servers on the remote machine, so
+    // there is nothing to show and `localhost` would open the wrong host. `servicePortsFor` below.
+    'onOpenServicePort'
 ];
 
 /**
@@ -129,6 +133,8 @@ const VALUE_GAPS: readonly string[] = [
     // header, so it neither opts into the placement nor feeds it the footer's change counts.
     'paneChromePresenter',
     'changesFor',
+    // The ports chip's data, for the reason above `onOpenServicePort`.
+    'servicePortsFor',
     /*
      * The find bar's four, for the reason above `onPaneSearchFailure`: the remote grid has no
      * search verbs to drive and no presenter to draw one, so it neither opts into the placement

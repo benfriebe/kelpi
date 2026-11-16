@@ -8,6 +8,7 @@
  */
 
 import type { JsonObject, JsonValue } from '../json.js';
+import type { RunningServiceEntry } from '../replies/types.js';
 import type { AgentKind, PaneStatus } from '../wire/vocab.js';
 import type { WsSettingsChangedMessage, WsSettingsSnapshot } from './settings.js';
 import type { WsUpdateStateMessage } from './update.js';
@@ -1225,6 +1226,22 @@ export interface WsOldTerminalHostsMessage {
 
 export const WS_OLD_TERMINAL_HOSTS_MESSAGE = 'old-terminal-hosts';
 
+/**
+ * Running services (docs/running-services.md §4): the dev servers, listening processes and
+ * containers on the daemon's machine, in `running-list`'s entry shape, every category included
+ * (the client filters). Broadcast when the list changes (memory compared to the MiB) and
+ * replayed after each snapshot, since it is a standing condition. `scannedAt` is null before
+ * the first scan.
+ */
+export interface WsRunningServicesMessage {
+    readonly type: 'running-services';
+    readonly services: readonly RunningServiceEntry[];
+    readonly scannedAt: string | null;
+    readonly warnings: readonly string[];
+}
+
+export const WS_RUNNING_SERVICES_MESSAGE = 'running-services';
+
 export type WsServerMessage =
     | WsWelcomeMessage
     | WsRejectedMessage
@@ -1235,6 +1252,7 @@ export type WsServerMessage =
     | WsAgentLaunchMessage
     | WsSizeControlMessage
     | WsOldTerminalHostsMessage
+    | WsRunningServicesMessage
     | WsNotificationMessage
     | WsClipboardWriteMessage
     | WsPaneExitMessage

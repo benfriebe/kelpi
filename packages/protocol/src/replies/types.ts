@@ -503,6 +503,12 @@ export interface RunningServiceEntry {
     readonly directory_workspace_name: string | null;
     /** `directory` no longer exists (a deleted worktree). */
     readonly directory_missing: boolean;
+    /**
+     * The worktree `directory` sits in, so leftovers from one worktree list together: the topmost
+     * deleted folder when `directory` is gone, else the folder under a known repo's worktree base,
+     * else the known repo itself; null outside all of them.
+     */
+    readonly worktree: string | null;
     readonly started_at: string | null;
     /** The stack's root process; null for containers. */
     readonly pid: number | null;

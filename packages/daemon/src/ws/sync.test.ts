@@ -1120,6 +1120,24 @@ describe('broadcast', () => {
  * shell's report and REMEMBERS the last one: a claimed hotkey is a standing condition, and a
  * Settings window opened an hour later still has to be able to explain the dead chord.
  */
+describe('running-services replay', () => {
+    it('sends the last scan right after the snapshot, and nothing without a monitor', () => {
+        const store = storeHarness(seededState(W1, PANE_A));
+        const running = { type: 'running-services' as const, services: [], scannedAt: '2026-11-15T03:00:00.000Z', warnings: [] };
+        const hub = createSyncHub({ store: store.store, dispatcher: () => {}, daemon: DAEMON, runningServices: () => running });
+        const transport = recordingTransport();
+        hub.createSession(transport).handleMessage(hello());
+        const types = transport.json.map((m) => m['type']);
+        expect(types.slice(0, 2)).toEqual(['welcome', 'snapshot']);
+        expect(transport.ofType('running-services')).toEqual([running]);
+
+        const plain = fixture();
+        const { session, transport: bare } = plain.connect();
+        session.handleMessage(hello());
+        expect(bare.ofType('running-services')).toEqual([]);
+    });
+});
+
 describe('hotkey-status relay', () => {
     const report = (overrides: Record<string, unknown> = {}): string =>
         JSON.stringify({

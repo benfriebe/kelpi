@@ -53,6 +53,7 @@ export function toWireService(service: RunningService): RunningServiceEntry {
         directory_workspace_id: idOrNull(service.directoryWorkspaceID),
         directory_workspace_name: service.directoryWorkspaceName,
         directory_missing: service.directoryMissing,
+        worktree: service.worktree,
         started_at: service.startedAt === null ? null : wireTimestamp(service.startedAt),
         pid: service.pid,
         process_count: service.processCount,

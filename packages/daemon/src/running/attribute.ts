@@ -185,17 +185,25 @@ export function isPathInside(path: string, folder: string): boolean {
     return path.startsWith(prefix);
 }
 
-/** The workspace with the longest folder containing `path`. */
+/**
+ * The workspace with the longest folder containing `path`.
+ *
+ * Workspaces share folders: two workspaces on one repo both own its root. On a tie `prefer` wins
+ * (the service's owner), so a server in its own workspace's folder is not reported as running in
+ * a sibling's.
+ */
 export function workspaceForPath(
     path: string | null,
-    workspaces: readonly WorkspaceFolders[]
+    workspaces: readonly WorkspaceFolders[],
+    prefer: WorkspaceFolders | null = null
 ): WorkspaceFolders | null {
     if (path === null) return null;
     let best: WorkspaceFolders | null = null;
     let bestLength = -1;
     for (const workspace of workspaces) {
         for (const folder of workspace.folders) {
-            if (folder.length > bestLength && isPathInside(path, folder)) {
+            if (!isPathInside(path, folder)) continue;
+            if (folder.length > bestLength || (folder.length === bestLength && workspace.id === prefer?.id)) {
                 best = workspace;
                 bestLength = folder.length;
             }
@@ -211,7 +219,47 @@ export interface BuildInput extends PlanInput {
     readonly workspaces: readonly WorkspaceFolders[];
     /** Worktree and repo folders: a service there with no workspace is listed as unattached. */
     readonly knownFolders: readonly string[];
+    /** The folders each known repo's worktrees are created in. */
+    readonly worktreeBases?: readonly string[] | undefined;
     readonly pathExists: (path: string) => boolean;
+}
+
+function parentOf(path: string): string {
+    const index = path.lastIndexOf('/');
+    return index <= 0 ? '/' : path.slice(0, index);
+}
+
+/**
+ * The worktree a folder is in, so the leftovers of one worktree list together.
+ *
+ * Under a known repo's worktree base it is the folder one level down, deleted or not, so two
+ * removed worktrees stay apart even once the base itself is gone, and a deleted app folder in a
+ * live worktree stays with that worktree. Otherwise a deleted folder is grouped by the topmost
+ * folder that is gone, which is the worktree that `git worktree remove` took, whether or not
+ * this daemon knows its repo; an existing one by the known repo holding it.
+ */
+export function worktreeOf(
+    directory: string | null,
+    missing: boolean,
+    input: Pick<BuildInput, 'knownFolders' | 'worktreeBases' | 'pathExists'>
+): string | null {
+    if (directory === null) return null;
+    const longestFirst = (folders: readonly string[]): string[] => [...folders].sort((a, b) => b.length - a.length);
+    for (const base of longestFirst(input.worktreeBases ?? [])) {
+        if (directory === base || !isPathInside(directory, base)) continue;
+        const prefix = base.endsWith('/') ? base : `${base}/`;
+        return `${prefix}${directory.slice(prefix.length).split('/')[0] ?? ''}`;
+    }
+    if (missing) {
+        let top = directory;
+        let parent = parentOf(top);
+        while (parent !== top && parent !== '/' && !input.pathExists(parent)) {
+            top = parent;
+            parent = parentOf(parent);
+        }
+        return top;
+    }
+    return longestFirst(input.knownFolders).find((folder) => isPathInside(directory, folder)) ?? null;
 }
 
 function basenameOf(path: string): string {
@@ -279,7 +327,7 @@ function processService(
     const appName = pane === null ? appBundleName(root.args) : null;
     const missing = appName === null && directory !== null && !input.pathExists(directory);
     const paneWorkspace = pane === null ? null : (input.workspaces.find((workspace) => workspace.id === pane.workspaceID) ?? null);
-    const directoryWorkspace = appName === null ? workspaceForPath(directory, input.workspaces) : null;
+    const directoryWorkspace = appName === null ? workspaceForPath(directory, input.workspaces, paneWorkspace) : null;
     const owner = paneWorkspace ?? directoryWorkspace;
 
     const members: ServiceMember[] = [];
@@ -342,6 +390,7 @@ function processService(
         directoryWorkspaceID: directoryWorkspace?.id ?? null,
         directoryWorkspaceName: directoryWorkspace?.name ?? null,
         directoryMissing: missing,
+        worktree: worktreeOf(directory, missing, input),
         startedAt: root.startedAt,
         pid: root.pid,
         processCount: stackPids.length,
@@ -394,7 +443,7 @@ function containerService(
         }
     }
     const missing = directory !== null && !input.pathExists(directory);
-    const directoryWorkspace = workspaceForPath(directory, input.workspaces);
+    const directoryWorkspace = workspaceForPath(directory, input.workspaces, owner);
     const members: ServiceMember[] = sorted.map((row) => ({
         name: row.service ?? row.name,
         pid: null,
@@ -432,6 +481,7 @@ function containerService(
         directoryWorkspaceID: directoryWorkspace?.id ?? null,
         directoryWorkspaceName: directoryWorkspace?.name ?? null,
         directoryMissing: missing,
+        worktree: worktreeOf(directory, missing, input),
         startedAt: Number.isFinite(startedAt) ? startedAt : null,
         pid: null,
         processCount: sorted.length,

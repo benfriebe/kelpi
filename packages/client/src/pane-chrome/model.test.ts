@@ -66,7 +66,7 @@ describe('paneChromeModel', () => {
         expect(chrome.zoom).toEqual({ zoomed: true, available: true });
         expect(chrome.sync).toEqual({ active: true, excluded: false });
         expect(chrome.height).toBe(24);
-        expect(chrome.size.badges).toEqual({ label: true, agent: true, branch: true });
+        expect(chrome.size.badges).toEqual({ label: true, agent: true, branch: true, ports: false });
         expect(chrome.renaming).toBe(false);
         // The three counts the header has no chip for: named, and null until a host fills them.
         expect(chrome.changes).toBeNull();
@@ -373,7 +373,7 @@ describe('paneChromeModel', () => {
             paneWidth: 900
         }).descriptor;
         expect(wide.size.width).toBe(900);
-        expect(wide.size.badges).toEqual({ label: true, agent: false, branch: true });
+        expect(wide.size.badges).toEqual({ label: true, agent: false, branch: true, ports: false });
         expect(wide.size.folded).toBe(0);
 
         const narrow = paneChromeModel({
@@ -382,7 +382,7 @@ describe('paneChromeModel', () => {
             nowSeconds: NOW,
             paneWidth: 120
         }).descriptor;
-        expect(narrow.size.badges).toEqual({ label: false, agent: false, branch: false });
+        expect(narrow.size.badges).toEqual({ label: false, agent: false, branch: false, ports: false });
         expect(narrow.size.folded).toBeGreaterThan(0);
 
         // An unmeasured render draws everything the pane asked for and folds nothing.
@@ -392,7 +392,7 @@ describe('paneChromeModel', () => {
             nowSeconds: NOW
         }).descriptor;
         expect(unmeasured.size.width).toBeNull();
-        expect(unmeasured.size.badges).toEqual({ label: true, agent: false, branch: true });
+        expect(unmeasured.size.badges).toEqual({ label: true, agent: false, branch: true, ports: false });
         expect(unmeasured.size.folded).toBe(0);
     });
 

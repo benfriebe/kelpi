@@ -152,15 +152,20 @@ export function agentBadge(pane: PaneModel, nowSeconds: number): AgentBadgeModel
 
 // ── the two width ladders ───────────────────────────────────────────────────────────
 
-/** Which of the three user-data badges a header this wide can afford (`badgeFit`). */
+/** Which of the user-data badges a header this wide can afford (`badgeFit`). */
 export interface BadgeFit {
     readonly label: boolean;
     readonly agent: boolean;
     readonly branch: boolean;
+    /** The ports chip of a pane whose shell started a server (docs/running-services.md §7). */
+    readonly ports: boolean;
 }
 
 /** What `badgeFit` needs: the width, what the pane WANTS to show, and the row's button count. */
-export interface BadgeFitInput extends BadgeFit {
+export interface BadgeFitInput extends Omit<BadgeFit, 'ports'> {
+    readonly ports?: boolean | undefined;
+    /** The ports chip's own width (`portsChipCost`); `BADGE_COST.ports`, the shortest chip's, by default. */
+    readonly portsCost?: number | undefined;
     readonly paneWidth: number | undefined;
     /** Trailing `HeaderButton`s this header renders — 4 shared, plus the per-type ones. */
     readonly buttons: number;
@@ -183,9 +188,21 @@ export function headerChrome(buttons: number): number {
  * §S8 — what a badge costs at its floor: its own box, plus the one extra `gap-1` it adds.
  *
  * 8 px of `px-1`, the glyph and its 2 px inner gap where there is one (8 for the tag, 9 for the
- * branch), and `BADGE_TEXT_FLOOR`'s ~15 px of text.
+ * branch), and `BADGE_TEXT_FLOOR`'s ~15 px of text. The ports chip does not shrink, so it costs its
+ * whole width (`portsChipCost`); `ports` is the shortest one's, `:3000 ↗`.
  */
-export const BADGE_COST = { label: 37, agent: 27, branch: 38 } as const;
+export const BADGE_COST = { label: 37, agent: 27, branch: 38, ports: 50 } as const;
+
+/** The pane header's ports chip: the first port, `+N` for the rest, and the open arrow. */
+export function portsChipText(ports: readonly number[]): string {
+    const more = ports.length > 1 ? ` +${String(ports.length - 1)}` : '';
+    return `:${String(ports[0] ?? '')}${more} ↗`;
+}
+
+/** What the ports chip costs: `px-1`'s 8 px and a 6 px 10 px-mono cell per character. */
+export function portsChipCost(ports: readonly number[]): number {
+    return 8 + 6 * portsChipText(ports).length;
+}
 
 /**
  * §S8 — the badge fit ladder.
@@ -203,27 +220,30 @@ export const BADGE_COST = { label: 37, agent: 27, branch: 38 } as const;
  * agent alone from 194, the label alone from 167; a markdown pane's lone branch chip survives
  * to 216 px, where a fixed ladder would have dropped it at 250 with 60 px of room to spare.
  *
- * The drop order is by what else carries the same fact. The branch goes first: the status
+ * The drop order is by what else carries the same fact. A service's ports chip goes first: the
+ * Inspector and the status bar's services popover both list them. The branch goes next: the status
  * footer and the inspector both show it. The agent badge goes next: the 10 px status dot beside
  * the path is already painted from `pane.status`, so "an agent is running here" survives it.
  * The label chip goes last, because nothing else in a narrow header names the pane.
  */
 export function badgeFit(input: BadgeFitInput): BadgeFit {
-    const fit = { label: input.label, agent: input.agent, branch: input.branch };
+    const fit = { label: input.label, agent: input.agent, branch: input.branch, ports: input.ports === true };
     // No width to reason about (a standalone render, a test that does not care about the
     // ladder) draws everything the pane asked for, which is the pre-S8 behaviour.
     if (input.paneWidth === undefined || !Number.isFinite(input.paneWidth)) return fit;
 
+    const costs = { ...BADGE_COST, ports: input.portsCost ?? BADGE_COST.ports };
     const budget = input.paneWidth - headerChrome(input.buttons);
     let cost =
-        (fit.label ? BADGE_COST.label : 0) +
-        (fit.agent ? BADGE_COST.agent : 0) +
-        (fit.branch ? BADGE_COST.branch : 0);
-    for (const key of ['branch', 'agent', 'label'] as const) {
+        (fit.label ? costs.label : 0) +
+        (fit.agent ? costs.agent : 0) +
+        (fit.branch ? costs.branch : 0) +
+        (fit.ports ? costs.ports : 0);
+    for (const key of ['ports', 'branch', 'agent', 'label'] as const) {
         if (cost <= budget) break;
         if (!fit[key]) continue;
         fit[key] = false;
-        cost -= BADGE_COST[key];
+        cost -= costs[key];
     }
     return fit;
 }
@@ -347,6 +367,8 @@ export interface PaneChromeInput {
     readonly changes?: PaneChromeChanges | null | undefined;
     /** The markdown copy control exists only where the host bound a handler for it. */
     readonly canCopyDocument?: boolean | undefined;
+    /** The ports this pane's services listen on, when the host can open one (§7 of running-services.md). */
+    readonly servicePorts?: readonly number[] | undefined;
     /**
      * #324: what a csv pane's body knows about its document (`content/csv/chrome-facts.ts`), or
      * null when no body is on screen to say - the header then reads the pane record alone.
@@ -528,6 +550,8 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
         label: pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown',
         agent: badge !== null,
         branch: pane.gitBranch !== null && pane.gitBranch.length > 0,
+        ports: (input.servicePorts?.length ?? 0) > 0,
+        portsCost: portsChipCost(input.servicePorts ?? []),
         buttons
     });
 
@@ -629,7 +653,8 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
         badgeCost:
             (badges.label ? BADGE_COST.label : 0) +
             (badges.agent ? BADGE_COST.agent : 0) +
-            (badges.branch ? BADGE_COST.branch : 0)
+            (badges.branch ? BADGE_COST.branch : 0) +
+            (badges.ports ? portsChipCost(input.servicePorts ?? []) : 0)
     });
 
     const agent: PaneChromeAgent | null =

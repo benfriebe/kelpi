@@ -525,13 +525,16 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
 
     // docs/running-services.md §7 (phase 5): the workspace on screen's services, for the sheet.
     const runningList = props.state.daemon.runningServices;
+    // Null until the first scan has arrived, which is not the same as nothing running.
     const workspaceServices = useMemo(
-        () => (workspace === null ? [] : (runningFor(runningByWorkspace(runningList?.services ?? []), workspace.id)?.services ?? [])),
+        () => (workspace === null || runningList === null ? null : (runningFor(runningByWorkspace(runningList.services), workspace.id)?.services ?? [])),
         [runningList, workspace]
     );
+    // Its services are on this Mac's daemon: a remote host's workspace has its own.
+    const servicesHere = workspace !== null && !atLanding && remoteHost === null;
     const commands = props.runtime.commands;
     const stopService = useCallback(
-        async (service: RunningServiceEntry, force: boolean): Promise<readonly RunningStopResult[] | null> => {
+        async (service: RunningServiceEntry, force: boolean): Promise<readonly RunningStopResult[]> => {
             const failed = (error: string): readonly RunningStopResult[] => [
                 { id: service.id, name: service.name, ports: [], action: null, signal: null, signalled: 0, skipped: [], failed: [], remaining: null, stopped: null, restarted_by: null, error }
             ];
@@ -597,13 +600,13 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             }
         }
         // docs/running-services.md §7 (phase 5): what this workspace runs, on this Mac's daemon.
-        if (workspace !== null && !atLanding && remoteHost === null) {
-            const count = workspaceServices.length;
+        if (servicesHere && workspace !== null) {
+            const count = workspaceServices?.length ?? 0;
             items.push({
                 id: 'services',
                 label: 'Services',
                 glyph: 'plug',
-                detail: count === 0 ? 'Nothing running' : `Dev servers and containers in ${workspace.name}`,
+                detail: workspaceServices === null ? 'Checking what runs' : count === 0 ? 'Nothing running' : `Dev servers and containers in ${workspace.name}`,
                 value: count === 0 ? undefined : String(count),
                 opensSheet: true,
                 onSelect: () => setSheet('services')
@@ -615,7 +618,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
         return items;
-    }, [workspace, shownPane, remoteHost, verbs, actions, tabActions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel, workspaceServices]);
+    }, [workspace, shownPane, remoteHost, verbs, actions, tabActions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel, workspaceServices, servicesHere]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
 
@@ -1268,7 +1271,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 />
             )}
             <PhoneNeedsYouSheet open={sheet === 'needs'} fleet={fleet} attention={attention} onOpen={openWaiting} onClose={closeSheet} />
-            {workspace === null ? null : (
+            {workspace === null || !servicesHere ? null : (
                 <PhoneServicesSheet
                     open={sheet === 'services'}
                     workspaceName={workspace.name}

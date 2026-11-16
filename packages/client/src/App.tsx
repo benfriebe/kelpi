@@ -4139,8 +4139,8 @@ function Shell(props: AppProps): ReactElement {
         act.openLinkInWebPane(anchor, portURL(port));
     }, [act, activateWorkspaceAndReveal, store]);
     /**
-     * docs/running-services.md §6: one stop for every surface. A paired device is refused by the
-     * daemon (owner-only); the toast says so in words. Each refused service is its own toast.
+     * docs/running-services.md §6: one stop for every surface. A failed request is a toast; a
+     * refused service (a paired device's `OWNER_ONLY`, say) is its own result, for the dialog.
      */
     const stopServices = useCallback(async (
         services: readonly RunningServiceEntry[],
@@ -4156,8 +4156,7 @@ function Shell(props: AppProps): ReactElement {
                 confirmed: options.confirmed ?? true
             });
             if (!isOkReply(reply)) {
-                const error = replyError(reply);
-                notifyFailure(label, /owner-only/.test(error) ? 'only the owner of this Kelpi can stop services' : error);
+                notifyFailure(label, replyError(reply));
                 return null;
             }
             const results = (reply as unknown as { readonly results?: readonly RunningStopResult[] }).results ?? [];

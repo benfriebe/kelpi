@@ -112,6 +112,7 @@ interface Remembered {
     /** How it was stopped: after a Ctrl-C the next plain stop sends SIGTERM rather than Ctrl-C again. */
     readonly via: 'interrupt' | 'signal';
     readonly at: number;
+    readonly outside: boolean;
 }
 
 /** A member's stop is remembered apart, so it never replaces the record of the whole service's. */
@@ -149,6 +150,11 @@ function refused(
     };
 }
 
+/** A paired device asked to stop something started outside Kelpi (phase 5). */
+function ownerOnly(service: { readonly id: string; readonly name: string; readonly ports: readonly number[] }): StopResult {
+    return refused(service, 'OWNER_ONLY', `${service.name} was started outside Kelpi; only the owner of this Kelpi can stop it`);
+}
+
 /** `process:<pid>:<start>` → the root's pid and start (epoch seconds). */
 function processIdentity(id: string): { readonly pid: number; readonly startedAt: number } | null {
     const match = /^process:(\d+):(\d+)$/.exec(id);
@@ -157,17 +163,26 @@ function processIdentity(id: string): { readonly pid: number; readonly startedAt
 
 const DEFUNCT = /<defunct>/;
 
+/** The service a plan stops, as its result names it. */
+interface PlannedService {
+    readonly id: string;
+    readonly name: string;
+    readonly ports: readonly number[];
+    /** Started outside Kelpi: what is left of it once its root exits stays the owner's too. */
+    readonly outside: boolean;
+}
+
 /** A planned signal stop: what to signal, root first, and who to tell. */
 interface SignalPlan {
     readonly kind: 'signal';
-    readonly service: { readonly id: string; readonly name: string; readonly ports: readonly number[] };
+    readonly service: PlannedService;
     readonly targets: readonly ProcessRow[];
     readonly rootPid: number;
 }
 
 interface InterruptPlan {
     readonly kind: 'interrupt';
-    readonly service: { readonly id: string; readonly name: string; readonly ports: readonly number[] };
+    readonly service: PlannedService;
     readonly paneID: string;
     /** The job's processes, for the wait. */
     readonly watch: readonly ProcessRow[];
@@ -177,7 +192,7 @@ interface InterruptPlan {
 
 interface ContainerPlan {
     readonly kind: 'containers';
-    readonly service: { readonly id: string; readonly name: string; readonly ports: readonly number[] };
+    readonly service: PlannedService;
     readonly containers: readonly string[];
 }
 
@@ -315,7 +330,7 @@ export function createRunningStopper(deps: RunningStopperDeps): RunningStopper {
          * member, only that member and what runs under it, from either the member's own record or
          * the whole service's.
          */
-        function remembered(id: string): SignalPlan | null {
+        function remembered(id: string): Plan | null {
             const member = request.member;
             const entries = [memory.get(memoryKey(id, member)), member === undefined ? undefined : memory.get(id)].filter(
                 (entry): entry is Remembered => entry !== undefined
@@ -332,9 +347,13 @@ export function createRunningStopper(deps: RunningStopperDeps): RunningStopper {
                 .map(alive)
                 .filter((row): row is ProcessRow => row !== null);
             if (roots.length === 0) return null;
+            const outside = entries.some((entry) => entry.outside);
+            if (outside && request.paired === true) {
+                return { kind: 'refused', result: ownerOnly({ id, name: first.name, ports: first.ports }) };
+            }
             const targets = new Map<number, ProcessRow>();
             for (const root of roots) for (const row of subtree(root)) targets.set(row.pid, row);
-            return { kind: 'signal', service: { id, name: first.name, ports: first.ports }, targets: [...targets.values()], rootPid: (roots[0] as ProcessRow).pid };
+            return { kind: 'signal', service: { id, name: first.name, ports: first.ports, outside }, targets: [...targets.values()], rootPid: (roots[0] as ProcessRow).pid };
         }
 
         function planFor(item: { readonly id: string; readonly service: RunningService | null }): Plan {
@@ -342,16 +361,11 @@ export function createRunningStopper(deps: RunningStopperDeps): RunningStopper {
             if (service === null) {
                 return remembered(item.id) ?? { kind: 'refused', result: refused({ id: item.id, name: item.id }, 'NOT_FOUND', `${item.id} is not running`) };
             }
-            const summary = { id: service.id, name: service.name, ports: service.ports.map((entry) => entry.port) };
+            const summary: PlannedService = { id: service.id, name: service.name, ports: service.ports.map((entry) => entry.port), outside: service.category === 'outside' };
             if (service.category === 'agent') {
                 return { kind: 'refused', result: refused(summary, 'AGENT', `${service.name} is the agent itself; close its pane to end it`) };
             }
-            if (service.category === 'outside' && request.paired === true) {
-                return {
-                    kind: 'refused',
-                    result: refused(summary, 'OWNER_ONLY', `${service.name} was started outside Kelpi; only the owner of this Kelpi can stop it`)
-                };
-            }
+            if (summary.outside && request.paired === true) return { kind: 'refused', result: ownerOnly(summary) };
             if (service.category === 'outside' && !request.confirmed) {
                 return {
                     kind: 'refused',
@@ -453,7 +467,8 @@ export function createRunningStopper(deps: RunningStopperDeps): RunningStopper {
                 ports: service.ports,
                 processes: rows.map((row) => ({ pid: row.pid, startedAt: row.startedAt })),
                 via,
-                at: now()
+                at: now(),
+                outside: service.outside
             });
         }
 

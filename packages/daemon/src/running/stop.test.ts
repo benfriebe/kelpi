@@ -241,6 +241,20 @@ describe('createRunningStopper', () => {
         expect(outcome).toMatchObject({ results: [{ id: STACK.id, action: 'signal', stopped: true }, { id: outside.id, code: 'OWNER_ONLY', action: null }] });
     });
 
+    it('keeps what is left of a service started outside Kelpi from a paired device once its root has exited', async () => {
+        const outside = service('process:400:1400', { category: 'outside', name: 'ollama' });
+        const r = rig([outside]);
+        r.stubborn.add(402);
+        await r.stopper.stop({ ids: [outside.id], force: false, confirmed: true, waitMs: 1_000 }, callWith(r));
+        // Its root exited, so the scan no longer lists it, but the owner's stop remembers 402.
+        r.scans = [{ services: [], scannedAt: 1, warnings: [] }];
+        const phone = await r.stopper.stop({ ids: [outside.id], force: true, confirmed: true, paired: true }, callWith(r));
+        expect(phone).toMatchObject({ results: [{ id: outside.id, code: 'OWNER_ONLY', action: null }] });
+        expect(sent(r, 'SIGKILL')).toEqual([]);
+        const owner = await r.stopper.stop({ ids: [outside.id], force: true, confirmed: true }, callWith(r));
+        expect(owner).toMatchObject({ results: [{ action: 'signal', signal: 'SIGKILL', stopped: true }] });
+    });
+
     it("leaves another user's process alone before signalling anything", async () => {
         const theirs = service('process:500:1500', { category: 'outside' });
         const r = rig([theirs]);

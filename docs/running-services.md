@@ -357,9 +357,12 @@ Force Stop if something is still running.
 On the phone (phase 5): the ⋯ menu's "Services" row (with the count) opens a sheet of what the
 workspace on screen runs, with the desktop's live memory, CPU, uptime, who started it and the idle
 note. Ports are text: Open is desktop-only (D5), since a phone cannot reach the Mac's `localhost`.
-Stop asks in the row itself (Cancel / Stop, each a thumb's width; a foreground job's says its pane
-gets Ctrl-C), then says "Stopping…", "Stopped", or "N still running" with Force stop. A remote
-host's workspace has no Services row yet: its services are on that host.
+Stop asks in the row itself (Cancel / Stop, each a thumb's width; it says the pane gets Ctrl-C only
+when the daemon would press it), then says "Stopping…", "Stopped", "N still running" with Force
+stop, "Running again" when a supervisor took its port back, or why it was refused, with Stop again.
+A stop under way still says so when the sheet is closed and opened again. Before the first scan
+the sheet says it is still checking, never "Nothing running". A remote host's workspace has no
+Services row yet: its services are on that host.
 
 What they cost and what was left (phase 4):
 

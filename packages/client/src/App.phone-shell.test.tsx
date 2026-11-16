@@ -899,6 +899,8 @@ describe('the overflow menu', () => {
             'phone-menu-new-tab',
             'phone-menu-rename-pane',
             'phone-menu-sync-input',
+            // docs/running-services.md §7 (phase 5): what the workspace runs.
+            'phone-menu-services',
             'phone-menu-palette',
             'phone-menu-settings',
             'phone-menu-close-pane'

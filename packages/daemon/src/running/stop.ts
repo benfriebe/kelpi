@@ -52,6 +52,8 @@ export interface StopRequest {
     readonly force: boolean;
     readonly confirmed: boolean;
     readonly waitMs?: number | undefined;
+    /** A paired device asked: never what was started outside Kelpi (phase 5). */
+    readonly paired?: boolean | undefined;
 }
 
 /** What only the caller's context knows: the pane shells and hosts now, and how to press Ctrl-C. */
@@ -343,6 +345,12 @@ export function createRunningStopper(deps: RunningStopperDeps): RunningStopper {
             const summary = { id: service.id, name: service.name, ports: service.ports.map((entry) => entry.port) };
             if (service.category === 'agent') {
                 return { kind: 'refused', result: refused(summary, 'AGENT', `${service.name} is the agent itself; close its pane to end it`) };
+            }
+            if (service.category === 'outside' && request.paired === true) {
+                return {
+                    kind: 'refused',
+                    result: refused(summary, 'OWNER_ONLY', `${service.name} was started outside Kelpi; only the owner of this Kelpi can stop it`)
+                };
             }
             if (service.category === 'outside' && !request.confirmed) {
                 return {

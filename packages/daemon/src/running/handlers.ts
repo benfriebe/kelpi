@@ -167,7 +167,8 @@ function handleRunningStop(msg: RunningStopMessage, ctx: AppContext, reply: Repl
                     member: msg.member,
                     force: msg.force,
                     confirmed: msg.confirmed,
-                    waitMs: msg.wait_ms
+                    waitMs: msg.wait_ms,
+                    paired: msg.paired === true
                 },
                 call
             );

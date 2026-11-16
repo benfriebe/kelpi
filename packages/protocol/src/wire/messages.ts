@@ -816,6 +816,13 @@ export interface RunningStopMessage {
     confirmed: boolean;
     /** How long to wait for the stopped processes to exit; 0 = do not wait. Default 5000, at most 30000. */
     wait_ms?: number | undefined;
+    /**
+     * **Not a wire field** (like `workspace-delete`'s `allow_last`): `decode.ts` never reads it.
+     * The WebSocket session sets it for a paired device (a phone), which may stop what belongs to
+     * a workspace or a deleted worktree but not what was started outside Kelpi
+     * (docs/running-services.md §6, phase 5).
+     */
+    paired?: boolean | undefined;
 }
 
 // ── 6.9 Web pane commands ───────────────────────────────────────────────────────────

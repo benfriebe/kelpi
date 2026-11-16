@@ -1758,17 +1758,15 @@ describe('plugin revision management — owner-only', () => {
     });
 });
 
-describe('stopping services is owner-only (docs/running-services.md §6)', () => {
-    const replyFor = (transport: RecordedTransport, id: string): Record<string, unknown> | undefined =>
-        transport.json.find((m) => m['type'] === 'command-reply' && m['id'] === id) as Record<string, unknown> | undefined;
+describe('stopping services from a paired device (docs/running-services.md §6, phase 5)', () => {
     const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-    it('refuses running-stop and a delete that stops services from a paired device, and lets the owner through', async () => {
-        const dispatched: string[] = [];
+    it("marks a paired device's running-stop for the stopper, and passes a delete that stops services", async () => {
+        const dispatched: Record<string, unknown>[] = [];
         const hub = createSyncHub({
             store: storeHarness(seededState()).store,
             dispatcher: (message) => {
-                dispatched.push(`${message.command}${'stop_services' in message && message.stop_services === true ? '+stop' : ''}`);
+                dispatched.push({ ...message });
             },
             daemon: DAEMON,
             validateToken: (token) => token === 'tok' || token.startsWith('kd_')
@@ -1781,17 +1779,19 @@ describe('stopping services is owner-only (docs/running-services.md §6)', () =>
             ownerSession.handleMessage(hello({ token: 'tok' }));
             pairedSession.handleMessage(hello({ token: 'kd_device' }));
             const stop = JSON.stringify({ type: 'command', id: 's1', payload: { command: 'running-stop', port: 3000 } });
-            const wireDelete = JSON.stringify({ type: 'command', id: 's2', payload: { command: 'workspace-delete', name: 'w1', stop_services: true } });
             const guiDelete = JSON.stringify({ type: 'command', id: 's3', payload: { command: 'delete-workspace', workspace_id: 'w1', stop_services: true } });
-            for (const message of [stop, wireDelete, guiDelete]) pairedSession.handleMessage(message);
+            pairedSession.handleMessage(stop);
+            pairedSession.handleMessage(guiDelete);
             await settle();
-            expect(dispatched).toEqual([]);
-            expect(replyFor(paired, 's1')?.['reply']).toEqual({ ok: false, error: 'running-stop is owner-only' });
-            expect(replyFor(paired, 's2')?.['reply']).toEqual({ ok: false, error: 'stop_services is owner-only' });
-            expect(replyFor(paired, 's3')?.['reply']).toEqual({ ok: false, error: 'stop_services is owner-only' });
-            for (const message of [stop, guiDelete]) ownerSession.handleMessage(message);
+            // The stopper refuses a paired device only what was started outside Kelpi.
+            expect(dispatched.map((message) => [message['command'], message['paired'] ?? null, message['stop_services'] ?? null])).toEqual([
+                ['running-stop', true, null],
+                ['workspace-delete', null, true]
+            ]);
+            ownerSession.handleMessage(stop);
             await settle();
-            expect(dispatched).toEqual(['running-stop', 'workspace-delete+stop']);
+            expect(dispatched[2]).not.toHaveProperty('paired');
+            // Nothing on the control socket can set the mark: the decoder never reads it.
         } finally {
             hub.close();
         }

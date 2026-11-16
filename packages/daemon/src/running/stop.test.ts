@@ -234,6 +234,13 @@ describe('createRunningStopper', () => {
         expect(confirmed).toMatchObject({ results: [{ action: 'signal', stopped: true }] });
     });
 
+    it('lets a paired device stop what belongs to a workspace, never what was started outside Kelpi', async () => {
+        const outside = service('process:403:1403', { category: 'outside', name: 'vite' });
+        const r = rig([STACK, outside]);
+        const outcome = await r.stopper.stop({ ids: [STACK.id, outside.id], force: false, confirmed: true, paired: true }, callWith(r));
+        expect(outcome).toMatchObject({ results: [{ id: STACK.id, action: 'signal', stopped: true }, { id: outside.id, code: 'OWNER_ONLY', action: null }] });
+    });
+
     it("leaves another user's process alone before signalling anything", async () => {
         const theirs = service('process:500:1500', { category: 'outside' });
         const r = rig([theirs]);

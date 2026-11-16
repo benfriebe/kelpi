@@ -2139,8 +2139,10 @@ nothing.
 ### 13.1 `running-stop` → handleRunningStop
 
 Also `packages/daemon/src/running/handlers.ts`, with the stop itself in `running/stop.ts`
-(docs/running-services.md §6). Request/response, explicit chain. Owner-only over the WebSocket
-(`ws/sync.ts` refuses a paired-device session before dispatch, as for `restart-old-terminals`).
+(docs/running-services.md §6). Request/response, explicit chain. Over the WebSocket, a
+paired-device session's request is marked `paired` (`ws/sync.ts`), and the stopper refuses it
+any service started outside Kelpi (`OWNER_ONLY`); what belongs to a workspace or a deleted
+worktree it may stop.
 
 The handler builds the call's context (`running/stop-call.ts`): every pane's shell pid
 (`deps.panePid`, visible and parked panes), the terminal host pids (`ctx.terminalHosts`, current

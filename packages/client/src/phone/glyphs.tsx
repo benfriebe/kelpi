@@ -40,7 +40,9 @@ export type PhoneGlyphName =
     | 'pencil'
     | 'sync'
     | 'resize'
-    | 'palette';
+    | 'palette'
+    /** Running services (docs/running-services.md): the desktop's plug at this grid's scale. */
+    | 'plug';
 
 const PATHS: Readonly<Record<PhoneGlyphName, string>> = {
     agent: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z',
@@ -73,7 +75,8 @@ const PATHS: Readonly<Record<PhoneGlyphName, string>> = {
     pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
     sync: 'M4 7h12M13 4l3 3-3 3M20 17H8M11 14l-3 3 3 3',
     resize: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
-    palette: 'M5 7l5 5-5 5M12 17h7'
+    palette: 'M5 7l5 5-5 5M12 17h7',
+    plug: 'M9.2 3.2v4.4M14.8 3.2v4.4M6 7.6h12v4.2a4.8 4.8 0 0 1-4.8 4.8h-2.4A4.8 4.8 0 0 1 6 11.8zM12 16.6v4.2'
 };
 
 export interface PhoneGlyphProps {

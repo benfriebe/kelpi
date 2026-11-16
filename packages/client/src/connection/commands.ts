@@ -1430,7 +1430,8 @@ export class CommandClient {
 
     /**
      * docs/running-services.md §6: stop services by id. Replies `{ results }` once they have
-     * exited or `waitMs` (default 5 s) has passed; owner-only, so a paired device is refused.
+     * exited or `waitMs` (default 5 s) has passed. A paired device is refused, per service with
+     * `OWNER_ONLY`, anything started outside Kelpi.
      */
     runningStop(
         input: { ids: readonly string[]; member?: string; force?: boolean; confirmed?: boolean; waitMs?: number },

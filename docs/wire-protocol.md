@@ -1477,8 +1477,7 @@ no-op silently.
 `stop_services` (bool, default false; docs/running-services.md §6, D3) also stops the services
 the deleted workspaces own (nested ones too with `cascade`), their agents' own ports aside: they
 are found before the delete and stopped after it succeeds, as `running-stop` with `wait_ms` 0 and
-`confirmed`, so a refused delete stops nothing; the reply carries `stopping_services` (the count).
-Owner-only over the WebSocket;
+`confirmed`, so a refused delete stops nothing; the reply carries `stopping_services` (the count);
 `cascade` (bool, default false; app-state-core.md §2.9) also deletes the workspaces nested under
 it: their panes are closed with the parent's, the last-workspace guard counts them, the agent
 guard sums their agents with the parent's (the error then reads `workspace <name> and its nested
@@ -2279,9 +2278,9 @@ that predates the verb, the CLI reports "no response from Kelpi (upgrade require
 ### 6.11.1 `running-stop` (R/R)
 
 Stops running services (docs/running-services.md §6). `kelpi kill` sends it, and so do the app's
-Stop buttons. On the explicit chain, so it works with no `pane_id`. Over the WebSocket it is
-owner-only: a session that authenticated with a paired-device token is refused
-(`running-stop is owner-only`), as for `restart-old-terminals`.
+Stop buttons. On the explicit chain, so it works with no `pane_id`. Over the WebSocket, a
+session that authenticated with a paired-device token (a phone) may stop what belongs to a
+workspace or a deleted worktree; a service started outside Kelpi is refused it with `OWNER_ONLY`.
 
 - `ids` (string[]): services by `running-list` id, at most 100. Exactly one of `ids` and `port`.
 - `port` (int, 1 to 65535): the service with a listener on that port, in any category. Two
@@ -2330,7 +2329,8 @@ A service that cannot be stopped is a result with `action: null`, an `error` and
 the rest of the request still runs: `NOT_FOUND` (not running), `AGENT` (an agent's own port, which
 is the agent itself), `NEEDS_CONFIRM` (started outside Kelpi, without `confirmed`), `PROTECTED`
 (Kelpi itself, its terminal hosts, the Kelpi app, a pane's shell or pid 1), `NOT_YOURS` (another
-user's process), `FAILED` (Docker would not answer). A whole request is refused only for
+user's process), `OWNER_ONLY` (started outside Kelpi, asked by a paired device), `FAILED` (Docker
+would not answer). A whole request is refused only for
 `AMBIGUOUS_PORT`, `PORT_NOT_FOUND` and `SCAN_INCOMPLETE` (`ps` could not run, so "not running"
 cannot be told apart), each as the reply's `code`.
 

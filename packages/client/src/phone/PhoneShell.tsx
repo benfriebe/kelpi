@@ -101,9 +101,12 @@ import { PhoneNotificationsSheet } from './PhoneNotificationsSheet';
 import { PhonePaneHeader, PhonePaneStrip } from './PhonePaneChrome';
 import { PhoneTabChips } from './PhoneTabChips';
 import { onScreenPanes, workspaceTabViews, type WorkspaceTabView } from '../chrome/workspace-tabs';
-import type { CommandReply } from '../connection/commands';
+import { isOkReply, replyError, type CommandReply } from '../connection/commands';
+import type { RunningServiceEntry, RunningStopResult } from '@kelpi/protocol';
 import { createWorkspaceTabActions, tabCloseOwner, type TabCloseOwner } from '../features/workspace-tabs-actions';
+import { idleDays, liveNumbers, runningByWorkspace, runningFor, scanClock } from '../chrome/running';
 import { PhonePicker } from './PhonePicker';
+import { PhoneServicesSheet } from './PhoneServicesSheet';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
 import { PhoneWebCard, phoneWebCardTab } from './PhoneWebCard';
@@ -181,7 +184,21 @@ export interface PhoneShellProps {
 }
 
 /** `host-scan` is the Add host sheet opened straight onto its camera; `picker` is at `pickerLevel`. */
-type Sheet = 'none' | 'picker' | 'needs' | 'jump' | 'menu' | 'host' | 'host-scan' | 'rename' | 'new-workspace' | 'notifications' | 'tab' | 'rename-tab' | 'move-tab';
+type Sheet =
+    | 'none'
+    | 'picker'
+    | 'needs'
+    | 'jump'
+    | 'menu'
+    | 'host'
+    | 'host-scan'
+    | 'rename'
+    | 'new-workspace'
+    | 'notifications'
+    | 'tab'
+    | 'rename-tab'
+    | 'move-tab'
+    | 'services';
 
 
 const ZERO_RECT = { x: 0, y: 0, width: 0, height: 0 } as const;
@@ -506,6 +523,32 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
     const takeSizeControlLabel =
         clip === null ? 'Take size control' : `Take size control (${mirrorClipPhrase(clip)} hidden)`;
 
+    // docs/running-services.md §7 (phase 5): the workspace on screen's services, for the sheet.
+    const runningList = props.state.daemon.runningServices;
+    // Null until the first scan has arrived, which is not the same as nothing running.
+    const workspaceServices = useMemo(
+        () => (workspace === null || runningList === null ? null : (runningFor(runningByWorkspace(runningList.services), workspace.id)?.services ?? [])),
+        [runningList, workspace]
+    );
+    // Its services are on this Mac's daemon: a remote host's workspace has its own.
+    const servicesHere = workspace !== null && !atLanding && remoteHost === null;
+    const commands = props.runtime.commands;
+    const stopService = useCallback(
+        async (service: RunningServiceEntry, force: boolean): Promise<readonly RunningStopResult[]> => {
+            const failed = (error: string): readonly RunningStopResult[] => [
+                { id: service.id, name: service.name, ports: [], action: null, signal: null, signalled: 0, skipped: [], failed: [], remaining: null, stopped: null, restarted_by: null, error }
+            ];
+            try {
+                const reply = await commands.runningStop({ ids: [service.id], confirmed: true, ...(force ? { force: true } : {}) });
+                if (!isOkReply(reply)) return failed(replyError(reply));
+                return (reply as unknown as { readonly results?: readonly RunningStopResult[] }).results ?? [];
+            } catch (error) {
+                return failed(error instanceof Error ? error.message : String(error));
+            }
+        },
+        [commands]
+    );
+
     const menuItems = useMemo<readonly PhoneMenuItem[]>(() => {
         const items: PhoneMenuItem[] = [];
         // The landing page has no workspace and no pane, so it offers only what the whole app
@@ -556,13 +599,26 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 });
             }
         }
+        // docs/running-services.md §7 (phase 5): what this workspace runs, on this Mac's daemon.
+        if (servicesHere && workspace !== null) {
+            const count = workspaceServices?.length ?? 0;
+            items.push({
+                id: 'services',
+                label: 'Services',
+                glyph: 'plug',
+                detail: workspaceServices === null ? 'Checking what runs' : count === 0 ? 'Nothing running' : `Dev servers and containers in ${workspace.name}`,
+                value: count === 0 ? undefined : String(count),
+                opensSheet: true,
+                onSelect: () => setSheet('services')
+            });
+        }
         items.push({ id: 'palette', label: 'Command palette', glyph: 'palette', onSelect: actions.openPalette });
         items.push({ id: 'settings', label: 'Settings', glyph: 'gear', onSelect: actions.openSettings });
         if (shownPane !== null && !atLanding) {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
         return items;
-    }, [workspace, shownPane, remoteHost, verbs, actions, tabActions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel]);
+    }, [workspace, shownPane, remoteHost, verbs, actions, tabActions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel, workspaceServices, servicesHere]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
 
@@ -1215,6 +1271,18 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 />
             )}
             <PhoneNeedsYouSheet open={sheet === 'needs'} fleet={fleet} attention={attention} onOpen={openWaiting} onClose={closeSheet} />
+            {workspace === null || !servicesHere ? null : (
+                <PhoneServicesSheet
+                    open={sheet === 'services'}
+                    workspaceName={workspace.name}
+                    services={workspaceServices}
+                    scannedAt={scanClock(props.state.daemon.runningServices)}
+                    numbers={(service) => liveNumbers(service, props.state.daemon.runningStats, props.state.daemon.runningServices?.scannedAt ?? null)}
+                    idle={(service) => idleDays(service, props.state.daemon.state.workspaces, Date.now())}
+                    onStop={stopService}
+                    onClose={closeSheet}
+                />
+            )}
             <PhoneJumpSheet
                 open={sheet === 'jump'}
                 fleet={fleet}

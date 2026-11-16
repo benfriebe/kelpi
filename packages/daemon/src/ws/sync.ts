@@ -491,16 +491,6 @@ export type WsOnlyCommand = (typeof WS_ONLY_COMMANDS)[number];
 export const GUI_DELETE_WORKSPACE_COMMAND = 'delete-workspace';
 
 /**
- * docs/running-services.md §6: what stops processes or containers on the host, which only the
- * owner may ask for, as `restart-old-terminals`. The refusal for a paired device, or null.
- */
-export function ownerOnlyStop(payload: Record<string, unknown>): string | null {
-    if (payload['command'] === 'running-stop') return 'running-stop is owner-only';
-    const deletes = payload['command'] === 'workspace-delete' || payload['command'] === GUI_DELETE_WORKSPACE_COMMAND;
-    return deletes && payload['stop_services'] === true ? 'stop_services is owner-only' : null;
-}
-
-/**
  * Issue #294 (graft-git.md §8.5.2): cancel a running `workspace-create --worktree`.
  *
  * WS-only, and not in `WS_ONLY_COMMANDS` for the same reason `delete-workspace` is not: it
@@ -2837,13 +2827,6 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure('restart-old-terminals is owner-only') });
                 return;
             }
-            // docs/running-services.md §6: stopping processes and containers on the host is the
-            // owner's, a delete's `stop_services` included.
-            const stopRefusal = decoded.ok && isRecord(payload) && this.pairedDevice ? ownerOnlyStop(payload) : null;
-            if (stopRefusal !== null) {
-                this.send({ type: 'command-reply', id, reply: failure(stopRefusal) });
-                return;
-            }
 
             // #294: a WS `workspace-create` may name itself so it can be cancelled. Checked
             // before dispatch: a malformed or reused id is refused rather than silently made
@@ -2872,7 +2855,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             let answered = false;
             const batch: ControlDispatchItem[] = [];
             for (const item of dispatchSequence(decoded)) {
-                const wire = item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message);
+                const unmarked = item.kind === 'message' ? item.message : dualFireMessage(item.event, decoded.message);
+                // docs/running-services.md §6 (phase 5): a paired device may stop what belongs to a
+                // workspace or a deleted worktree, never what was started outside Kelpi. Only this
+                // session knows it is one; the control socket never sets the mark.
+                const wire = unmarked.command === 'running-stop' && this.pairedDevice ? { ...unmarked, paired: true } : unmarked;
                 let handle: WsReplyHandle | null = null;
                 if (item.reply && !answered) {
                     answered = true;
@@ -3059,13 +3046,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const worktreePaths = stringList(payload['worktree_paths']);
             const forcePaths = stringList(payload['force_worktree_paths']);
             const batchIDs = stringList(payload['batch_ids']);
-            // docs/running-services.md §6: stopping the workspace's services is the owner's.
+            // docs/running-services.md §6: the deleted workspaces' own services (never anything
+            // started outside Kelpi, which has no workspace), from any device (phase 5).
             const stopServices = payload['stop_services'] === true;
-            const stopRefusal = this.pairedDevice ? ownerOnlyStop(payload) : null;
-            if (stopRefusal !== null) {
-                this.send({ type: 'command-reply', id, reply: failure(stopRefusal) });
-                return;
-            }
             const handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h), this.originClientID);
             this.handles.add(handle);
             try {

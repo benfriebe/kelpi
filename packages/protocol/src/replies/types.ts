@@ -538,9 +538,10 @@ export interface RunningListReply extends ReplySuccess {
  * Why one service was not stopped. `NOT_FOUND`: not running (any more); `AGENT`: the agent's own
  * port, which is the agent itself; `NEEDS_CONFIRM`: started outside Kelpi, so the caller must ask
  * its user and send `confirmed`; `PROTECTED`: Kelpi itself, a terminal host, a pane's own process
- * or pid 1; `NOT_YOURS`: another user's process; `FAILED`: the signal or Docker call failed.
+ * or pid 1; `NOT_YOURS`: another user's process; `OWNER_ONLY`: started outside Kelpi, and the
+ * caller is a paired device; `FAILED`: the signal or Docker call failed.
  */
-export type RunningStopCode = 'NOT_FOUND' | 'AGENT' | 'NEEDS_CONFIRM' | 'PROTECTED' | 'NOT_YOURS' | 'FAILED';
+export type RunningStopCode = 'NOT_FOUND' | 'AGENT' | 'NEEDS_CONFIRM' | 'PROTECTED' | 'NOT_YOURS' | 'OWNER_ONLY' | 'FAILED';
 
 /** A whole request refused: `AMBIGUOUS_PORT` (two services listen on it), `SCAN_INCOMPLETE` (`ps` failed). */
 export type RunningStopRequestCode = 'AMBIGUOUS_PORT' | 'PORT_NOT_FOUND' | 'SCAN_INCOMPLETE';

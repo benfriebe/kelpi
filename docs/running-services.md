@@ -285,8 +285,10 @@ stops them once it stands, so a refused delete stops nothing. ⌘W closing a wor
 deletes it without that dialog and stops nothing; what it leaves running shows as a leftover,
 with Stop in the status bar popover.
 
-Owner-only: a paired device is refused `running-stop` and `stop_services`, as for
-`restart-old-terminals`; the app says "only the owner of this Kelpi can stop services".
+From a paired device (a phone, phase 5): what belongs to a workspace or a deleted worktree may
+be stopped, a delete's `stop_services` included; what was started outside Kelpi only by the owner
+(D2, D5). The WebSocket session marks a paired device's `running-stop` (`paired`, never read from
+the wire), and the stopper refuses it any `outside` service with `OWNER_ONLY`.
 
 ## 7. Surfaces (phase 2)
 
@@ -352,6 +354,16 @@ and for a member that its supervisor may restart it. Cancel is the default for E
 The dialog stays up while the daemon stops them, closes once everything has exited, and offers
 Force Stop if something is still running.
 
+On the phone (phase 5): the ⋯ menu's "Services" row (with the count) opens a sheet of what the
+workspace on screen runs, with the desktop's live memory, CPU, uptime, who started it and the idle
+note. Ports are text: Open is desktop-only (D5), since a phone cannot reach the Mac's `localhost`.
+Stop asks in the row itself (Cancel / Stop, each a thumb's width; it says the pane gets Ctrl-C only
+when the daemon would press it), then says "Stopping…", "Stopped", "N still running" with Force
+stop, "Running again" when a supervisor took its port back, or why it was refused, with Stop again.
+A stop under way still says so when the sheet is closed and opened again. Before the first scan
+the sheet says it is still checking, never "Nothing running". A remote host's workspace has no
+Services row yet: its services are on that host.
+
 What they cost and what was left (phase 4):
 
 - **Numbers:** an Inspector row shows CPU (`12%`, tertiary) before its memory, and containers now
@@ -380,8 +392,6 @@ What they cost and what was left (phase 4):
 Not built: sparklines (the design's 60 samples), Docker's event stream, CPU per member.
 
 To come:
-- **Phone:** a Services sheet; Stop for the owner; Open is desktop-only (D5), since a phone cannot
-  reach the Mac's `localhost` without a daemon proxy (phase 5).
 - **Pane chrome presenters** (plugin-ui.md) see the ports badge's fit in `size.badges.ports` but
   not the ports themselves, so a presenter cannot draw the chip yet.
 
@@ -392,4 +402,9 @@ To come:
 3. **Stop them:** §6, `kelpi kill`, the palette command, the workspace-delete checkbox. Done.
 4. **Cost and leftovers:** CPU from CPU-time deltas, container stats, idle marking, the corner card.
    Done, bar sparklines.
-5. **Beyond the desktop:** the phone sheet; services a repo declares with start and stop commands.
+5. **Beyond the desktop:** the phone sheet. Done.
+
+Not planned: starting services from Kelpi (a saved command per repo with a Start button). A pane
+already starts a server and restarts it with up-arrow, agents reuse a running server through
+`kelpi ps --current --json` (the bundled `kelpi-agentic` skill), and Kelpi writes nothing into
+repos.

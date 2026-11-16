@@ -190,6 +190,11 @@ export interface DaemonSlice {
      * and containers, every category. Null until the first `running-services` message.
      */
     readonly runningServices: RunningServicesState | null;
+    /**
+     * Their live memory and CPU (`running-stats`, phase 4), by service id, sent every scan while a
+     * window is visible. Null until the first one; `liveNumbers` picks it or the list, the newer.
+     */
+    readonly runningStats: RunningStatsState | null;
 }
 
 /**
@@ -197,6 +202,17 @@ export interface DaemonSlice {
  * an uptime keeps counting between broadcasts (`scanClock`).
  */
 export type RunningServicesState = Omit<WsRunningServicesMessage, 'type'> & { readonly receivedAt?: number | undefined };
+
+/** One service's live numbers, as `running-stats` sends them. */
+export interface RunningStat {
+    readonly cpu: number | null;
+    readonly rss: number | null;
+}
+
+export interface RunningStatsState {
+    readonly scannedAt: string | null;
+    readonly byID: ReadonlyMap<string, RunningStat>;
+}
 
 export interface Toast {
     /** `kelpi-<paneID>` for pane notifications: a re-post REPLACES rather than stacks. */
@@ -355,6 +371,8 @@ export interface KelpiActions {
     setOldTerminalHosts(hosts: readonly WsOldTerminalHost[]): void;
     /** `running-services` broadcast. */
     setRunningServices(running: RunningServicesState): void;
+    /** `running-stats` broadcast. */
+    setRunningStats(stats: RunningStatsState): void;
 
     /** `rejection` is the refusal's code; absent keeps the last one (connecting clears it). */
     setConnectionStatus(status: ConnectionStatus, error?: string | null, rejection?: string | null): void;
@@ -430,7 +448,8 @@ function initialDaemonSlice(): DaemonSlice {
         sizeControlOwnerID: null,
         transport: null,
         oldTerminalHosts: [],
-        runningServices: null
+        runningServices: null,
+        runningStats: null
     };
 }
 
@@ -940,6 +959,10 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
 
         setRunningServices(running) {
             set({ daemon: { ...get().daemon, runningServices: running } });
+        },
+
+        setRunningStats(stats) {
+            set({ daemon: { ...get().daemon, runningStats: stats } });
         },
 
         setConnectionStatus(status, error, rejection) {

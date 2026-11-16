@@ -2857,7 +2857,7 @@ Output:
 - `--json`: the `services` array **unwrapped**, compact, sorted keys, exit 0. Each entry carries
   every key of `RunningServiceEntry` (wire-protocol.md §6.11), so scripts may rely on all of
   them.
-- Table (`--no-header` omits the header row), columns `WORKSPACE  SERVICE  PORTS  UP  MEM
+- Table (`--no-header` omits the header row), columns `WORKSPACE  SERVICE  PORTS  UP  MEM  CPU
   STARTED BY  NOTE`:
   - WORKSPACE: `workspace_name`; else `(no workspace)` for an `unattached` service, `(outside
     Kelpi)` for an `outside` one, `-` otherwise. Clipped to 24 characters, the last one `…`.
@@ -2867,7 +2867,10 @@ Output:
     differ from this machine's over the TCP route) in its largest whole unit (`40s`, `12m`,
     `5h`, `11d`); `-` when unknown.
   - MEM: `rss_bytes`, the resident memory of the whole process stack, as `1.4G` (one decimal
-    from 1024 MiB up) or `212M` (whole MiB, at least `1M`); `-` for containers.
+    from 1024 MiB up) or `212M` (whole MiB, at least `1M`); for a container or compose project,
+    Docker's figure once a Kelpi window has had the daemon ask for it, else `-`.
+  - CPU: `cpu_percent`, percent of one core over the last scan interval, as `12%` (`0.3%` under
+    one); `-` when the daemon has no baseline (its first scan, or none in the last 2 minutes).
   - STARTED BY: `agent` for an agent's own port; else the `agent` that started it (`claude`,
     `codex`); else `pane (foreground)` or `pane` for a pane's shell (foreground: Ctrl-C in that
     pane stops it); `compose` for a compose project; `-` otherwise.
@@ -2888,11 +2891,11 @@ required?)`, exit 1 (§6.1).
 
 ```
 $ kelpi ps --all
-WORKSPACE        SERVICE                PORTS                   UP   MEM   STARTED BY         NOTE
-checkout         pnpm run dev:prebuilt  3200 3201 3202 3204 +1  11d  1.4G  claude             runs in ~/kelpi/worktrees/shop/feature-flags; reachable on network
-notes            pnpm start             4400                    2h   212M  pane (foreground)
-(no workspace)   shop-400               54721                   9d   -     compose            in ~/kelpi/worktrees/shop/old-branch/packages (deleted)
-(outside Kelpi)  ollama serve           -                       -    -     -                  in /
+WORKSPACE        SERVICE                PORTS                   UP   MEM   CPU   STARTED BY         NOTE
+checkout         pnpm run dev:prebuilt  3200 3201 3202 3204 +1  11d  1.4G  23%   claude             runs in ~/kelpi/worktrees/shop/feature-flags; reachable on network
+notes            pnpm start             4400                    2h   212M  0.3%  pane (foreground)
+(no workspace)   shop-400               54721                   9d   -     -     compose            in ~/kelpi/worktrees/shop/old-branch/packages (deleted)
+(outside Kelpi)  ollama serve           -                       -    -     -     -                  in /
 ```
 
 ```bash

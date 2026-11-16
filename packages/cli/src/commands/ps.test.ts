@@ -13,7 +13,7 @@ vi.mock('../transport.js', async (original) => ({
 
 import { setEnv } from '../env.js';
 import { resetIO, setIO } from '../io.js';
-import { ageLabel, memoryLabel, printServicesTable } from '../table.js';
+import { ageLabel, cpuLabel, memoryLabel, printServicesTable } from '../table.js';
 import { handlePs } from './ps.js';
 
 const PANE = '9C2B9A2E-1111-2222-3333-444455556666';
@@ -34,6 +34,7 @@ const TURBO = {
     directory_missing: false,
     started_at: '2026-11-04T05:42:29Z',
     rss_bytes: 1_476_395_008,
+    cpu_percent: 23.4,
     ports: [3200, 3201, 3202, 3204, 54536].map((port) => ({ port, address: '*', exposed: port === 3200 }))
 };
 
@@ -67,6 +68,7 @@ const NOTES = {
     directory_workspace_id: 'W2',
     started_at: '2026-11-15T07:00:00Z',
     rss_bytes: 222_298_112,
+    cpu_percent: 0.3,
     ports: [{ port: 4400, address: '127.0.0.1', exposed: false }]
 };
 
@@ -154,11 +156,11 @@ describe('printServicesTable', () => {
         setIO({ out: (text) => (out += text), err: () => undefined });
         printServicesTable([TURBO, NOTES, LEFTOVER, OLLAMA], false, '/Users/x', NOW);
         expect(out.split('\n')).toEqual([
-            'WORKSPACE        SERVICE                PORTS                   UP   MEM   STARTED BY         NOTE',
-            'checkout         pnpm run dev:prebuilt  3200 3201 3202 3204 +1  11d  1.4G  claude             runs in ~/kelpi/worktrees/shop/feature-flags; reachable on network',
-            'notes            pnpm start             4400                    2h   212M  pane (foreground)',
-            '(no workspace)   shop-400               54721                   9d   -     compose            in ~/kelpi/worktrees/shop/old-branch/packages (deleted)',
-            '(outside Kelpi)  ollama serve           -                       -    -     -                  in /',
+            'WORKSPACE        SERVICE                PORTS                   UP   MEM   CPU   STARTED BY         NOTE',
+            'checkout         pnpm run dev:prebuilt  3200 3201 3202 3204 +1  11d  1.4G  23%   claude             runs in ~/kelpi/worktrees/shop/feature-flags; reachable on network',
+            'notes            pnpm start             4400                    2h   212M  0.3%  pane (foreground)',
+            '(no workspace)   shop-400               54721                   9d   -     -     compose            in ~/kelpi/worktrees/shop/old-branch/packages (deleted)',
+            '(outside Kelpi)  ollama serve           -                       -    -     -     -                  in /',
             ''
         ]);
     });
@@ -166,7 +168,7 @@ describe('printServicesTable', () => {
     it('never passes a control character from a name to the terminal', () => {
         setIO({ out: (text) => (out += text), err: () => undefined });
         printServicesTable([{ name: 'evil\u001b]0;pwned\u0007', category: 'outside', started_by: 'unknown', ports: [] }], true, '/Users/x', NOW);
-        expect(out).toBe('(outside Kelpi)  evil?]0;pwned?  -  -  -  -\n');
+        expect(out).toBe('(outside Kelpi)  evil?]0;pwned?  -  -  -  -  -\n');
     });
 
     it('formats ages and memory', () => {
@@ -178,5 +180,9 @@ describe('printServicesTable', () => {
         expect(memoryLabel(1024)).toBe('1M');
         expect(memoryLabel(512 * 1_048_576)).toBe('512M');
         expect(memoryLabel(1536 * 1_048_576)).toBe('1.5G');
+        expect(cpuLabel(undefined)).toBe('-');
+        expect(cpuLabel(0)).toBe('0%');
+        expect(cpuLabel(0.34)).toBe('0.3%');
+        expect(cpuLabel(123.6)).toBe('124%');
     });
 });

@@ -8,7 +8,8 @@
 
 import { useMemo, useRef, type CSSProperties, type ReactElement } from 'react';
 
-import { useCornerLayer, type CornerAction, type CornerContent, type CornerOldHosts, type CornerToast } from './corner-layer';
+import { useCornerLayer, type CornerAction, type CornerContent, type CornerLeftovers, type CornerOldHosts, type CornerToast } from './corner-layer';
+import { LeftoverServicesNotice } from './LeftoverServicesNotice';
 import { useOverlayPresence } from './modal-presence';
 import { OldTerminalHostNotice } from './OldTerminalHostNotice';
 import { tokens } from './tokens';
@@ -25,6 +26,11 @@ export interface ToastCardsProps {
     readonly onDismiss: (id: string) => void;
     readonly onRestartOldHosts: () => void;
     readonly onLaterOldHosts: () => void;
+    /** docs/running-services.md §7: stacks left by deleted worktrees, or null. */
+    readonly leftovers?: CornerLeftovers | null | undefined;
+    readonly onLaterLeftovers?: (() => void) | undefined;
+    readonly onReviewLeftovers?: (() => void) | undefined;
+    readonly onStopLeftovers?: (() => void) | undefined;
 }
 
 export function ToastCards(props: ToastCardsProps): ReactElement {
@@ -63,6 +69,15 @@ export function ToastCards(props: ToastCardsProps): ReactElement {
                     onLater={props.onLaterOldHosts}
                 />
             )}
+            {props.leftovers === null || props.leftovers === undefined ? null : (
+                <LeftoverServicesNotice
+                    groups={props.leftovers.groups}
+                    canReview={props.leftovers.canReview}
+                    onLater={() => props.onLaterLeftovers?.()}
+                    onReview={() => props.onReviewLeftovers?.()}
+                    onStop={() => props.onStopLeftovers?.()}
+                />
+            )}
         </>
     );
 }
@@ -87,17 +102,35 @@ const DRAWN_BY_LAYER: CSSProperties = { opacity: 0 };
 export function ToastStack(props: ToastCardsProps): ReactElement | null {
     const root = useRef<HTMLDivElement | null>(null);
     const { toasts, oldHosts } = props;
+    const leftovers = props.leftovers ?? null;
     const content = useMemo<CornerContent | null>(
         () =>
-            toasts.length === 0 && oldHosts === null
+            toasts.length === 0 && oldHosts === null && leftovers === null
                 ? null
-                : { toasts: toasts.map(cornerToast), oldHosts },
-        [toasts, oldHosts]
+                : { toasts: toasts.map(cornerToast), oldHosts, leftovers },
+        [toasts, oldHosts, leftovers]
     );
     const onAction = (action: CornerAction): void => {
-        if (action.kind === 'dismiss') props.onDismiss(action.id);
-        else if (action.kind === 'restart-old-hosts') props.onRestartOldHosts();
-        else props.onLaterOldHosts();
+        switch (action.kind) {
+            case 'dismiss':
+                props.onDismiss(action.id);
+                return;
+            case 'restart-old-hosts':
+                props.onRestartOldHosts();
+                return;
+            case 'later-old-hosts':
+                props.onLaterOldHosts();
+                return;
+            case 'later-leftovers':
+                props.onLaterLeftovers?.();
+                return;
+            case 'review-leftovers':
+                props.onReviewLeftovers?.();
+                return;
+            case 'stop-leftovers':
+                props.onStopLeftovers?.();
+                return;
+        }
     };
     const layer = useCornerLayer(root, content, onAction);
     /*

@@ -368,4 +368,17 @@ describe('palette feature source', () => {
         expect(stop).toHaveBeenCalledWith([services[0]]);
         off();
     });
+
+    it('offers Show Leftover Services only while a deleted worktree still runs something', async () => {
+        const h = fixture();
+        const show = vi.fn();
+        const source = createPaletteFeatureSource({ ...h.host, showLeftoverServices: show });
+        const row = () => source.snapshot().items.find((item) => item.id === 'cmd:leftover-services');
+        expect(row()).toBeUndefined();
+        const left = { id: 'compose:old', name: 'old', category: 'unattached', directory_missing: true, workspace_name: null, ports: [] } as unknown as RunningServiceEntry;
+        h.store.getState().setRunningServices({ services: [left], scannedAt: null, warnings: [] });
+        expect(row()?.title).toBe('Show Leftover Services…');
+        await source.execute('cmd:leftover-services', {});
+        expect(show).toHaveBeenCalledTimes(1);
+    });
 });

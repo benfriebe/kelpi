@@ -12,6 +12,7 @@ import {
     parseDockerContainers,
     parseLsofCwd,
     parseLsofListen,
+    parseCpuTime,
     parsePsTable,
     programName,
     splitHostPort
@@ -24,9 +25,9 @@ const utc = (year: number, month: number, day: number, h: number, m: number, s: 
 describe('parsePsTable', () => {
     it('reads the columns, a single-digit day and a command line with spaces (macOS)', () => {
         const text = [
-            '  872     1   872     0 483648 Wed Oct 21 10:01:45 2026     /Applications/Kelpi.app/Contents/Resources/node /Users/x/Library/Application Support/kelpid/terminal-host.js',
-            '56153 56146 56097     0  46416 Wed Nov  4 16:42:29 2026     next-server (v15.5.28)',
-            '44552   872 44552 45027  2048 Mon Nov  2 12:24:55 2026     /bin/zsh -l'
+            '  872     1   872     0 483648 257:14.93 Wed Oct 21 10:01:45 2026     /Applications/Kelpi.app/Contents/Resources/node /Users/x/Library/Application Support/kelpid/terminal-host.js',
+            '56153 56146 56097     0  46416   0:26.04 Wed Nov  4 16:42:29 2026     next-server (v15.5.28)',
+            '44552   872 44552 45027  2048 1-02:03:04 Mon Nov  2 12:24:55 2026     /bin/zsh -l'
         ].join('\n');
         expect(parsePsTable(text)).toEqual([
             {
@@ -35,6 +36,7 @@ describe('parsePsTable', () => {
                 pgid: 872,
                 tpgid: 0,
                 rssBytes: 483_648 * 1024,
+                cpuSeconds: 257 * 60 + 14.93,
                 startedAt: utc(2026, 9, 21, 10, 1, 45),
                 args: '/Applications/Kelpi.app/Contents/Resources/node /Users/x/Library/Application Support/kelpid/terminal-host.js'
             },
@@ -44,6 +46,7 @@ describe('parsePsTable', () => {
                 pgid: 56097,
                 tpgid: 0,
                 rssBytes: 46_416 * 1024,
+                cpuSeconds: 26.04,
                 startedAt: utc(2026, 10, 4, 16, 42, 29),
                 args: 'next-server (v15.5.28)'
             },
@@ -53,6 +56,7 @@ describe('parsePsTable', () => {
                 pgid: 44552,
                 tpgid: 45027,
                 rssBytes: 2048 * 1024,
+                cpuSeconds: 86_400 + 2 * 3600 + 3 * 60 + 4,
                 startedAt: utc(2026, 10, 2, 12, 24, 55),
                 args: '/bin/zsh -l'
             }
@@ -60,10 +64,19 @@ describe('parsePsTable', () => {
     });
 
     it("reads Linux procps's -1 tpgid as no terminal, and a zombie's empty command", () => {
-        const rows = parsePsTable('  4242     1  4242    -1      0 Sat Nov 14 09:00:00 2026\n');
+        const rows = parsePsTable('  4242     1  4242    -1      0 00:00:00 Sat Nov 14 09:00:00 2026\n');
         expect(rows).toEqual([
-            { pid: 4242, ppid: 1, pgid: 4242, tpgid: 0, rssBytes: 0, startedAt: utc(2026, 10, 14, 9, 0, 0), args: '' }
+            { pid: 4242, ppid: 1, pgid: 4242, tpgid: 0, rssBytes: 0, cpuSeconds: 0, startedAt: utc(2026, 10, 14, 9, 0, 0), args: '' }
         ]);
+    });
+
+    it("reads macOS's and Linux's CPU time, and keeps the row when it cannot", () => {
+        expect(parseCpuTime('0:01.50')).toBe(1.5);
+        expect(parseCpuTime('117:46.77')).toBeCloseTo(117 * 60 + 46.77);
+        expect(parseCpuTime('01:02:03')).toBe(3723);
+        expect(parseCpuTime('2-00:00:01')).toBe(172_801);
+        expect(parseCpuTime('-')).toBe(0);
+        expect(parsePsTable('  7     1     7     0     8 ?? Sat Nov 14 09:00:00 2026     odd\n')).toMatchObject([{ pid: 7, cpuSeconds: 0, args: 'odd' }]);
     });
 
     it('skips lines that are not rows', () => {

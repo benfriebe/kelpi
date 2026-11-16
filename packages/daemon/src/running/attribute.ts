@@ -23,6 +23,7 @@ import {
     isShellCommandWrapper,
     programName
 } from './parse.js';
+import type { ContainerNumbers } from './container-stats.js';
 import type {
     ContainerRow,
     ListenSocket,
@@ -222,6 +223,10 @@ export interface BuildInput extends PlanInput {
     /** The folders each known repo's worktrees are created in. */
     readonly worktreeBases?: readonly string[] | undefined;
     readonly pathExists: (path: string) => boolean;
+    /** CPU per pid over the last interval (`cpu.ts`); null or absent with no baseline. */
+    readonly cpuByPid?: ReadonlyMap<number, number> | null | undefined;
+    /** A container's last known memory and CPU (`container-stats.ts`); absent knows none. */
+    readonly containerNumbers?: ((id: string) => ContainerNumbers | null) | undefined;
 }
 
 function parentOf(path: string): string {
@@ -395,9 +400,22 @@ function processService(
         pid: root.pid,
         processCount: stackPids.length,
         rssBytes,
+        cpuPercent: cpuOf(stackPids, input.cpuByPid),
         ports: mergePorts(members.flatMap((member) => member.ports)),
         members
     };
+}
+
+/** A stack's CPU: its processes' rates summed, over the same set its memory sums. */
+function cpuOf(pids: readonly number[], rates: ReadonlyMap<number, number> | null | undefined): number | null {
+    if (rates === null || rates === undefined) return null;
+    return pids.reduce((sum, pid) => sum + (rates.get(pid) ?? 0), 0);
+}
+
+/** A project's total from the containers that answered; null when none did. */
+function sumKnown(values: readonly (number | null)[]): number | null {
+    const known = values.filter((value): value is number => value !== null);
+    return known.length === 0 ? null : known.reduce((sum, value) => sum + value, 0);
 }
 
 function mostCommon(values: readonly string[]): string | null {
@@ -444,7 +462,8 @@ function containerService(
     }
     const missing = directory !== null && !input.pathExists(directory);
     const directoryWorkspace = workspaceForPath(directory, input.workspaces, owner);
-    const members: ServiceMember[] = sorted.map((row) => ({
+    const numbers = sorted.map((row) => input.containerNumbers?.(row.id.slice(0, 12)) ?? null);
+    const members: ServiceMember[] = sorted.map((row, index) => ({
         name: row.service ?? row.name,
         pid: null,
         containerID: row.id.slice(0, 12),
@@ -458,7 +477,7 @@ function containerService(
                 containerPort: port.containerPort
             }))
         ),
-        rssBytes: null
+        rssBytes: numbers[index]?.rssBytes ?? null
     }));
     const first = sorted[0] as ContainerRow;
     const startedAt = Math.min(...sorted.map((row) => row.createdAt).filter((value) => value > 0));
@@ -485,7 +504,8 @@ function containerService(
         startedAt: Number.isFinite(startedAt) ? startedAt : null,
         pid: null,
         processCount: sorted.length,
-        rssBytes: null,
+        rssBytes: sumKnown(numbers.map((entry) => entry?.rssBytes ?? null)),
+        cpuPercent: sumKnown(numbers.map((entry) => entry?.cpuPercent ?? null)),
         ports: mergePorts(members.flatMap((member) => member.ports)),
         members
     };

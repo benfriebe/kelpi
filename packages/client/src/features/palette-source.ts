@@ -98,6 +98,8 @@ export interface PaletteFeatureHost {
      * worktree runs (never what was started outside Kelpi, which would flood the list). Asks first.
      */
     readonly stopServices?: ((services: readonly RunningServiceEntry[]) => void) | undefined;
+    /** Phase 4: bring back the card for stacks left by deleted worktrees, after its Later. */
+    readonly showLeftoverServices?: (() => void) | undefined;
 }
 
 export interface PaletteArrangementHost {
@@ -259,6 +261,19 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
                               }
                           )
                       );
+        const showLeftovers = host.showLeftoverServices;
+        const leftoverEntries: PaletteEntry[] =
+            showLeftovers === undefined ||
+            !(host.runtime.store.getState().daemon.runningServices?.services ?? []).some(
+                (service) => service.category === 'unattached' && service.directory_missing
+            )
+                ? []
+                : [
+                      commandEntry('cmd:leftover-services', 'terminal', 'Show Leftover Services…',
+                          'stacks still running after their worktree was deleted', undefined, () => {
+                              showLeftovers();
+                          })
+                  ];
         return [
             ...host.plugins.menu('palette').map((menu): PaletteEntry => ({
                 item: {
@@ -327,6 +342,7 @@ export function createPaletteFeatureSource(ref: PaletteFeatureHostRef): PaletteF
             ...muteEntries,
             ...oldHostEntries,
             ...serviceEntries,
+            ...leftoverEntries,
             ...arrangementEntries(host.arrangement, hint),
             // ⌘, is not a bindable action (assembly dispatches it from its own listener), so the hint
             // is literal rather than a lookup that would answer `undefined` forever.

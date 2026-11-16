@@ -30,6 +30,7 @@ export function statusbarModel(state: KelpiState, associations: readonly FooterA
         homeDirectory: state.daemon.info?.home,
         // docs/running-services.md §7: the footer's services chip.
         running: state.daemon.runningServices,
+        runningStats: state.daemon.runningStats,
         runningLooks: workspaceLooks(state.daemon.state.workspaces),
         bucketItems: (bucket: AgentBucket) => statusItems(state.daemon.state.workspaces, bucket) };
 }
@@ -76,8 +77,11 @@ export function useStatusbarActions(host: StatusbarActionHost) {
 export function bindStatusbarFeature(input: { model: ReturnType<typeof statusbarModel>; presentation: Pick<StatusFooterProps, 'bucket'>;
     contributions: ReactNode; contributionsKey: string; selectPane(workspaceID: string, paneID: string): void;
     openServicePort?: StatusFooterProps['onOpenServicePort']; selectWorkspace?: StatusFooterProps['onSelectWorkspace'];
-    stopServices?: StatusFooterProps['onStopServices'] }): BundledFeatureBinding {
+    stopServices?: StatusFooterProps['onStopServices'];
+    /** Bumped to open the services popover (the leftovers card's Review). */
+    openServicesRequest?: number }): BundledFeatureBinding {
     return { definition: STATUSBAR_FEATURE, render: () => <StatusFooter {...input.model} {...input.presentation}
         contributions={input.contributions} contributionsKey={input.contributionsKey} onSelectPane={input.selectPane}
-        onOpenServicePort={input.openServicePort} onSelectWorkspace={input.selectWorkspace} onStopServices={input.stopServices} /> };
+        onOpenServicePort={input.openServicePort} onSelectWorkspace={input.selectWorkspace} onStopServices={input.stopServices}
+        runningOpenRequest={input.openServicesRequest} /> };
 }

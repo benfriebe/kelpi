@@ -30,7 +30,8 @@ import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
 import { useOverlayPresence } from './modal-presence';
 import { RunningServicesChip } from './RunningServicesChip';
-import { scanClock, type WorkspaceLook } from './running';
+import { liveNumbers, scanClock, type WorkspaceLook } from './running';
+import type { RunningStatsState } from '../state/store';
 import { Sparkline, SystemStatGauge, type SparklineStyle } from './SystemStatGauge';
 import { systemStatMeta, visibleStatKinds } from './stats';
 import {
@@ -265,6 +266,10 @@ export interface StatusFooterProps {
         | undefined;
     /** Each workspace's color and icon, for the popover's avatars. */
     readonly runningLooks?: ReadonlyMap<string, WorkspaceLook> | undefined;
+    /** Phase 4: the live numbers (`running-stats`), which the popover's memory reads. */
+    readonly runningStats?: RunningStatsState | null | undefined;
+    /** Bumped to open the services popover (the leftovers card's Review). */
+    readonly runningOpenRequest?: number | undefined;
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     readonly onSelectWorkspace?: ((workspaceID: string) => void) | undefined;
     /** docs/running-services.md §6: the popover's Stop, which asks first. */
@@ -952,6 +957,8 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                             onOpenPort={props.onOpenServicePort}
                             onSelectWorkspace={props.onSelectWorkspace}
                             onStop={props.onStopServices}
+                            numbers={(service) => liveNumbers(service, props.runningStats, props.running?.scannedAt ?? null)}
+                            openRequest={props.runningOpenRequest}
                         />
                     )}
                     <CountItem

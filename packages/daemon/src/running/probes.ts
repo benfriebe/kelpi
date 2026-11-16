@@ -231,6 +231,11 @@ export function dockerPost(socketPath: string, path: string, timeoutMs: number):
     });
 }
 
+/** `GET path` on the Docker engine's socket, parsed: the stats requests (`container-stats.ts`). */
+export function dockerGet(socketPath: string, path: string, timeoutMs: number): Promise<unknown> {
+    return getJSON(socketPath, path, timeoutMs);
+}
+
 function getJSON(socketPath: string, path: string, timeoutMs: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
         const req = request({ socketPath, path, method: 'GET', timeout: timeoutMs, headers: { Host: 'docker' } }, (res) => {

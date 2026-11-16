@@ -25,7 +25,7 @@ import { activationAppliesHere, parseShellActivation } from './activation';
 import { createAgentLaunchHandler, type AgentLaunchHandlerOptions } from './agent-launch';
 import { createClipboardWriteHandler, type ClipboardWriteHandlerOptions } from './clipboard';
 import { createNotificationManager, type NotificationManager } from './notifications';
-import { useKelpiStore, type KelpiStoreApi } from './store';
+import { useKelpiStore, type KelpiStoreApi, type RunningStat } from './store';
 
 /**
  * A rejection that says "your token is wrong", in either dialect: the typed `reason` a current
@@ -132,6 +132,24 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             if (message['type'] !== 'old-terminal-hosts') return;
             const hosts = message['hosts'];
             store.getState().setOldTerminalHosts(Array.isArray(hosts) ? (hosts as never) : []);
+        })
+    );
+
+    offs.push(
+        // Running services' live numbers (phase 4): sent every scan while a window is visible.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'running-stats') return;
+            const scannedAt = message['scannedAt'];
+            const stats = message['stats'];
+            const byID = new Map<string, RunningStat>();
+            const number = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+            for (const entry of Array.isArray(stats) ? stats : []) {
+                if (typeof entry !== 'object' || entry === null) continue;
+                const record = entry as Record<string, unknown>;
+                if (typeof record['id'] !== 'string') continue;
+                byID.set(record['id'], { cpu: number(record['cpu_percent']), rss: number(record['rss_bytes']) });
+            }
+            store.getState().setRunningStats({ scannedAt: typeof scannedAt === 'string' ? scannedAt : null, byID });
         })
     );
 

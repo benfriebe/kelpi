@@ -36,7 +36,8 @@ import { remoteWorkspaceOf, tabTargetFor, useRemoteWorkspace, type TabTarget } f
 import { actionsDuringGesture, createRecentSwitcher, heldModifiersFromEvent } from './app/recent-switcher';
 import { commitTarget, createActivationSequence, recentWorkspaceOrder } from './app/recent-workspaces';
 import { RecentWorkspaceSwitcherHost } from './chrome/RecentWorkspaceSwitcher';
-import { portURL, runningByWorkspace, runningFor } from './chrome/running';
+import { liveNumbers, portURL, runningByWorkspace, runningFor } from './chrome/running';
+import { leftoverCardGroups, nextLeftoverGraceAt, readLaterLeftovers, writeLaterLeftovers } from './chrome/LeftoverServicesNotice';
 import { StopServicesDialog, stopPromptFor, type StopPrompt } from './chrome/StopServicesDialog';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
@@ -4077,6 +4078,10 @@ function Shell(props: AppProps): ReactElement {
         stopServices: (services) => {
             requestStop(services);
         },
+        // Phase 4: the leftovers card again, after its Later. Read when picked, like the stop.
+        showLeftoverServices: () => {
+            showLeftoverServices();
+        },
         // Desktop only: the phone shell draws no root band, so there is nothing to arrange.
         arrangement: phoneActive ? null : {
             current: () => workbench.arrangement,
@@ -4185,6 +4190,62 @@ function Shell(props: AppProps): ReactElement {
         const running = runningFor(runningByWorkspace(current.daemon.runningServices?.services ?? []), workspaceID);
         requestStop(running?.services ?? [], workspace === undefined ? undefined : `in ${workspace.name}`);
     }, [requestStop, store]);
+
+    // ── docs/running-services.md §7: the card for stacks left by deleted worktrees (D7) ──────
+    /*
+     * Only groups whose worktree folder is gone (a server in a repo's main checkout that no
+     * workspace owns is `unattached` too, and deliberate). A stack must have been listed for
+     * `LEFTOVER_GRACE_MS` first, so the card does not flash while a delete's "Also stop" is still
+     * stopping what the delete left. Later is per viewer and per worktree.
+     */
+    const [laterLeftovers, setLaterLeftovers] = useState<readonly string[]>(readLaterLeftovers);
+    /** Worktrees reviewed in the popover this session: the card would sit on the list it opened. */
+    const [reviewedLeftovers, setReviewedLeftovers] = useState<readonly string[]>([]);
+    const leftoverFirstSeen = useRef(new Map<string, number>());
+    /** Bumped when a leftover stack comes out of its grace, so the card is looked at again then. */
+    const [leftoverGraceTick, setLeftoverGraceTick] = useState(0);
+    const [servicesPopoverRequest, setServicesPopoverRequest] = useState(0);
+    const runningList = daemon.runningServices;
+    const runningLive = daemon.runningStats;
+    const statusbarShown = workbench.arrangement.visible.statusbar;
+    const leftoverCard = useMemo(() => {
+        const memoryOf = (services: readonly RunningServiceEntry[]): number | null => {
+            const known = services.map(service => liveNumbers(service, runningLive, runningList?.scannedAt ?? null).rss).filter((rss): rss is number => rss !== null);
+            return known.length === 0 ? null : known.reduce((sum, rss) => sum + rss, 0);
+        };
+        // The grace's clock is the store: the live numbers change it every 10 s while visible.
+        const card = leftoverCardGroups(runningList?.services ?? [], leftoverFirstSeen.current, [...laterLeftovers, ...reviewedLeftovers], Date.now(), memoryOf);
+        return card === null ? null : { content: { groups: card.groups, canReview: statusbarShown }, services: card.services };
+        // `leftoverGraceTick` is the clock: a stack's grace ending is not a store change.
+    }, [runningList, runningLive, laterLeftovers, reviewedLeftovers, statusbarShown, leftoverGraceTick]);
+    useEffect(() => {
+        const next = nextLeftoverGraceAt(leftoverFirstSeen.current, Date.now());
+        if (next === null) return undefined;
+        const timer = setTimeout(() => setLeftoverGraceTick(tick => tick + 1), next - Date.now() + 50);
+        return () => clearTimeout(timer);
+    }, [runningList, leftoverGraceTick]);
+    const laterLeftoverCard = useCallback((): void => {
+        if (leftoverCard === null) return;
+        const keys = [...new Set([...laterLeftovers, ...leftoverCard.content.groups.map(group => group.key)])];
+        setLaterLeftovers(keys);
+        writeLaterLeftovers(keys);
+    }, [laterLeftovers, leftoverCard]);
+    const stopLeftoverCard = useCallback((): void => {
+        if (leftoverCard === null) return;
+        const groups = leftoverCard.content.groups;
+        requestStop(leftoverCard.services, groups.length === 1 ? `left in ${groups[0]?.name ?? ''}` : `left in ${String(groups.length)} deleted worktrees`);
+    }, [leftoverCard, requestStop]);
+    const reviewLeftoverCard = useCallback((): void => {
+        // The popover lists them now; the card would only cover it. Not remembered: next session,
+        // or another worktree's stacks, bring it back.
+        if (leftoverCard !== null) setReviewedLeftovers(keys => [...new Set([...keys, ...leftoverCard.content.groups.map(group => group.key)])]);
+        setServicesPopoverRequest(request => request + 1);
+    }, [leftoverCard]);
+    const showLeftoverServices = useCallback((): void => {
+        setLaterLeftovers([]);
+        setReviewedLeftovers([]);
+        writeLaterLeftovers([]);
+    }, []);
     /** The pane header chip's port, beside its own pane; stable so `memo(PaneHeader)` holds. */
     const openPanePort = useCallback((paneID: string, port: RunningServicePort): void => {
         act.openLinkInWebPane(paneID, portURL(port));
@@ -5236,6 +5297,7 @@ function Shell(props: AppProps): ReactElement {
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
                     profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket,
                     running: daemon.runningServices, homeDirectory: daemon.info?.home ?? '', openServicePort, stopService,
+                    runningStats: daemon.runningStats, workspaces: daemon.state.workspaces,
                     // #283: Add Repository ▸ Choose…, desktop app only (see `browseForFolder`).
                     ...(browseForFolder === undefined ? {} : { onBrowseForFolder: browseForFolder }) }),
                 bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null, tabs: tabBar, leadWidth: tabLeadWidth, leadAnimated: tabLeadAnimated },
@@ -5243,7 +5305,8 @@ function Shell(props: AppProps): ReactElement {
                 bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
                     contributionsKey: JSON.stringify(pluginCommands.items('statusbar')), selectPane: (workspaceID, paneID) => executeChrome('kelpi.pane.focus', { workspaceID, paneID }),
                     // docs/running-services.md §7: the footer's services popover.
-                    openServicePort, selectWorkspace: selectWorkspaceByWireID, stopServices: requestStop })
+                    openServicePort, selectWorkspace: selectWorkspaceByWireID, stopServices: requestStop,
+                    openServicesRequest: servicesPopoverRequest })
             ]}>
         <div
             data-testid="kelpi-app"
@@ -5972,6 +6035,10 @@ function Shell(props: AppProps): ReactElement {
                 onDismiss={clickToast}
                 onRestartOldHosts={restartOldTerminals}
                 onLaterOldHosts={laterOldTerminals}
+                leftovers={leftoverCard?.content ?? null}
+                onLaterLeftovers={laterLeftoverCard}
+                onReviewLeftovers={reviewLeftoverCard}
+                onStopLeftovers={stopLeftoverCard}
             />
         </div>
         </WorkbenchProvider>

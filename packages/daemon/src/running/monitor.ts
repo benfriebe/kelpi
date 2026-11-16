@@ -5,14 +5,23 @@
  * finished a turn, say). A `running-services` message goes out when the list changes and is
  * kept for replay on attach.
  *
- * Memory is compared to the MiB, so a server whose resident size wobbles by a few pages does not
- * rebroadcast the whole list on every scan.
+ * The list never changes for CPU, and for memory only in 10% steps. The live numbers go in
+ * `running-stats` (phase 4), after every scan while a window is visible; the scan loop is also what refreshes containers' Docker
+ * stats then, off the scan's own path, so `kelpi ps` and a stop never wait on Docker. The latest
+ * numbers are kept for replay whether or not they were sent.
  */
 
-import { WS_RUNNING_SERVICES_MESSAGE, type RunningServiceEntry, type WsRunningServicesMessage } from '@kelpi/protocol';
+import {
+    WS_RUNNING_SERVICES_MESSAGE,
+    WS_RUNNING_STATS_MESSAGE,
+    type RunningServiceEntry,
+    type WsRunningServicesMessage,
+    type WsRunningStatsMessage
+} from '@kelpi/protocol';
 
 import { wireTimestamp } from '../handlers/app/common.js';
-import { toWireService } from './handlers.js';
+import type { ContainerStats } from './container-stats.js';
+import { toWireService, wireCpu } from './handlers.js';
 import type { RunningScanner } from './scanner.js';
 
 export const RUNNING_VISIBLE_INTERVAL_MS = 10_000;
@@ -30,7 +39,9 @@ export interface RunningPresence {
 export interface RunningMonitorOptions {
     readonly scanner: RunningScanner;
     readonly presence: () => RunningPresence;
-    readonly broadcast: (message: WsRunningServicesMessage) => void;
+    readonly broadcast: (message: WsRunningServicesMessage | WsRunningStatsMessage) => void;
+    /** Containers' Docker stats, refreshed after a scan while a window is visible. */
+    readonly containerStats?: ContainerStats | undefined;
     readonly now?: (() => number) | undefined;
     readonly onError?: ((error: unknown) => void) | undefined;
     /** Tests drive `tick` themselves. */
@@ -40,6 +51,8 @@ export interface RunningMonitorOptions {
 export interface RunningMonitor {
     /** The last list, for replay on attach; an empty one before the first scan. */
     current(): WsRunningServicesMessage;
+    /** The latest numbers, for replay after `current()`; empty before the first scan. */
+    currentStats(): WsRunningStatsMessage;
     /** Scan about a second from now, if anyone is attached. */
     poke(): void;
     /** One turn of the loop (the timer calls it; tests call it directly). */
@@ -47,16 +60,19 @@ export interface RunningMonitor {
     dispose(): void;
 }
 
-const MIB = 1_048_576;
-
-/** What counts as a change: everything but memory below a MiB. */
+/**
+ * What counts as a change. CPU never does, and memory only in 10% steps: the list stays close
+ * enough for a tooltip or a dialog's figure without being resent every scan, and the live numbers
+ * travel in `running-stats`.
+ */
 function changeKey(services: readonly RunningServiceEntry[], warnings: readonly string[]): string {
-    const coarse = (bytes: number | null): number | null => (bytes === null ? null : Math.round(bytes / MIB));
+    const coarse = (bytes: number | null): number | null => (bytes === null || bytes <= 0 ? bytes : Math.round(Math.log(bytes) / Math.log(1.1)));
     return JSON.stringify({
         warnings,
         services: services.map((service) => ({
             ...service,
             rss_bytes: coarse(service.rss_bytes),
+            cpu_percent: null,
             members: service.members.map((member) => ({ ...member, rss_bytes: coarse(member.rss_bytes) }))
         }))
     });
@@ -65,6 +81,7 @@ function changeKey(services: readonly RunningServiceEntry[], warnings: readonly 
 export function createRunningMonitor(options: RunningMonitorOptions): RunningMonitor {
     const now = options.now ?? (() => Date.now());
     let current: WsRunningServicesMessage = { type: WS_RUNNING_SERVICES_MESSAGE, services: [], scannedAt: null, warnings: [] };
+    let currentStats: WsRunningStatsMessage = { type: WS_RUNNING_STATS_MESSAGE, scannedAt: null, stats: [] };
     let announced = changeKey([], []);
     let lastScanAt = Number.NEGATIVE_INFINITY;
     /** A pending poke: when it is due, and when it was asked for (the scan must start after). */
@@ -99,6 +116,23 @@ export function createRunningMonitor(options: RunningMonitorOptions): RunningMon
                 announced = key;
                 options.broadcast(current);
             }
+            // Only for the containers of the workspaces' and leftover worktrees' services, and
+            // only while someone can see them: a refresh asks Docker about each one.
+            if (presence.anyVisible && options.containerStats !== undefined) {
+                const ids = scan.services
+                    .filter((service) => service.category === 'workspace' || service.category === 'unattached')
+                    .flatMap((service) => service.members.map((member) => member.containerID))
+                    .filter((id): id is string => id !== null);
+                if (ids.length > 0) await options.containerStats.refresh(ids);
+            }
+            // The scan's own numbers: a container's are from the refresh before this one, one scan
+            // interval behind, which is all the precision a 10-second figure has.
+            currentStats = {
+                type: WS_RUNNING_STATS_MESSAGE,
+                scannedAt: current.scannedAt,
+                stats: scan.services.map((service) => ({ id: service.id, cpu_percent: wireCpu(service.cpuPercent), rss_bytes: service.rssBytes }))
+            };
+            if (presence.anyVisible && !disposed) options.broadcast(currentStats);
         } catch (error) {
             options.onError?.(error);
         } finally {
@@ -111,6 +145,7 @@ export function createRunningMonitor(options: RunningMonitorOptions): RunningMon
 
     return {
         current: () => current,
+        currentStats: () => currentStats,
         poke() {
             const at = now();
             poked = poked === null ? { due: at + RUNNING_POKE_DELAY_MS, since: at } : { due: poked.due, since: Math.max(poked.since, at) };

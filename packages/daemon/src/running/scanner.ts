@@ -10,6 +10,8 @@
 
 import { buildServices, planProcessStacks } from './attribute.js';
 import { PROBE_TIMEOUT_MS, type RunningProbes } from './probes.js';
+import type { ContainerStats } from './container-stats.js';
+import { createCpuSampler } from './cpu.js';
 import type { ContainerRow, ListenSocket, PaneShellRef, ProcessRow, RunningScan, WorkspaceFolders } from './types.js';
 
 /** How long one scan's answer is reused. */
@@ -65,6 +67,8 @@ export interface RunningScannerOptions {
     readonly cacheMs?: number | undefined;
     /** Per-probe deadline (tests). */
     readonly deadlineMs?: number | undefined;
+    /** Containers' last known memory and CPU, read but never refreshed by a scan. */
+    readonly containerStats?: ContainerStats | undefined;
 }
 
 function describe(error: unknown, probe: string): string {
@@ -80,13 +84,18 @@ export function createRunningScanner(options: RunningScannerOptions): RunningSca
     let last: { readonly scan: RunningScan; readonly startedAt: number } | null = null;
     /** `${pid}:${startedAt}` → working directory. Pruned to the live processes each scan. */
     let cwdCache = new Map<string, string>();
+    const cpu = createCpuSampler();
 
     async function runScan(): Promise<RunningScan> {
         const context = options.context();
         const warnings: string[] = [];
+        // When `ps` ran, for the CPU rates; `scannedAt` is taken at the end.
+        const psAt = now();
+        let psRan = true;
         const [processes, listeners, containers] = await Promise.all([
             withDeadline(probes.processTable(), 'ps', deadlineMs).catch((error: unknown): ProcessRow[] => {
                 warnings.push(describe(error, 'processes'));
+                psRan = false;
                 return [];
             }),
             withDeadline(probes.listeners(), 'lsof', deadlineMs).catch((error: unknown): Map<number, ListenSocket[]> => {
@@ -143,7 +152,10 @@ export function createRunningScanner(options: RunningScannerOptions): RunningSca
                 workspaces: context.workspaces,
                 knownFolders: context.knownFolders,
                 worktreeBases: context.worktreeBases,
-                pathExists: (path) => probes.pathExists(path)
+                pathExists: (path) => probes.pathExists(path),
+                cpuByPid: cpu.sample(psRan ? processes : null, psAt),
+                // Never asked for here: the scan loop refreshes them off this path (§4).
+                containerNumbers: (id) => options.containerStats?.get(id) ?? null
             },
             context.workspaceOrder
         );

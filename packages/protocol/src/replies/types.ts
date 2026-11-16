@@ -514,8 +514,13 @@ export interface RunningServiceEntry {
     readonly pid: number | null;
     /** Processes in the stack, or containers in the project. */
     readonly process_count: number;
-    /** Resident memory summed over the stack's processes; null for containers. */
+    /**
+     * Resident memory summed over the stack's processes; for a container or compose project, what
+     * Docker's stats last said (null until asked, or when none answered).
+     */
     readonly rss_bytes: number | null;
+    /** CPU over the last scan interval, percent of one core (0.1 steps); null with no recent baseline. */
+    readonly cpu_percent: number | null;
     readonly ports: readonly RunningServicePort[];
     readonly members: readonly RunningServiceMember[];
 }

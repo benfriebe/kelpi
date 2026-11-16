@@ -52,6 +52,7 @@ function service(overrides: Partial<RunningServiceEntry> = {}): RunningServiceEn
             { name: 'web', pid: 101, container_id: null, image: null, ports: [], rss_bytes: 100 * MIB },
             { name: 'api', pid: 102, container_id: null, image: null, ports: [], rss_bytes: 100 * MIB }
         ],
+        cpu_percent: null,
         worktree: null,
         ...overrides
     };

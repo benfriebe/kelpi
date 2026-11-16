@@ -20,8 +20,10 @@ import {
     portURL,
     runsElsewhere,
     starterText,
+    cpuText,
     stopLabel,
     uptimeText,
+    type LiveNumbers,
     type WorkspaceRunning
 } from './running';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
@@ -43,6 +45,10 @@ export interface InspectorServicesProps {
     readonly onShowPane?: ((paneID: string) => void) | undefined;
     /** docs/running-services.md §6: ask to stop it, or one member (a process id or container id). */
     readonly onStop?: StopService | undefined;
+    /** Phase 4: a service's memory and CPU now (`liveNumbers`); absent reads the list's own. */
+    readonly numbers?: ((service: RunningServiceEntry) => LiveNumbers) | undefined;
+    /** D7: whole days it has sat idle, or null (`idleDays`); absent marks none. */
+    readonly idle?: ((service: RunningServiceEntry) => number | null) | undefined;
 }
 
 export type StopService = (service: RunningServiceEntry, member?: { readonly id: string; readonly name: string }) => void;
@@ -100,16 +106,24 @@ function ServiceRow(props: {
     readonly onOpenPort?: InspectorServicesProps['onOpenPort'];
     readonly onShowPane?: InspectorServicesProps['onShowPane'];
     readonly onStop?: StopService | undefined;
+    readonly numbers?: InspectorServicesProps['numbers'];
+    readonly idle?: InspectorServicesProps['idle'];
 }): ReactElement {
     const { service } = props;
     const [open, setOpen] = useState(false);
     const unit = service.kind === 'process' ? (service.process_count === 1 ? 'process' : 'processes') : service.process_count === 1 ? 'container' : 'containers';
     const folder = service.directory === null ? null : pathTail(service.directory, props.homeDirectory);
+    const numbers = props.numbers?.(service) ?? { rss: service.rss_bytes, cpu: service.cpu_percent ?? null };
+    const cpu = cpuText(numbers.cpu);
+    const idle = props.idle?.(service) ?? null;
+    const elsewhere = runsElsewhere(service, props.ownsFolders);
     const warning = service.directory_missing
         ? `folder deleted: ${folder ?? ''}`
-        : runsElsewhere(service, props.ownsFolders)
-          ? `runs in ${folder ?? ''}`
-          : null;
+        : idle !== null
+          ? `idle for ${String(idle)} day${idle === 1 ? '' : 's'}${elsewhere ? ` · runs in ${folder ?? ''}` : ''}`
+          : elsewhere
+            ? `runs in ${folder ?? ''}`
+            : null;
     const shown = open ? service.ports : service.ports.slice(0, PORTS_SHOWN);
     const hidden = service.ports.length - shown.length;
     return (
@@ -131,8 +145,13 @@ function ServiceRow(props: {
                         <ChromeIcon name={service.kind === 'process' ? 'terminal' : 'stack'} />
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{service.name}</span>
+                    {cpu === null ? null : (
+                        <span className="shrink-0 font-mono text-[10px]" style={{ color: tokens.textTertiary }} title="CPU over the last scan, percent of one core">
+                            {cpu}
+                        </span>
+                    )}
                     <span className="shrink-0 font-mono text-[10px]" style={{ color: tokens.textSecondary }}>
-                        {service.rss_bytes === null ? '' : memoryText(service.rss_bytes)}
+                        {numbers.rss === null ? '' : memoryText(numbers.rss)}
                     </span>
                 </button>
                 {props.onStop === undefined ? null : (
@@ -228,7 +247,8 @@ export function InspectorServices(props: InspectorServicesProps): ReactElement {
         );
     }
     const ports = props.running?.portCount ?? 0;
-    const memory = props.running?.rssBytes ?? 0;
+    // Live where `running-stats` has the numbers, so containers count too.
+    const memory = services.reduce((sum, service) => sum + ((props.numbers?.(service) ?? { rss: service.rss_bytes }).rss ?? 0), 0);
     return (
         <>
             {/* One service says all of this on its own row. */}
@@ -249,6 +269,8 @@ export function InspectorServices(props: InspectorServicesProps): ReactElement {
                     onOpenPort={props.onOpenPort}
                     onShowPane={props.onShowPane}
                     onStop={props.onStop}
+                    numbers={props.numbers}
+                    idle={props.idle}
                 />
             ))}
         </>

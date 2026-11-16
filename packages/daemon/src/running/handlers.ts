@@ -37,6 +37,11 @@ function idOrNull(id: string | null): string | null {
     return id === null ? null : uuidOut(id);
 }
 
+/** CPU on the wire: tenths of a percent, so it reads as a figure rather than noise. */
+export function wireCpu(percent: number | null): number | null {
+    return percent === null ? null : Math.round(percent * 10) / 10;
+}
+
 export function toWireService(service: RunningService): RunningServiceEntry {
     return {
         id: service.id,
@@ -60,6 +65,7 @@ export function toWireService(service: RunningService): RunningServiceEntry {
         pid: service.pid,
         process_count: service.processCount,
         rss_bytes: service.rssBytes,
+        cpu_percent: wireCpu(service.cpuPercent),
         ports: service.ports.map(wirePort),
         members: service.members.map((member) => ({
             name: member.name,

@@ -193,6 +193,99 @@ export function runsElsewhere(service: RunningServiceEntry, ownsFolders = true):
     return service.directory_workspace_id.toUpperCase() !== service.workspace_id?.toUpperCase();
 }
 
+// ── live numbers (phase 4) ──────────────────────────────────────────────────────────
+
+/** A service's memory and CPU right now: `running-stats` when it is the newer, else the list's. */
+export interface LiveNumbers {
+    readonly rss: number | null;
+    readonly cpu: number | null;
+}
+
+export function liveNumbers(
+    service: RunningServiceEntry,
+    stats: { readonly scannedAt: string | null; readonly byID: ReadonlyMap<string, LiveNumbers> } | null | undefined,
+    listScannedAt: string | null
+): LiveNumbers {
+    const fresh = stats !== null && stats !== undefined && (listScannedAt === null || (stats.scannedAt ?? '') >= listScannedAt);
+    const live = fresh ? stats.byID.get(service.id) : undefined;
+    // An older daemon sends no `cpu_percent`: no figure, not 0.
+    return live ?? { rss: service.rss_bytes, cpu: service.cpu_percent ?? null };
+}
+
+/** `12%`, `0.3%` under one percent, null when there is no figure. */
+export function cpuText(percent: number | null): string | null {
+    if (percent === null) return null;
+    return percent > 0 && percent < 1 ? `${percent.toFixed(1)}%` : `${String(Math.round(percent))}%`;
+}
+
+// ── idle for days (D7, phase 4) ─────────────────────────────────────────────────────
+
+export const IDLE_DAYS = 3;
+const DAY_MS = 86_400_000;
+
+/** The pane fields the idle rule reads, as the mirror holds them. */
+export interface IdlePane {
+    readonly id: string;
+    readonly status: string;
+    /** Epoch seconds: bumped when the pane's title or folder changes (Claude retitles as it works). */
+    readonly lastActivityAt: number;
+    /** Epoch ms of the agent's latest turn; transient, so null after a daemon restart. */
+    readonly agentStartedAt: number | null;
+    readonly backgroundTaskCount: number;
+}
+
+export interface IdleWorkspace {
+    readonly id: string;
+    readonly panes: readonly IdlePane[];
+    readonly parkedPanes: readonly IdlePane[];
+}
+
+/**
+ * When a pane last did anything, or null while it is busy. Busy is a live turn only: an agent
+ * whose background task is the dev server keeps its pane `running` for as long as the server
+ * runs, and `waitingForInput` is a turn that ended and nobody looked at, which is the point.
+ */
+function quietSince(pane: IdlePane): number | null {
+    if (pane.status === 'running' && pane.backgroundTaskCount === 0) return null;
+    return Math.max(pane.lastActivityAt * 1000, pane.agentStartedAt ?? 0);
+}
+
+/**
+ * D7: how many whole days a workspace's service has sat idle, or null when it is not idle. It is
+ * when it has been up `IDLE_DAYS` and either its folder is gone, or the pane that started it has
+ * been quiet that long; a service with no pane (a compose project, a server whose pane closed)
+ * goes by its workspace's most recent pane activity. Leftovers have their own card.
+ */
+export function idleDays(service: RunningServiceEntry, workspaces: readonly IdleWorkspace[], now: number): number | null {
+    if (service.category !== 'workspace' || service.started_at === null) return null;
+    const up = now - Date.parse(service.started_at);
+    if (!Number.isFinite(up) || up < IDLE_DAYS * DAY_MS) return null;
+    if (service.directory_missing) return Math.floor(up / DAY_MS);
+    const panesOf = (workspace: IdleWorkspace): readonly IdlePane[] => [...workspace.panes, ...workspace.parkedPanes];
+    const wantedPane = service.pane_id?.toUpperCase();
+    const pane = wantedPane === undefined ? undefined : workspaces.flatMap(panesOf).find((candidate) => candidate.id.toUpperCase() === wantedPane);
+    const owner = workspaces.find((workspace) => workspace.id.toUpperCase() === service.workspace_id?.toUpperCase());
+    const watched = pane !== undefined ? [pane] : owner === undefined ? [] : panesOf(owner);
+    if (watched.length === 0) return null;
+    const quiet = watched.map(quietSince);
+    if (quiet.some((since) => since === null)) return null;
+    const latest = Math.max(...(quiet as number[]));
+    const idle = Math.min(up, now - latest);
+    return idle < IDLE_DAYS * DAY_MS ? null : Math.floor(idle / DAY_MS);
+}
+
+/** Each workspace's longest idle service, in days, keyed by uppercase workspace id. */
+export function idleByWorkspace(services: readonly RunningServiceEntry[], workspaces: readonly IdleWorkspace[], now: number): ReadonlyMap<string, number> {
+    const out = new Map<string, number>();
+    for (const service of services) {
+        const days = idleDays(service, workspaces, now);
+        const key = service.workspace_id?.toUpperCase();
+        if (days === null || key === undefined) continue;
+        out.set(key, Math.max(days, out.get(key) ?? 0));
+    }
+    return out;
+}
+
 /** A pane's foreground job stops with Ctrl-C in that pane, which needs no confirmation (§6). */
 export function stopsWithCtrlC(service: RunningServiceEntry): boolean {
     return service.foreground && service.pane_id !== null && service.started_by === 'pane';
@@ -239,4 +332,37 @@ export function runningSummary(running: WorkspaceRunning): string {
     if (running.rssBytes > 0) parts.push(memoryText(running.rssBytes));
     if (ports.length > 0) parts.push(`port${ports.length === 1 ? '' : 's'} ${shown}${more}`);
     return parts.join(' · ');
+}
+
+// ── leftovers (the popover and the corner card) ──────────────────────────────────────
+
+export interface LeftoverGroup {
+    readonly key: string;
+    readonly folder: string | null;
+    readonly deleted: boolean;
+    readonly services: readonly RunningServiceEntry[];
+    /** The oldest stack's start, for the group's age. */
+    readonly startedAt: string | null;
+}
+
+/** Leftovers by the worktree they ran in, in the scan's order. */
+export function leftoverGroups(services: readonly RunningServiceEntry[]): LeftoverGroup[] {
+    const groups = new Map<string, RunningServiceEntry[]>();
+    for (const service of services) {
+        const key = service.worktree ?? service.directory ?? service.id;
+        groups.set(key, [...(groups.get(key) ?? []), service]);
+    }
+    return [...groups.entries()].map(([key, members]) => {
+        const starts = members
+            .map((service) => service.started_at)
+            .filter((at): at is string => at !== null)
+            .sort();
+        return {
+            key,
+            folder: members[0]?.worktree ?? members[0]?.directory ?? null,
+            deleted: members.some((service) => service.directory_missing),
+            services: members,
+            startedAt: starts[0] ?? null
+        };
+    });
 }

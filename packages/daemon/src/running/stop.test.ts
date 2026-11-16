@@ -57,6 +57,7 @@ function service(id: string, extra: Partial<RunningService> = {}): RunningServic
         pid,
         processCount: 1,
         rssBytes: 1,
+        cpuPercent: null,
         ports: [{ port: 3000 + pid, address: '127.0.0.1', exposed: false, pid, containerPort: null }],
         members: [],
         ...extra

@@ -32,8 +32,11 @@ import { cssToDipScale, viewBounds, type CssRect, type ViewBounds, type WindowMe
 export const CORNER_PAGE_GLOBAL = '__kelpiCorner';
 /** The overlay's global (`client/src/overlay/CornerOverlay.tsx`). */
 export const CORNER_OVERLAY_GLOBAL = '__kelpiCornerOverlay';
-/** Both globals' shape. A page or overlay on another version is left alone. */
-export const CORNER_LAYER_VERSION = 1;
+/**
+ * Both globals' shape. A page or overlay on another version is left alone, and the page then draws
+ * its stack itself. 2: the leftover-services card and its clicks (docs/running-services.md §7).
+ */
+export const CORNER_LAYER_VERSION = 2;
 /** Served by the daemon beside the client's `index.html`. */
 export const CORNER_OVERLAY_PATH = '/overlay.html';
 /** What a call into a document without the global answers (`cornerCallScript`). */
@@ -53,10 +56,8 @@ export const CORNER_RENDER_TIMEOUT_MS = 2_000;
 /** How many times one page load may lose its overlay renderer before the layer gives up. */
 export const CORNER_OVERLAY_RESTARTS = 3;
 
-export type CornerAction =
-    | { readonly kind: 'dismiss'; readonly id: string }
-    | { readonly kind: 'restart-old-hosts' }
-    | { readonly kind: 'later-old-hosts' };
+/** A click on one of the cards. The shell only relays it; the page decides what each kind means. */
+export type CornerAction = { readonly kind: 'dismiss'; readonly id: string } | { readonly kind: string };
 
 /** A frame from the page, read as far as the shell needs and otherwise passed on untouched. */
 export interface CornerFrame {
@@ -114,16 +115,23 @@ export function parseCornerFrame(value: unknown): CornerFrame | null {
     };
 }
 
-/** Read a click from the overlay, or null. The page validates it again. */
+/** A card's click kind: a short lowercase word or two, never anything the page could run. */
+const ACTION_KIND = /^[a-z][a-z-]{0,39}$/;
+
+/**
+ * Read a click from the overlay, or null. Any well-formed kind passes, so a new card needs no
+ * shell change; the page validates it again and ignores a kind it does not know. Only a toast's
+ * dismiss carries anything else (its id), and nothing else ever crosses.
+ */
 export function parseCornerAction(value: unknown): CornerAction | null {
     if (!isRecord(value)) return null;
     const kind = value['kind'];
+    if (typeof kind !== 'string' || !ACTION_KIND.test(kind)) return null;
     if (kind === 'dismiss') {
         const id = value['id'];
         return typeof id === 'string' && id.length > 0 && id.length <= 512 ? { kind, id } : null;
     }
-    if (kind === 'restart-old-hosts' || kind === 'later-old-hosts') return { kind };
-    return null;
+    return { kind };
 }
 
 /**

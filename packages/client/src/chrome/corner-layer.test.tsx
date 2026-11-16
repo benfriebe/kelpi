@@ -154,7 +154,7 @@ describe('ToastStack', () => {
         installCornerBridge(target);
         render(<ToastStack toasts={[TOAST]} oldHosts={null} onDismiss={noop} onRestartOldHosts={noop} onLaterOldHosts={noop} />);
         const frame = await bridge().next(-1);
-        expect(frame.content).toEqual({ toasts: [{ id: 't1', title: 'Removed worktree', body: '/tmp/repo-wt' }], oldHosts: null });
+        expect(frame.content).toEqual({ toasts: [{ id: 't1', title: 'Removed worktree', body: '/tmp/repo-wt' }], oldHosts: null, leftovers: null });
         expect(frame.rect).toEqual({ x: 900, y: 600, w: 300, h: 60 });
         // Not attached yet: the page still draws and parks, which is the fallback.
         expect(overlayPresenceCount()).toBe(1);

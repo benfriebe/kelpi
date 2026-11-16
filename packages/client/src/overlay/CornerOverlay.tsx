@@ -100,6 +100,10 @@ export function CornerOverlay(props: {
                 onDismiss={(id) => onAction({ kind: 'dismiss', id })}
                 onRestartOldHosts={() => onAction({ kind: 'restart-old-hosts' })}
                 onLaterOldHosts={() => onAction({ kind: 'later-old-hosts' })}
+                leftovers={content.leftovers ?? null}
+                onLaterLeftovers={() => onAction({ kind: 'later-leftovers' })}
+                onReviewLeftovers={() => onAction({ kind: 'review-leftovers' })}
+                onStopLeftovers={() => onAction({ kind: 'stop-leftovers' })}
             />
         </div>
     );

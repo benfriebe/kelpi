@@ -37,7 +37,7 @@ import { createPortal } from 'react-dom';
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
-import { InspectorServices, type StopService } from './InspectorServices';
+import { InspectorServices, type InspectorServicesProps, type StopService } from './InspectorServices';
 import { PullRequestLinks } from './PullRequestGlyph';
 import type { WorkspaceRunning } from './running';
 import { useModalPresence } from './modal-presence';
@@ -154,6 +154,9 @@ export interface InspectorProps {
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     /** docs/running-services.md §6: a row's Stop. Absent = no Stop controls. */
     readonly onStopService?: StopService | undefined;
+    /** Phase 4: live memory and CPU, and whole days idle (D7), per service. */
+    readonly serviceNumbers?: InspectorServicesProps['numbers'];
+    readonly serviceIdle?: InspectorServicesProps['idle'];
 
     // ── graft (§GIT-046…§GIT-051, §WS-143…§WS-145) ────────────────────────────────
     //
@@ -638,6 +641,8 @@ export function Inspector(props: InspectorProps): ReactElement {
                         ownsFolders={(props.associations?.length ?? 0) > 0}
                         onOpenPort={props.onOpenServicePort}
                         onStop={props.onStopService}
+                        numbers={props.serviceNumbers}
+                        idle={props.serviceIdle}
                         onShowPane={props.onFocusPane}
                     />
                 </section>

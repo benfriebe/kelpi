@@ -461,6 +461,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     const prune = popSwitch('--prune-worktree', args);
     const deleteBranch = popSwitch('--delete-branch', args);
     const cascade = popSwitch('--cascade', args);
+    const stopServices = popSwitch('--stop-services', args);
     const asJSON = popSwitch('--json', args);
 
     const bad = args.find((token) => token.startsWith('-'));
@@ -499,12 +500,15 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
                 // app-state-core.md §2.9: absent promotes the nested workspaces instead.
                 ...(cascade ? { cascade: true } : {}),
                 ...(prune ? { prune_worktrees: true } : {}),
-                ...(deleteBranch ? { delete_branches: true } : {})
+                ...(deleteBranch ? { delete_branches: true } : {}),
+                // docs/running-services.md §6: found before the delete, stopped once it stands.
+                ...(stopServices ? { stop_services: true } : {})
             },
             'kelpi workspace delete',
             // The prune's reply waits for git, and removing a worktree deletes every file in it
-            // (a `node_modules` is a lot of files): well past the 5 s default.
-            prune ? { timeoutSeconds: PRUNE_TIMEOUT_SECONDS } : {}
+            // (a `node_modules` is a lot of files): well past the 5 s default. Stopping services
+            // scans the host before the delete.
+            prune ? { timeoutSeconds: PRUNE_TIMEOUT_SECONDS } : stopServices ? { timeoutSeconds: STOP_SERVICES_TIMEOUT_SECONDS } : {}
         );
         const ok = asBool(reply['ok']) ?? false;
         const workspaceName = asString(reply['workspace_name']) ?? id;
@@ -523,10 +527,14 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
             for (const childName of asStringArray(reply['deleted_child_names']) ?? []) {
                 cascaded.set(childName, workspaceName);
             }
+            const stopping = asInt(reply['stopping_services']);
+            if (stopping !== undefined) record['stopping_services'] = stopping;
             if (!asJSON) {
                 const count = deletedChildren.length;
                 const nestedNote = count === 0 ? '' : ` and ${String(count)} nested workspace${count === 1 ? '' : 's'}`;
                 printLine(`deleted workspace ${workspaceName}${nestedNote}`);
+                if (stopping !== undefined && stopping > 0) printLine(`  stopping ${String(stopping)} service${stopping === 1 ? '' : 's'}`);
+                else if (stopServices && stopping === undefined) errLine('Warning: this Kelpi predates --stop-services; nothing was stopped');
             }
 
             const worktrees = reply['worktrees'];
@@ -576,7 +584,10 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
 }
 
 const DELETE_USAGE_LINE =
-    'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] [--prune-worktree [--delete-branch]] [--json]';
+    'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] [--prune-worktree [--delete-branch]] [--stop-services] [--json]';
+
+/** `--stop-services` scans the host (up to the probes' 3 s caps) before the delete. */
+const STOP_SERVICES_TIMEOUT_SECONDS = 30;
 
 /** How long a `--prune-worktree` delete waits for the daemon's git work. */
 const PRUNE_TIMEOUT_SECONDS = 300;

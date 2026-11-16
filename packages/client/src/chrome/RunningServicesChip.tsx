@@ -32,6 +32,46 @@ export interface RunningServicesChipProps {
     readonly looks?: ReadonlyMap<string, WorkspaceLook> | undefined;
     readonly onOpenPort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     readonly onSelectWorkspace?: ((workspaceID: string) => void) | undefined;
+    /** docs/running-services.md §6: stop a leftover worktree's stacks, or one started outside Kelpi. Asks first. */
+    readonly onStop?: ((services: readonly RunningServiceEntry[], where?: string) => void) | undefined;
+}
+
+/** A leftover group's Stop: quiet until pointed at, then red. */
+function StopText(props: { readonly label: string; readonly testID: string; readonly bucket: ChromeBucket; readonly onClick: () => void }): ReactElement {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            type="button"
+            data-testid={props.testID}
+            className="ml-auto shrink-0 text-[11px] hover:underline"
+            style={{ color: hovered ? workspaceColorHex('red', props.bucket) : tokens.textTertiary }}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={props.onClick}
+        >
+            {props.label}
+        </button>
+    );
+}
+
+/** A row's Stop, shown on the row's hover or focus. */
+function StopIcon(props: { readonly label: string; readonly bucket: ChromeBucket; readonly onClick: () => void }): ReactElement {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            type="button"
+            data-testid="running-popover-stop"
+            aria-label={props.label}
+            title={props.label}
+            className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+            style={{ color: hovered ? workspaceColorHex('red', props.bucket) : tokens.textTertiary }}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={props.onClick}
+        >
+            <ChromeIcon name="stop" />
+        </button>
+    );
 }
 
 /** workspace · service · ports · memory, shared by every workspace row so the columns line up. */
@@ -289,6 +329,17 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
                                                 <span className="shrink-0 text-[11px]" style={{ color: tokens.textTertiary }}>
                                                     {meta.join(' · ')}
                                                 </span>
+                                                {props.onStop === undefined ? null : (
+                                                    <StopText
+                                                        testID="running-popover-stop-group"
+                                                        label={group.services.length === 1 ? 'Stop' : 'Stop all'}
+                                                        bucket={props.bucket}
+                                                        onClick={() => {
+                                                            setOpen(false);
+                                                            props.onStop?.(group.services, group.folder === null ? undefined : `left in ${basename(group.folder)}`);
+                                                        }}
+                                                    />
+                                                )}
                                             </div>
                                             {group.services.map((service) => (
                                                 <div
@@ -329,7 +380,7 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
                                     {outside.map((service) => (
                                         <div
                                             key={service.id}
-                                            className="grid h-[22px] grid-cols-[minmax(0,1fr)_auto_46px] items-center gap-x-2.5"
+                                            className="group grid h-[22px] grid-cols-[minmax(0,1fr)_auto_46px_14px] items-center gap-x-2.5"
                                             data-testid="running-popover-service"
                                         >
                                             <span
@@ -343,6 +394,18 @@ export function RunningServicesChip(props: RunningServicesChipProps): ReactEleme
                                             <span className="text-right font-mono text-[10.5px]" style={{ color: tokens.textTertiary }}>
                                                 {service.rss_bytes === null ? '' : memoryText(service.rss_bytes)}
                                             </span>
+                                            {props.onStop === undefined ? (
+                                                <span />
+                                            ) : (
+                                                <StopIcon
+                                                    label={`Stop ${service.name}`}
+                                                    bucket={props.bucket}
+                                                    onClick={() => {
+                                                        setOpen(false);
+                                                        props.onStop?.([service]);
+                                                    }}
+                                                />
+                                            )}
                                         </div>
                                     ))}
                                 </div>

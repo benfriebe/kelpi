@@ -21,6 +21,8 @@ import {
     PANE_FONT_SIZE_MAX,
     PANE_FONT_SIZE_MIN,
     PANE_ID_REQUIRED_COMMANDS,
+    RUNNING_STOP_MAX_IDS,
+    RUNNING_STOP_MAX_WAIT_MS,
     isWireCommand,
     type PaneTargetScope,
     type TabScope,
@@ -574,7 +576,8 @@ function decodeCommand(
                 force_worktree_paths: fields.list('force_worktree_paths'),
                 prune_worktrees: fields.bool('prune_worktrees'),
                 delete_branches: fields.bool('delete_branches'),
-                batch_ids: fields.list('batch_ids')
+                batch_ids: fields.list('batch_ids'),
+                ...(fields.bool('stop_services') === true ? { stop_services: true } : {})
             };
         }
         case 'workspace-profile': {
@@ -755,6 +758,32 @@ function decodeCommand(
                 scope: fields.text('scope'),
                 all: fields.flag('all', false)
             };
+        case 'running-stop': {
+            const ids = fields.list('ids')?.filter((id) => id.trim().length > 0);
+            const port = fields.int('port');
+            const hasIDs = ids !== undefined && ids.length > 0;
+            if (hasIDs === (port !== undefined)) return guard(command, 'running-stop requires ids or port, not both', 'ids');
+            if (ids !== undefined && ids.length > RUNNING_STOP_MAX_IDS) {
+                return guard(command, `running-stop takes at most ${String(RUNNING_STOP_MAX_IDS)} ids`, 'ids');
+            }
+            if (port !== undefined && (port < 1 || port > 65_535)) return guard(command, 'port must be between 1 and 65535', 'port');
+            const member = fields.text('member');
+            if (member !== undefined && !/^(\d{1,10}|[0-9a-f]{12,64})$/.test(member)) {
+                return guard(command, 'member must be a process id or a container id', 'member');
+            }
+            if (member !== undefined && hasIDs && ids.length > 1) return guard(command, 'member takes one service', 'member');
+            const waitMs = fields.int('wait_ms');
+            return {
+                command,
+                ...(hasIDs ? { ids } : {}),
+                ...(port === undefined ? {} : { port }),
+                ...(member === undefined ? {} : { member }),
+                force: fields.flag('force', false),
+                confirmed: fields.flag('confirmed', false),
+                // Clamped rather than refused: a caller cannot hold the handler open for long.
+                ...(waitMs === undefined ? {} : { wait_ms: Math.min(Math.max(waitMs, 0), RUNNING_STOP_MAX_WAIT_MS) })
+            };
+        }
 
         // ── 6.9 web pane commands ────────────────────────────────────────────────────
         case 'web-open': {

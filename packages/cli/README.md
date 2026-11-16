@@ -87,7 +87,7 @@ Everything in `cli.md` is implemented: `event` (all six, hook payload parsing on
 `move-to-workspace`), `workspace` (list/create incl. `--worktree`/delete incl.
 `--prune-worktree`/move/profile/label/mute/rename/icon/color), `group`
 (list/create/rename/delete/reorder/sort/set-repo),
-`layout`, `open`/`md`/`diff` routing, the whole `web` family, `graft`, `ps`, `ping` (through
+`layout`, `open`/`md`/`diff` routing, the whole `web` family, `graft`, `ps`, `kill`, `ping` (through
 `doctor`) and `doctor`. The parsing primitives are ported bug-for-bug: flags anywhere in argv,
 dash-prefixed values consumed, a value-less trailing flag left to be rejected as an unknown
 option, `--` tails only on `web click|type|select`, `pane send` joining leftovers with single
@@ -105,7 +105,7 @@ How this is measured, and what "parity" is worth:
   ```
 
   A verb the shipped binary never had (`workspace rename`, #266, `workspace icon`,
-  `workspace color`, #393, and `ps`) cannot be checked against it, so
+  `workspace color`, #393, `ps` and `kill`) cannot be checked against it, so
   `workspace-rename.test.ts`, `workspace-icon.test.ts`, `workspace-color.test.ts` and
   `running.test.ts` bundle this CLI into a private file and drive that, whatever
   `KELPI_COMPAT_CLI` says.

@@ -527,6 +527,55 @@ export interface RunningListReply extends ReplySuccess {
     readonly warnings: readonly string[];
 }
 
+// ── running-stop (docs/running-services.md §6) ──────────────────────────────────────
+
+/**
+ * Why one service was not stopped. `NOT_FOUND`: not running (any more); `AGENT`: the agent's own
+ * port, which is the agent itself; `NEEDS_CONFIRM`: started outside Kelpi, so the caller must ask
+ * its user and send `confirmed`; `PROTECTED`: Kelpi itself, a terminal host, a pane's own process
+ * or pid 1; `NOT_YOURS`: another user's process; `FAILED`: the signal or Docker call failed.
+ */
+export type RunningStopCode = 'NOT_FOUND' | 'AGENT' | 'NEEDS_CONFIRM' | 'PROTECTED' | 'NOT_YOURS' | 'FAILED';
+
+/** A whole request refused: `AMBIGUOUS_PORT` (two services listen on it), `SCAN_INCOMPLETE` (`ps` failed). */
+export type RunningStopRequestCode = 'AMBIGUOUS_PORT' | 'PORT_NOT_FOUND' | 'SCAN_INCOMPLETE';
+
+/**
+ * How a service was stopped: Ctrl-C to its pane (`interrupt`), a signal to each process
+ * (`signal`), or Docker's stop or kill per container (`stop-containers`).
+ */
+export type RunningStopAction = 'interrupt' | 'signal' | 'stop-containers';
+
+export interface RunningStopResult {
+    readonly id: string;
+    readonly name: string;
+    /** The service's ports, so a caller can say what it stopped: a port names the whole service. */
+    readonly ports: readonly number[];
+    /** Null when it was refused. */
+    readonly action: RunningStopAction | null;
+    /** For `signal`: `SIGTERM`, or `SIGKILL` with `force`. */
+    readonly signal: 'SIGTERM' | 'SIGKILL' | null;
+    /** Processes signalled, or containers asked to stop. */
+    readonly signalled: number;
+    /** Processes left alone: another user's, or Kelpi's own. */
+    readonly skipped: readonly number[];
+    /** Containers Docker would not stop, with its answer. */
+    readonly failed: readonly string[];
+    /** Process ids (or container ids) still running when the wait ended; null when nothing was waited for. */
+    readonly remaining: readonly (number | string)[] | null;
+    /** Everything exited within the wait; null when nothing was waited for. */
+    readonly stopped: boolean | null;
+    /** A new listener took one of its ports during the wait: a supervisor restarted it. */
+    readonly restarted_by: string | null;
+    /** Set when this service was refused (`action` is null). */
+    readonly error?: string;
+    readonly code?: RunningStopCode;
+}
+
+export interface RunningStopReply extends ReplySuccess {
+    readonly results: readonly RunningStopResult[];
+}
+
 // ── web pane replies (the fields the CLI parses; cli.md §15) ────────────────────────
 
 export interface WebPaneReplyBase extends ReplySuccess {

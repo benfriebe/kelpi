@@ -39,7 +39,7 @@ export const globalUsage = `Usage:
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] [--update-main] [--group <existing>] [--muted] [--icon <emoji>] [--focus]
   kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file <path|->] [--send]
   kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
-  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
+  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--stop-services] [--json]
   kelpi workspace profile <name-or-id> (<profile> | --clear)
   kelpi workspace label <name-or-id> (--set v | --add v | --remove v | --clear) [--json]
   kelpi workspace mute <name-or-id> [--off | --toggle] [--json]
@@ -88,6 +88,7 @@ export const globalUsage = `Usage:
   kelpi web console [--since N] [--level log|debug|info|warn|error] [--clear] [--follow] [--json]
   kelpi web exec (--file <path> | <js>) [--timeout 30] [--target X] [--workspace Y] [--json]
   kelpi ps [--workspace <name-or-id> | --current] [--all] [--json] [--no-header]   # dev servers, ports, containers
+  kelpi kill <:port | id...> [--member <pid>] [--force] [--yes] [--no-wait] [--json]  # stop a service
   kelpi doctor [--json]                                   # IPC health check
   kelpi daemon restart|status|start                      # restart keeps running terminals and agents
   kelpi daemon stop [--force]                            # ends every terminal and agent; asks first
@@ -434,6 +435,38 @@ mutually exclusive. Exit codes: 0 on success, non-zero on failure.
 
 `;
 
+export const killUsage = `Usage:
+  kelpi kill <:port | id> [<id> ...] [--member <pid-or-container>] [--force] [--yes] [--no-wait] [--json]
+
+Stops a service that \`kelpi ps\` lists: by a port it listens on (:3000 or 3000),
+or by its id (\`kelpi ps --json\`). A port names the whole service: :3000 on a
+turbo stack stops every server in it, and the output names its ports.
+
+  A pane's foreground job      Ctrl-C to that pane.
+  A process stack              SIGTERM to every process in it (SIGKILL with --force).
+  A compose project            Docker's stop for each container (kill with --force);
+                               never \`down\`, so volumes and data stay.
+
+It waits up to 5 s and says what is still running; \`kelpi kill --force <id>\`
+then ends it, even after the stack's first process has exited. Kelpi itself,
+its terminal hosts, pane shells, an agent's own port and other users'
+processes are never stopped.
+
+Options:
+  --member <pid-or-container>  Only this process (and what runs under it) or this
+                               container. A supervisor such as turbo may restart it.
+  --force                      SIGKILL; Docker's kill.
+  --yes                        Required to stop a service started outside Kelpi.
+                               Agents: ask the user first.
+  --no-wait                    Send the signals and return.
+  --json                       Print the results as JSON.
+  -h, --help                   Show this help.
+
+Exit codes: 0 when everything stopped, 1 when something was refused or is still
+running.
+
+`;
+
 export const paneSyncUsage = `Usage:
   kelpi pane sync (on|off|toggle|status) [--workspace <name-or-uuid>] [--json]
   kelpi pane sync exclude --target <name-or-uuid> [--workspace <name-or-uuid>]
@@ -598,7 +631,7 @@ only --parent reports a refusal).
 
 export const workspaceDeleteUsage = `Usage:
   kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] \\
-                       [--prune-worktree [--delete-branch]] [--json]
+                       [--prune-worktree [--delete-branch]] [--stop-services] [--json]
 
 Deletes one or more workspaces (closing any remaining panes). Refuses to
 delete the last remaining workspace.
@@ -616,6 +649,9 @@ Options:
   --delete-branch    With --prune-worktree, also delete each removed worktree's
                      branch when every commit on it is on another branch or a
                      remote.
+  --stop-services    Also stop the dev servers and containers the workspace runs
+                     (what \`kelpi ps --workspace\` lists; nested ones too with
+                     --cascade), once the delete has gone through.
   --json             Print a per-id JSON result array.
   -h, --help         Show this help.
 

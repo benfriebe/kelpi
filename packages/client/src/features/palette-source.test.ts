@@ -1,3 +1,4 @@
+import type { RunningServiceEntry } from '@kelpi/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { createKelpiStore, type KelpiRuntime } from '../state';
@@ -338,6 +339,33 @@ describe('palette feature source', () => {
         expect(h.source.snapshot().items.find((entry) => entry.id === 'cmd:old-terminal-hosts')).toBeUndefined();
         h.store.getState().setOldTerminalHosts([]);
         expect(row()).toBeUndefined();
+        off();
+    });
+
+    it("offers Stop Service for a workspace's or a leftover worktree's services, never one started outside Kelpi", async () => {
+        const h = fixture();
+        const stop = vi.fn();
+        const source = createPaletteFeatureSource({ ...h.host, stopServices: stop });
+        const entry = (id: string, category: 'workspace' | 'unattached' | 'outside', workspace: string | null) =>
+            ({
+                id,
+                name: id.split(':')[1] ?? id,
+                category,
+                workspace_name: workspace,
+                ports: [{ port: 3000, address: '127.0.0.1', exposed: false, pid: 1, container_port: null }]
+            }) as unknown as RunningServiceEntry;
+        const services = [entry('process:web:1', 'workspace', 'alpha'), entry('compose:old:1', 'unattached', null), entry('process:pg:1', 'outside', null)];
+        const changed = vi.fn();
+        const off = source.subscribe(changed);
+        h.store.getState().setRunningServices({ services, scannedAt: null, warnings: [] });
+        expect(changed).toHaveBeenCalled();
+        const rows = source.snapshot().items.filter((item) => item.id.startsWith('cmd:stop-service:'));
+        expect(rows.map((item) => [item.title, item.subtitle])).toEqual([
+            ['Stop Service: web', 'alpha · :3000'],
+            ['Stop Service: old', 'not in a workspace · :3000']
+        ]);
+        await source.execute('cmd:stop-service:process:web:1', {});
+        expect(stop).toHaveBeenCalledWith([services[0]]);
         off();
     });
 });

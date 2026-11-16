@@ -2136,6 +2136,32 @@ stays `ok: true`; only a scan that throws is `error("running-list failed: {messa
 handler table built without a scanner (tests) gets `INERT_RUNNING_SCANNER`, which finds
 nothing.
 
+### 13.1 `running-stop` → handleRunningStop
+
+Also `packages/daemon/src/running/handlers.ts`, with the stop itself in `running/stop.ts`
+(docs/running-services.md §6). Request/response, explicit chain. Owner-only over the WebSocket
+(`ws/sync.ts` refuses a paired-device session before dispatch, as for `restart-old-terminals`).
+
+The handler builds the call's context (`running/stop-call.ts`): every pane's shell pid
+(`deps.panePid`, visible and parked panes), the terminal host pids (`ctx.terminalHosts`, current
+and draining), and a Ctrl-C that writes `ctrl-c` through `ctx.input.sendNamedKey` when
+`ctx.pty.has(pane)`. Then `await deps.runningStop.stop({ ids | port, member, force, confirmed,
+waitMs })`:
+
+- a refused request is `error(<message>)` with `code` (`AMBIGUOUS_PORT` adds `candidates`,
+  `PORT_NOT_FOUND`, `SCAN_INCOMPLETE`);
+- otherwise `ok` with `results`, one per service in request order, each refused one carrying
+  `error` and `code` (wire-protocol.md §6.11.1).
+
+A throw is `error("running-stop failed: {message}")`. A table built without a stopper gets
+`INERT_RUNNING_STOPPER`, which answers every id `NOT_FOUND`.
+
+`workspace-delete` with `stop_services` (§6 of running-services.md, D3) runs every guard, then
+`await deps.running.scan()` and runs again from the top with the ids of the services whose
+`workspaceID` is one of the doomed workspaces (agents' own ports aside), so a delete refused on
+the fresh state stops nothing. After the dispatch it calls `deps.runningStop.stop({ ids,
+confirmed: true, waitMs: 0 })` without awaiting it, and the reply carries `stopping_services`.
+
 ---
 
 ## 14. Quick reference: reply payloads
@@ -2157,7 +2183,7 @@ nothing.
 | workspace-list | `workspaces: [...]` |
 | workspace-create | `workspace_id`, `workspace_name`, `muted`, `icon?`, `group?`, `parent_id?`, `parent_name?` (+ `worktree_path`, `branch` on the worktree path) |
 | workspace-nest | `workspace_id`, `workspace_name`, `parent_id`, `parent_name`, `index` |
-| workspace-delete | `workspace_id`, `workspace_name`, `path?`, `deleted_children?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
+| workspace-delete | `workspace_id`, `workspace_name`, `path?`, `deleted_children?`, `stopping_services?` (with `stop_services`) (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |
@@ -2170,6 +2196,7 @@ nothing.
 | graft-status | `sessions: [...]` |
 | ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `terminals`, `persistence?` |
 | running-list | `services: [...]`, `scanned_at`, `warnings` (strings; empty when every probe ran) |
+| running-stop | `results: [...]` (one per service; a refused one has `error` and `code`) |
 | permission-request | `behavior` (`allow`, `deny` or `abstain`), `message?` (deny only), `provider?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),

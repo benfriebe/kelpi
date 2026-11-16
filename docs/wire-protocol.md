@@ -309,7 +309,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `group-list`, `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
    `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
-   `graft-status`, `ping`, `restart-old-terminals`, `running-list`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
+   `graft-status`, `ping`, `restart-old-terminals`, `running-list`, `running-stop`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
    `pane-font-size`, `pane-clear`, `pane-move-adjacent`, the workspace-tab verbs
    (`workspace-tab-*`, `pane-move-to-tab`, `pane-move-to-new-tab`, §6.10).
@@ -368,7 +368,7 @@ workspace-icon, workspace-color,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping, restart-old-terminals,
-running-list,
+running-list, running-stop,
 permission-request,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
 web-tabs, web-tab-new, web-tab-close, web-tab-select,
@@ -571,7 +571,7 @@ carry `"command"`.
 | `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `keep_emoji`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `start_agent`, `agent_prompt`, `send_prompt` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-nest` | R/R | `name`, `parent` | `index` |
-| `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
+| `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids`, `stop_services` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
@@ -596,6 +596,7 @@ carry `"command"`.
 | `ping` | R/R | — | — |
 | `restart-old-terminals` | R/R | — | — |
 | `running-list` | R/R | - | `pane_id`, `workspace`, `scope`, `all` |
+| `running-stop` | R/R | `ids` (non-empty) or `port` | `member`, `force`, `confirmed`, `wait_ms` |
 | `plugin` | R/R | — | `action`, `text` (JSON object encoded as a string; see [plugins](plugins.md)) |
 | `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction`, `focus`, `gesture` |
 | `web-navigate` | R/R | pane-target*; `url` (non-empty) | `gesture`, `typed` |
@@ -1473,6 +1474,11 @@ no-op silently.
 #### `workspace-delete` (R/R)
 
 `name` (required non-empty) = workspace name-or-id; `force` (bool, default false);
+`stop_services` (bool, default false; docs/running-services.md §6, D3) also stops the services
+the deleted workspaces own (nested ones too with `cascade`), their agents' own ports aside: they
+are found before the delete and stopped after it succeeds, as `running-stop` with `wait_ms` 0 and
+`confirmed`, so a refused delete stops nothing; the reply carries `stopping_services` (the count).
+Owner-only over the WebSocket;
 `cascade` (bool, default false; app-state-core.md §2.9) also deletes the workspaces nested under
 it: their panes are closed with the parent's, the last-workspace guard counts them, the agent
 guard sums their agents with the parent's (the error then reads `workspace <name> and its nested
@@ -2269,6 +2275,64 @@ for 1.5 s (a reused answer keeps its `scanned_at`), so an agent polling costs on
 Each probe is capped at 3 s. The daemon and its children are never services. Against a daemon
 that predates the verb, the CLI reports "no response from Kelpi (upgrade required?)" with exit 1.
 
+### 6.11.1 `running-stop` (R/R)
+
+Stops running services (docs/running-services.md §6). `kelpi kill` sends it, and so do the app's
+Stop buttons. On the explicit chain, so it works with no `pane_id`. Over the WebSocket it is
+owner-only: a session that authenticated with a paired-device token is refused
+(`running-stop is owner-only`), as for `restart-old-terminals`.
+
+- `ids` (string[]): services by `running-list` id, at most 100. Exactly one of `ids` and `port`.
+- `port` (int, 1 to 65535): the service with a listener on that port, in any category. Two
+  services on one port (one on `127.0.0.1`, another on `::1`) are refused as
+  `AMBIGUOUS_PORT` with the candidates' ids. The whole service stops, not only the member
+  that listens there; the result names it.
+- `member` (string): with one service, only this member: a process id of a process stack (that
+  process and everything under it; a supervisor such as turbo may restart it), or a
+  container id of a compose project.
+- `force` (bool): SIGKILL instead of SIGTERM; Docker's kill instead of its stop.
+- `confirmed` (bool): required for a service started outside Kelpi (D2). A caller sets it only
+  after asking its user.
+- `wait_ms` (int): how long to wait for what was stopped to exit, clamped to 0..30000, default
+  5000. With 0 the reply comes as soon as the signals are sent, and `remaining` and `stopped`
+  are null.
+
+What each kind gets:
+
+| service | action |
+|---|---|
+| a pane's foreground job, or a server that is the pane's own process | `interrupt`: Ctrl-C to the pane, after checking the job still owns the terminal (else it is signalled like a stack). `force` signals the job's processes; a pane's own process is refused with `force`. |
+| a process stack | `signal`: a fresh `ps`; the root must still have the start time in its id. SIGTERM (or SIGKILL) to the root and every process under it, root first, never into a pane shell, an interactive shell or an agent below it, then SIGCONT so a suspended job sees it. Processes of another user are `skipped`. |
+| a compose project or container | `stop-containers`: Docker's stop for each container (its own stop timeout), or kill with `force`. A container that is gone or already stopped counts as stopped. Never `down`. |
+
+A stop whose root has already exited but left processes running (the stack's `pnpm` exited, its
+`next-server` did not) is remembered for 10 minutes: a second stop of the same id, `force` or
+not, signals the remembered processes that still run with the same start time. The daemon only
+ever signals processes it found itself, in a scan or in that memory.
+
+```json
+{"command":"running-stop","port":3200}
+→ {"ok":true,"results":[{"id":"process:51513:1794726000","name":"pnpm start","ports":[3200,3201],"action":"signal",
+    "signal":"SIGTERM","signalled":5,"skipped":[],"failed":[],"remaining":[51530],"stopped":false,
+    "restarted_by":null}]}
+{"command":"running-stop","ids":["compose:shop-400"],"wait_ms":0}
+→ {"ok":true,"results":[{"id":"compose:shop-400","name":"shop-400","ports":[54721],"action":"stop-containers",
+    "signal":null,"signalled":3,"skipped":[],"failed":[],"remaining":null,"stopped":null,
+    "restarted_by":null}]}
+```
+
+`remaining` lists what still runs when the wait ends (process ids, or container ids), checked
+against a fresh `ps` so a zombie or a reused pid is not counted. `restarted_by` names a new
+service holding one of the stopped service's ports after the wait (a supervisor restarted it).
+
+A service that cannot be stopped is a result with `action: null`, an `error` and a `code`, and
+the rest of the request still runs: `NOT_FOUND` (not running), `AGENT` (an agent's own port, which
+is the agent itself), `NEEDS_CONFIRM` (started outside Kelpi, without `confirmed`), `PROTECTED`
+(Kelpi itself, its terminal hosts, the Kelpi app, a pane's shell or pid 1), `NOT_YOURS` (another
+user's process), `FAILED` (Docker would not answer). A whole request is refused only for
+`AMBIGUOUS_PORT`, `PORT_NOT_FOUND` and `SCAN_INCOMPLETE` (`ps` could not run, so "not running"
+cannot be told apart), each as the reply's `code`.
+
 ---
 
 ## 7. Full wire-field dictionary
@@ -2303,7 +2367,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `bare` | bool | `pane-send` |
 | `new_name` | string | `group-rename`, `workspace-rename` |
 | `cascade` | bool | `group-delete`, `workspace-delete` |
-| `force` | bool | `workspace-delete`; `workspace-tab-close`, `workspace-tab-close-others` (close over agents, §6.10) |
+| `force` | bool | `workspace-delete`, `running-stop` (SIGKILL, Docker kill); `workspace-tab-close`, `workspace-tab-close-others` (close over agents, §6.10) |
 | `worktree_paths`, `force_worktree_paths`, `batch_ids` | string[] | `workspace-delete` |
 | `prune_worktrees`, `delete_branches` | bool | `workspace-delete` |
 | `index` | int | `workspace-move`, `workspace-nest`, `group-move`, `workspace-tab-new`, `workspace-tab-move`, `pane-move-to-new-tab` (a tab's 0-based position) |
@@ -2377,6 +2441,12 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
 | `settle_ms` | int | `pane-capture` (wait for that much quiet before reading, capped at 10000, #390) |
+| `ids` | string[] | `running-stop` (service ids from `running-list`, at most 100) |
+| `port` | int | `running-stop` (the service listening on it, 1 to 65535) |
+| `member` | string | `running-stop` (one process id or container id of the service) |
+| `confirmed` | bool | `running-stop` (the user agreed to stop a service started outside Kelpi) |
+| `wait_ms` | int | `running-stop` (how long to wait for exits, clamped to 0..30000, default 5000) |
+| `stop_services` | bool | `workspace-delete` (also stop the services the deleted workspaces own) |
 | `if_revision` | int | `pane-send`, `pane-send-key` (refuse with `SCREEN_CHANGED` unless the screen revision still matches, #390) |
 
 ---

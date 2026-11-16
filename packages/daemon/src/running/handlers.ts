@@ -1,7 +1,7 @@
 /**
  * `running-list` (wire-protocol.md §6.11, docs/running-services.md): the services running on
  * this host, scanned on demand. Request/response, never refused for a probe that could not run:
- * the reply's `warnings` say which.
+ * the reply's `warnings` say which. `running-stop` (§6.11.1, running-services.md §6) stops them.
  *
  * Without `workspace` or `scope: 'current'` it lists every service that belongs to a workspace
  * or to a worktree no workspace owns; `all` adds the ones started outside Kelpi and agents' own
@@ -9,13 +9,15 @@
  */
 
 import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
-import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
+import type { RunningServiceEntry, RunningServicePort, RunningStopMessage, RunningStopResult } from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../seams.js';
 import { resolveStateOf, workspaceByID, type WorkspaceState } from '../store/index.js';
 import { forCommand, uuidOut, wireTimestamp } from '../handlers/app/common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from '../handlers/app/context.js';
 import { unresolvedWorkspaceError } from '../handlers/app/workspaces.js';
+import type { StopResult } from './stop.js';
+import { stopCall } from './stop-call.js';
 import type { RunningService, RunningServiceCategory, ServicePort } from './types.js';
 
 /** What `kelpi ps` lists unless asked for all. */
@@ -130,10 +132,57 @@ function handleRunningList(
     })();
 }
 
+export function wireStopResult(result: StopResult): RunningStopResult {
+    return {
+        id: result.id,
+        name: result.name,
+        ports: result.ports,
+        action: result.action,
+        signal: result.signal,
+        signalled: result.signalled,
+        skipped: result.skipped,
+        failed: result.failed,
+        remaining: result.remaining,
+        stopped: result.stopped,
+        restarted_by: result.restartedBy,
+        ...(result.error === undefined ? {} : { error: result.error }),
+        ...(result.code === undefined ? {} : { code: result.code })
+    };
+}
+
+function handleRunningStop(msg: RunningStopMessage, ctx: AppContext, reply: ReplyHandle | null, deps: AppDeps): void {
+    const call = stopCall(ctx, deps);
+    void (async () => {
+        try {
+            const outcome = await deps.runningStop.stop(
+                {
+                    ids: msg.ids,
+                    port: msg.port,
+                    member: msg.member,
+                    force: msg.force,
+                    confirmed: msg.confirmed,
+                    waitMs: msg.wait_ms
+                },
+                call
+            );
+            if (!outcome.ok) {
+                fail(reply, outcome.error, { code: outcome.code, ...(outcome.candidates === undefined ? {} : { candidates: outcome.candidates }) });
+                return;
+            }
+            ok(reply, { results: outcome.results.map(wireStopResult) });
+        } catch (error) {
+            fail(reply, `running-stop failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    })();
+}
+
 export function runningHandlerEntries(deps: AppDeps): readonly (readonly [string, AppHandler])[] {
     return [
         forCommand('running-list', (msg, ctx, reply) => {
             handleRunningList(msg, ctx, reply, deps);
+        }),
+        forCommand('running-stop', (msg, ctx, reply) => {
+            handleRunningStop(msg, ctx, reply, deps);
         })
     ];
 }

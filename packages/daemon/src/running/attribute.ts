@@ -59,7 +59,7 @@ export interface PlanInput {
     readonly containerPorts: ReadonlySet<number>;
 }
 
-function childrenOf(processes: readonly ProcessRow[]): Map<number, number[]> {
+export function childrenOf(processes: readonly ProcessRow[]): Map<number, number[]> {
     const children = new Map<number, number[]>();
     for (const row of processes) {
         if (row.ppid === row.pid) continue;

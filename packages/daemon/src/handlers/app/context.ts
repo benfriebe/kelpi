@@ -37,6 +37,7 @@ import {
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
 import { INERT_RUNNING_SCANNER, type RunningScanner } from '../../running/scanner.js';
+import { INERT_RUNNING_STOPPER, type RunningStopper } from '../../running/stop.js';
 import type { AgentHookEvent } from './agent-events.js';
 import { BUNDLED_PERMISSIONS_PROVIDER } from '../../plugins/permissions-service.js';
 
@@ -198,6 +199,10 @@ export interface AppHandlerOptions {
     readonly agentLauncher?: AgentLauncher | undefined;
     /** `running-list`'s scanner (docs/running-services.md); the default finds nothing. */
     readonly running?: RunningScanner | undefined;
+    /** `running-stop` and `workspace-delete --stop-services` (docs/running-services.md §6). */
+    readonly runningStop?: RunningStopper | undefined;
+    /** A pane's shell pid, so a stop never signals one; the default knows none. */
+    readonly panePid?: ((paneID: string) => number | undefined) | undefined;
 }
 
 export interface AppDeps {
@@ -225,6 +230,8 @@ export interface AppDeps {
     readonly log: (message: string) => void;
     readonly agentLauncher: AgentLauncher;
     readonly running: RunningScanner;
+    readonly runningStop: RunningStopper;
+    readonly panePid: (paneID: string) => number | undefined;
 }
 
 const noop = (): void => {};
@@ -297,7 +304,9 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
             (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),
         log: options.log ?? noop,
         agentLauncher: options.agentLauncher ?? INERT_AGENT_LAUNCHER,
-        running: options.running ?? INERT_RUNNING_SCANNER
+        running: options.running ?? INERT_RUNNING_SCANNER,
+        runningStop: options.runningStop ?? INERT_RUNNING_STOPPER,
+        panePid: options.panePid ?? (() => undefined)
     };
 }
 

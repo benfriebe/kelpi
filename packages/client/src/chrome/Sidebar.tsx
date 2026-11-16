@@ -58,7 +58,7 @@ import {
 import { NewEntrySheet, type NewWorkspaceAgentChoice } from './NewWorkspaceSheet';
 import { PullRequestGlyph } from './PullRequestGlyph';
 import { RunningServicesGlyph } from './RunningServicesGlyph';
-import { runningFor, runningOfWorkspaces, shortServiceName, type WorkspaceRunning } from './running';
+import { memoryText, runningFor, runningOfWorkspaces, shortServiceName, type WorkspaceRunning } from './running';
 import type { RunningServiceEntry, RunningServicePort } from '@kelpi/protocol';
 import {
     ChromeIcon,
@@ -2047,6 +2047,8 @@ export interface SidebarProps extends SidebarCallbacks {
     readonly onOpenServicePort?: ((service: RunningServiceEntry, port: RunningServicePort) => void) | undefined;
     /** The row menu's Services ▸ Show in Inspector: switch to the workspace, open the Inspector. */
     readonly onShowServices?: ((workspaceID: string) => void) | undefined;
+    /** docs/running-services.md §6: the row menu's Services ▸ Stop All…, which asks first. */
+    readonly onStopServices?: ((workspaceID: string) => void) | undefined;
     /** The daemon's `confirm-workspace-delete` setting; default true, as the config's is. */
     readonly confirmDeleteWhenActive?: boolean | undefined;
     /** The alert's suppression button — honoured whichever button ended the dialog. */
@@ -2300,6 +2302,8 @@ type ConfirmState =
           readonly memberCount: number;
           /** §2.9: the members' nested workspaces, which a cascading delete takes too. */
           readonly nestedCount: number;
+          /** Every workspace a cascading delete takes, nested ones included (its services). */
+          readonly memberIDs?: readonly string[] | undefined;
       }
     /** §WS-060: one confirmation for the whole selection, never N prompts. */
     | { readonly kind: 'workspaces'; readonly ids: readonly string[] };
@@ -4577,7 +4581,21 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                       }
                                   }
                               ];
-                    const items = [...opens, ...(opens.length > 0 && show.length > 0 ? [{ id: 'services:sep', kind: 'separator' } as MenuItemSpec] : []), ...show];
+                    const stopAll: MenuItemSpec[] =
+                        props.onStopServices === undefined
+                            ? []
+                            : [
+                                  {
+                                      id: 'services:stop',
+                                      label: running.services.length === 1 ? `Stop ${shortServiceName(running.services[0] as RunningServiceEntry)}…` : `Stop All (${String(running.services.length)})…`,
+                                      danger: true,
+                                      onSelect: () => {
+                                          props.onStopServices?.(workspaceID);
+                                      }
+                                  }
+                              ];
+                    const tail = [...show, ...stopAll];
+                    const items = [...opens, ...(opens.length > 0 && tail.length > 0 ? [{ id: 'services:sep', kind: 'separator' } as MenuItemSpec] : []), ...tail];
                     return items.length === 0 ? [] : [{ id: 'services', label: 'Services', submenu: items } satisfies MenuItemSpec];
                 })(),
                 {
@@ -4846,7 +4864,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             nestedCount:
                                 entry?.kind === 'group'
                                     ? [...(entry.nested?.values() ?? [])].reduce((sum, kids) => sum + kids.length, 0)
-                                    : 0
+                                    : 0,
+                            ...(entry?.kind === 'group' ? { memberIDs: groupWorkspaceIDs(entry) } : {})
                         });
                     }
                 }
@@ -5823,25 +5842,36 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 <ConfirmDialog
                     confirm={confirm}
                     worktrees={props.worktreeCleanup}
+                    {...(props.runningServices === undefined
+                        ? {}
+                        : { services: (ids: readonly string[]) => runningOfWorkspaces(props.runningServices, ids) })}
                     onCancel={(suppress) => {
                         // macOS HIG (`WorkspaceDeleteGate.swift:78`): the suppression box is
                         // honoured whichever button ended the dialog, Cancel included.
                         if (suppress) props.onSuppressDeleteConfirm?.();
                         setConfirm(null);
                     }}
-                    onConfirm={(cascade, suppress, cleanup) => {
+                    onConfirm={(cascade, suppress, cleanup, stopServices) => {
                         if (suppress) props.onSuppressDeleteConfirm?.();
                         // `cleanup` stays off the call entirely when the dialog had no list, so a
                         // callback written before it existed sees exactly the arguments it did.
+                        // docs/running-services.md §6: so does the stop, unless it was ticked.
+                        const stop = stopServices === true ? ({ stopServices: true } as const) : undefined;
                         const extra = cleanup === undefined ? [] : ([cleanup] as const);
                         // §2.9: `cascade` on a workspace is "also delete its nested workspaces".
                         if (confirm.kind === 'workspace' && cascade) {
-                            props.onDeleteWorkspace?.(confirm.id, cleanup, { cascadeChildren: true });
-                        } else if (confirm.kind === 'workspace') props.onDeleteWorkspace?.(confirm.id, ...extra);
-                        else if (confirm.kind === 'group') {
-                            if (cascade) props.onDeleteGroup?.(confirm.id, true, ...extra);
+                            props.onDeleteWorkspace?.(confirm.id, cleanup, { cascadeChildren: true, ...stop });
+                        } else if (confirm.kind === 'workspace') {
+                            if (stop !== undefined) props.onDeleteWorkspace?.(confirm.id, cleanup, stop);
+                            else props.onDeleteWorkspace?.(confirm.id, ...extra);
+                        } else if (confirm.kind === 'group') {
+                            if (cascade && stop !== undefined) props.onDeleteGroup?.(confirm.id, true, cleanup, stop);
+                            else if (cascade) props.onDeleteGroup?.(confirm.id, true, ...extra);
                             else props.onDeleteGroup?.(confirm.id, false);
-                        } else if (props.onDeleteWorkspaces !== undefined) props.onDeleteWorkspaces(confirm.ids, ...extra);
+                        } else if (props.onDeleteWorkspaces !== undefined) {
+                            if (stop !== undefined) props.onDeleteWorkspaces(confirm.ids, cleanup, stop);
+                            else props.onDeleteWorkspaces(confirm.ids, ...extra);
+                        }
                         // No bulk callback wired: N single deletes still beat doing nothing.
                         else for (const id of confirm.ids) props.onDeleteWorkspace?.(id);
                         if (confirm.kind === 'workspaces') setSelection(EMPTY_SELECTION);
@@ -6020,9 +6050,19 @@ interface ConfirmDialogProps {
     readonly confirm: ConfirmState;
     /** graft-git.md §8.7's list; absent = none. */
     readonly worktrees?: WorktreeCleanupSource | undefined;
+    /** docs/running-services.md §6: what the deleted workspaces run; absent = no checkbox. */
+    readonly services?: ((workspaceIDs: readonly string[]) => WorkspaceRunning | undefined) | undefined;
     readonly onCancel: (suppress: boolean) => void;
-    /** `cleanup` as `onDeleteWorkspace`'s (`chrome/types.ts`). */
-    readonly onConfirm: (cascade: boolean, suppress: boolean, cleanup?: WorktreeCleanupChoice | null) => void;
+    /** `cleanup` as `onDeleteWorkspace`'s (`chrome/types.ts`); `stopServices` the services box. */
+    readonly onConfirm: (cascade: boolean, suppress: boolean, cleanup?: WorktreeCleanupChoice | null, stopServices?: boolean) => void;
+}
+
+/**
+ * docs/running-services.md §6 (D3): ticked only when every service was started from these
+ * workspaces' panes; one placed by its folder or a compose label may be someone else's.
+ */
+export function stopServicesByDefault(running: WorkspaceRunning): boolean {
+    return running.services.every((service) => service.attribution === 'process-tree');
 }
 
 function cleanupTarget(confirm: ConfirmState, cascadeChildren: boolean): WorktreeCleanupTarget {
@@ -6055,6 +6095,18 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     const cleanupSource =
         props.confirm.kind === 'group' && props.confirm.memberCount === 0 ? undefined : props.worktrees;
     const cleanup = useWorktreeCleanup(cleanupSource, cleanupTarget(props.confirm, cascadeChildren));
+    /*
+     * docs/running-services.md §6 (D3): the services of every workspace this delete takes. A
+     * group's only go with "Delete Group and N Workspaces"; moving them to the top level stops
+     * nothing. Null until the box is touched, so its default follows the cascade toggle.
+     */
+    const doomedIDs =
+        props.confirm.kind === 'group'
+            ? (props.confirm.memberIDs ?? [])
+            : (cleanupTarget(props.confirm, cascadeChildren) as { readonly workspaceIDs: readonly string[] }).workspaceIDs;
+    const services = props.services?.(doomedIDs);
+    const [stopChoice, setStopChoice] = useState<boolean | null>(null);
+    const stopServices = services === undefined ? false : (stopChoice ?? stopServicesByDefault(services));
     /*
      * H11's fill tone for the three answers. The global reset strips the user-agent hover
      * response and nothing here painted one back, so `Delete "<name>"?`'s buttons were the only
@@ -6202,6 +6254,19 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                 state={cleanup}
                 note={isGroup ? `Only when the ${workspaceNoun} ${members === 1 ? 'is' : 'are'} deleted too.` : undefined}
             />
+            {services === undefined || services.services.length === 0 ? null : (
+                <label className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: tokens.textSecondary }}>
+                    <input
+                        type="checkbox"
+                        data-testid="confirm-stop-services"
+                        checked={stopServices}
+                        onChange={(event) => setStopChoice(event.target.checked)}
+                    />
+                    {`Also stop ${String(services.services.length)} service${services.services.length === 1 ? '' : 's'}${
+                        services.rssBytes > 0 ? ` (${memoryText(services.rssBytes)})` : ''
+                    }${isGroup ? ', with the workspaces' : ''}`}
+                </label>
+            )}
             {activeAgents > 0 ? (
                 <label className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: tokens.textSecondary }}>
                     <input
@@ -6269,7 +6334,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                             background: hoverFill(hoveredAction === 'cascade')
                         }}
                         onClick={() => {
-                            props.onConfirm(true, suppress, cleanup.confirm());
+                            props.onConfirm(true, suppress, cleanup.confirm(), stopServices);
                         }}
                     >
                         {`Delete Group and ${String(members)} ${workspaceNoun[0]?.toUpperCase() ?? ''}${workspaceNoun.slice(1)}`}
@@ -6289,7 +6354,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         // Moving a group's workspaces to the top level deletes none of them, so
                         // it takes no worktree with it (and remembers no choice about them).
                         if (isGroup) props.onConfirm(false, suppress);
-                        else props.onConfirm(cascadeChildren, suppress, cleanup.confirm());
+                        else props.onConfirm(cascadeChildren, suppress, cleanup.confirm(), stopServices);
                     }}
                 >
                     {isGroup ? (members > 0 ? 'Move Workspaces to Top Level' : 'Delete Group') : 'Delete'}

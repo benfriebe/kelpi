@@ -156,11 +156,13 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         cleanup: WorkspaceDeleteCleanup,
         allowLast: boolean,
         /** §2.9: every delete in the batch also takes its nested workspaces. */
-        cascadeChildren = false
+        cascadeChildren = false,
+        /** docs/running-services.md §6: every delete also stops its workspace's services. */
+        stopServices = false
     ): Promise<void> => {
         const fields = cleanupFields(cleanup);
         const last = workspaceIDs.at(-1);
-        const cascade = cascadeChildren ? { cascadeChildren: true } : {};
+        const cascade = { ...(cascadeChildren ? { cascadeChildren: true } : {}), ...(stopServices ? { stopServices: true } : {}) };
         if (fields === null || last === undefined) {
             await Promise.all(workspaceIDs.map((workspaceID) => sendDelete(label, workspaceID, allowLast, cascade)));
             return;
@@ -415,7 +417,7 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
 
         deleteWorkspace(
             workspaceID: string,
-            options: { allowLast?: boolean; cleanup?: WorkspaceDeleteCleanup; cascadeChildren?: boolean } = {}
+            options: { allowLast?: boolean; cleanup?: WorkspaceDeleteCleanup; cascadeChildren?: boolean; stopServices?: boolean } = {}
         ): boolean {
             // The sidebar runs its own confirmation first, which is the GUI's
             // "delete anyway?" — so the command goes out forced, as the app's own
@@ -429,7 +431,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                 [workspaceID],
                 options.cleanup,
                 options.allowLast === true,
-                options.cascadeChildren === true
+                options.cascadeChildren === true,
+                options.stopServices === true
             );
             return true;
         },
@@ -579,15 +582,16 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             return run('Rename group', commands.renameGroup({ group: groupID, newName: trimmed }));
         },
 
-        deleteGroup(groupID: string, cascade: boolean, cleanup?: WorkspaceDeleteCleanup): boolean {
-            if (!cascade || cleanupFields(cleanup) === null) {
+        deleteGroup(groupID: string, cascade: boolean, cleanup?: WorkspaceDeleteCleanup, options: { stopServices?: boolean | undefined } = {}): boolean {
+            const stopServices = cascade && options.stopServices === true;
+            if (!cascade || (cleanupFields(cleanup) === null && !stopServices)) {
                 return run('Delete group', commands.deleteGroup({ group: groupID, cascade }));
             }
             // `group-delete` is fire-and-forget, so it has no reply to carry worktree outcomes
             // on: the members go one delete each (forced and allowed to reach zero, exactly as
             // the cascade is), then the group, empty by then.
             const members = targetWorkspaceIDs(store.getState().daemon.state, { groupID });
-            void sendDeletes('Delete group', members, cleanup, true).then(() => {
+            void sendDeletes('Delete group', members, cleanup, true, false, stopServices).then(() => {
                 run('Delete group', commands.deleteGroup({ group: groupID, cascade: false }));
             });
             return true;
@@ -636,8 +640,8 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
             );
         },
 
-        deleteWorkspaces(workspaceIDs: readonly string[], cleanup?: WorkspaceDeleteCleanup): boolean {
-            void sendDeletes('Delete workspaces', workspaceIDs, cleanup, false);
+        deleteWorkspaces(workspaceIDs: readonly string[], cleanup?: WorkspaceDeleteCleanup, options: { stopServices?: boolean | undefined } = {}): boolean {
+            void sendDeletes('Delete workspaces', workspaceIDs, cleanup, false, false, options.stopServices === true);
             return true;
         },
 

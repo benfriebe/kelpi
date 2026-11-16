@@ -19,6 +19,7 @@ export const BUILTIN_CLI_VERBS: readonly string[] = [
     'graft',
     'web',
     'ps',
+    'kill',
     'doctor',
     'daemon',
     'install-hooks',

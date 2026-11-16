@@ -125,7 +125,13 @@ export const WIRE_FIELD_TYPES = {
     workspace_id: 'uuid',
     tab_id: 'uuid',
     to_workspace_id: 'uuid',
-    target_pane_id: 'uuid'
+    target_pane_id: 'uuid',
+    ids: 'string[]',
+    port: 'int',
+    member: 'string',
+    confirmed: 'bool',
+    wait_ms: 'int',
+    stop_services: 'bool'
 } as const satisfies Record<string, WireFieldKind>;
 
 export type WireFieldName = keyof typeof WIRE_FIELD_TYPES;

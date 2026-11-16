@@ -224,6 +224,8 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 15_000;
 export const WORKTREE_COMMAND_TIMEOUT_MS = 120_000;
 /** Ending an old terminal host and typing its agents' resumes takes seconds, not milliseconds. */
 export const RESTART_OLD_TERMINALS_TIMEOUT_MS = 60_000;
+/** A stop scans, signals, waits up to 5 s and may wait for Docker's own stop timeout. */
+export const RUNNING_STOP_TIMEOUT_MS = 60_000;
 /**
  * A delete that removes worktrees replies after git has deleted every file in them, and a
  * checkout with a `node_modules` is a lot of files (graft-git.md §8.7).
@@ -934,6 +936,8 @@ export class CommandClient {
              * move up into its place). GUI-only, so it rides the WS `delete-workspace` verb.
              */
             cascadeChildren?: boolean;
+            /** docs/running-services.md §6: stop the deleted workspaces' services once the delete stands. */
+            stopServices?: boolean;
         },
         options?: SendOptions
     ): Promise<CommandReply> {
@@ -950,6 +954,7 @@ export class CommandClient {
                       ...(input.batchIDs !== undefined && input.batchIDs.length > 0 ? { batch_ids: [...input.batchIDs] } : {})
                   }
                 : null;
+        const stop = input.stopServices === true ? { stop_services: true } : {};
         const sendOptions = options ?? (cleanup === null ? {} : { timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS });
         if (input.allowLast === true || input.cascadeChildren === true) {
             return this.raw(
@@ -958,13 +963,14 @@ export class CommandClient {
                     force: input.force ?? false,
                     ...(input.allowLast === true ? { allow_last: true } : {}),
                     ...(input.cascadeChildren === true ? { cascade_children: true } : {}),
-                    ...cleanup
+                    ...cleanup,
+                    ...stop
                 }),
                 sendOptions
             );
         }
         return this.raw(
-            wirePayload('workspace-delete', { name: input.workspace, force: input.force ?? false, ...cleanup }),
+            wirePayload('workspace-delete', { name: input.workspace, force: input.force ?? false, ...cleanup, ...stop }),
             sendOptions
         );
     }
@@ -1420,6 +1426,26 @@ export class CommandClient {
      */
     restartOldTerminals(options?: SendOptions): Promise<CommandReply> {
         return this.raw(wirePayload('restart-old-terminals', {}), { timeoutMs: RESTART_OLD_TERMINALS_TIMEOUT_MS, ...options });
+    }
+
+    /**
+     * docs/running-services.md §6: stop services by id. Replies `{ results }` once they have
+     * exited or `waitMs` (default 5 s) has passed; owner-only, so a paired device is refused.
+     */
+    runningStop(
+        input: { ids: readonly string[]; member?: string; force?: boolean; confirmed?: boolean; waitMs?: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('running-stop', {
+                ids: [...input.ids],
+                member: input.member,
+                force: input.force === true ? true : undefined,
+                confirmed: input.confirmed === true ? true : undefined,
+                wait_ms: input.waitMs
+            }),
+            { timeoutMs: RUNNING_STOP_TIMEOUT_MS, ...options }
+        );
     }
 
     /**

@@ -48,6 +48,7 @@ export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-icon',
     'workspace-color',
     'running-list',
+    'running-stop',
     'group-set-repo',
     'group-reorder',
     'group-sort',

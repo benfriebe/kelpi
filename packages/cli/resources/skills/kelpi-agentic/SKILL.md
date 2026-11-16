@@ -522,6 +522,26 @@ workspace's services; `--workspace <name-or-id>` narrows it to one and
 stdout still lists what the other probes found. Outside a Kelpi pane,
 `--current --json` prints `[]` and exits 0.
 
+### `kelpi kill`: stop a dev server you started
+
+```bash
+kelpi kill :3000                      # the service on port 3000 (the whole stack)
+kelpi kill <id> --force               # what is still running after "still running after the wait"
+```
+
+Stop your own servers when you are done with them, or before starting a
+fresh one on the same port. A port names the whole service that listens
+on it: `kelpi kill :3000` on a turbo stack stops all of its servers, and
+the output says which ports went. `--member <pid>` stops one process of
+it. A foreground job in a pane gets Ctrl-C; anything else gets SIGTERM,
+and after 5 s the command says what is still running (exit 1);
+`--force` sends SIGKILL. Kelpi, other users' processes and agents' own
+ports are never stopped.
+
+A service started outside Kelpi (another terminal app, a desktop app,
+launchd) is refused unless you pass `--yes`. **Ask the user first**,
+naming the process, and pass `--yes` only once they agree.
+
 ### Event Commands (Agent Lifecycle)
 
 ```bash

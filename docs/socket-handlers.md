@@ -1234,8 +1234,14 @@ under")`; parent nested itself → the `nestingRefusal` text. The resolved `pare
 `childOrder`); the group-default repository and worktree switch come from the parent's group
 (`groupIDForWorkspace(parent)`), so a nested create reaches (d) or (a) exactly like a create in
 that group, but no group is ever created or echoed. Every success reply of a nested create
-carries `parent_id` / `parent_name` read back from the store (on (b), from the resolved parent,
-since it replies before the effect).
+carries `parent_id` and `parent_name`. Branch (b) uses the resolved parent. The other branches
+look up the created workspace's parent.
+
+`collapse_parent: true` requires a resolved parent and background creation. The handler rejects
+other combinations before starting any effects. The reducer changes the parent's disclosure state
+as it appends the child and preserves the group's visibility. The handler reads back
+`parent_collapsed` after dispatch. With this option, branch (b) replies after the store update
+and before spawning the pane, starting an agent, or persisting.
 
 (a) and (d) await git before they create anything, and the parent can be deleted, or nested
 under another workspace, meanwhile, so both check it again (`lostParent`) once git is done. (d)
@@ -1374,12 +1380,12 @@ with git) and replies AFTER the effect, like (a):
 6. Reply `{"ok": true, "workspace_id", "workspace_name", "muted", "repo_path", "group"?}`.
 
 A group with no default repository (or `groupDefaults: false`) and no `repo` falls through to
-(b) / (c) unchanged, including their reply-before-effect ordering. The New Workspace sheet
+(b) / (c), which normally reply before the effect. The New Workspace sheet
 always sends `groupDefaults: false`: it associates the user's chosen repos itself.
 
 #### (b) Top-level branch (no worktree, `group` missing or whitespace-only)
 
-Pre-mint the id, **reply immediately** —
+Pre-mint the id and **reply immediately** for an ordinary create —
 
 ```json
 {"ok": true, "workspace_id": "…", "workspace_name": "Workspace"}
@@ -1400,9 +1406,9 @@ twice is idempotent.
 **Background by default (issue #307), every branch.** Without `focus: true` the action carries
 `focus: false`: the reducer leaves `lastActiveWorkspaceID` where it was (unless no workspace is
 active at all, when the new one takes it), appends the row to the end of its scope (parent's
-children, group, or top level) regardless of `new-workspace-placement`, still un-collapses the
-destination group or parent, and no `reveal-pane` is broadcast. The daemon and the windows
-keep agreeing by moving neither. That replaces run-B L3's "move both" (a CLI create used to
+children, group, or top level) regardless of `new-workspace-placement`, and broadcasts no
+`reveal-pane`. The destination opens unless `collapse_parent: true` was requested. The daemon
+and the windows keep agreeing by moving neither. That replaces run-B L3's "move both" (a CLI create used to
 move ACTIVE without moving the windows, and an agent's follow-up `kelpi pane create` landed
 somewhere the user could not see); an agent now names `--workspace` for its follow-ups.
 

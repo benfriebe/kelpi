@@ -240,6 +240,8 @@ export interface WorkspaceCreateReply extends ReplySuccess {
      */
     readonly parent_id?: string;
     readonly parent_name?: string;
+    /** Present when collapse_parent was requested. True if the parent ended up collapsed. */
+    readonly parent_collapsed?: boolean;
     /**
      * §2.9: set when the parent was deleted (or nested itself) while a worktree create's git work
      * ran. The worktree already existed, so the workspace was created at the top level instead;

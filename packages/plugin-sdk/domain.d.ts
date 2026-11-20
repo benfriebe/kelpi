@@ -68,11 +68,16 @@ export interface WorkspaceCreateOptions {
      */
     parentID?: string;
     /**
-     * Switch to the new workspace. Defaults to true: the helper assumes a user gesture. Code that
-     * runs WITHOUT one (a backend reacting to events, timers or services) must pass `focus:
-     * false`, or every window jumps to the workspace while the user is typing elsewhere.
+     * Switch to the new workspace. Defaults to true, or false when `collapseParent` is true.
+     * For other background creates, pass `focus: false`.
      */
     focus?: boolean;
+    /**
+     * Create in the background and collapse the parent's children. Requires `parentID`.
+     * The group keeps its visibility. If the daemon's active workspace is already a child,
+     * the parent's expanded or collapsed state is preserved.
+     */
+    collapseParent?: boolean;
 }
 export interface WorkspaceCreated extends WorkspaceIdentity {
     group?: string; worktreePath?: string; branch?: string;
@@ -90,6 +95,12 @@ export interface WorkspaceCreated extends WorkspaceIdentity {
      * workspace in the error's `details`.
      */
     parentID?: string; parentName?: string;
+    /**
+     * Whether the parent ended up collapsed, when `collapseParent` was requested.
+     * A daemon that supports nesting but predates this option still creates the child and
+     * returns `undefined` for this field.
+     */
+    parentCollapsed?: boolean;
 }
 export interface WorkspaceNested extends WorkspaceIdentity {
     parentID: string; parentName: string;

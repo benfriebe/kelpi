@@ -901,6 +901,17 @@ describe('workspace and group commands', () => {
         });
     });
 
+    it('decodes collapse_parent as an optional boolean on workspace-create', () => {
+        for (const collapse_parent of [true, false]) {
+            expect(ok({ command: 'workspace-create', collapse_parent })).toMatchObject({ collapse_parent });
+        }
+        expect(ok({ command: 'workspace-create' })).toMatchObject({ collapse_parent: undefined });
+        expect(rejected({ command: 'workspace-create', collapse_parent: 'true' })).toMatchObject({
+            reason: 'field-type',
+            field: 'collapse_parent'
+        });
+    });
+
     it('decodes workspace-mute with an explicit state or a toggle', () => {
         expect(ok({ command: 'workspace-mute', name: 'feat-x', muted: true })).toEqual({
             command: 'workspace-mute',

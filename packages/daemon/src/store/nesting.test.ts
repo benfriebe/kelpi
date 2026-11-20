@@ -87,6 +87,63 @@ describe('creating a nested workspace', () => {
         expect(childrenOf(h.state(), W2)).toEqual([]);
     });
 
+    it.each([false, true])('appends and collapses in one batch with group collapsed=%s', (groupCollapsed) => {
+        const h = family();
+        h.dispatch(
+            { type: 'create-group', id: G1, name: 'Client', now: NOW, initialWorkspaceIDs: [W1] },
+            { type: 'set-group-collapsed', id: G1, collapsed: groupCollapsed },
+            { type: 'set-active-workspace', id: W4, now: NOW }
+        );
+        const before = h.state();
+        const batchIndex = h.batches.length;
+        const worker = id('bbbbbbbb', 5);
+        h.dispatch(create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true }));
+
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: true });
+        expect(h.state().groups).toEqual(before.groups);
+        expect(h.state().topLevelOrder).toEqual(before.topLevelOrder);
+        expect(h.state().lastActiveWorkspaceID).toBe(W4);
+        expect(h.batches).toHaveLength(batchIndex + 1);
+        const mirror = applyDomainEvents(before, h.batches[batchIndex] ?? []);
+        expect(workspaceByID(mirror, W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: true });
+        expect(workspaceByID(mirror, worker)?.name).toBe('worker-c');
+    });
+
+    it('keeps an active sibling visible and appends the background child', () => {
+        const h = family();
+        const worker = id('bbbbbbbb', 5);
+        h.dispatch(
+            { type: 'set-active-workspace', id: W2, now: NOW },
+            create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true })
+        );
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: false });
+        expect(h.state().lastActiveWorkspaceID).toBe(W2);
+        expect(visibleWorkspaceOrder(h.state())).toContain(W2);
+    });
+
+    it('preserves a manual collapse while an existing child is active', () => {
+        const h = family();
+        const worker = id('bbbbbbbb', 5);
+        h.dispatch(
+            { type: 'set-active-workspace', id: W2, now: NOW },
+            { type: 'set-workspace-children-collapsed', id: W1, collapsed: true },
+            create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true })
+        );
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: true });
+        expect(h.state().lastActiveWorkspaceID).toBe(W2);
+        expect(visibleWorkspaceOrder(h.state())).toEqual([W1, W4]);
+    });
+
+    it('keeps the new child visible when no workspace was active', () => {
+        const initial = family().state();
+        const h = harness({ ...initial, lastActiveWorkspaceID: null });
+        h.dispatch({ type: 'set-workspace-children-collapsed', id: W1, collapsed: true });
+        const worker = id('bbbbbbbb', 5);
+        h.dispatch(create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true }));
+        expect(h.state().lastActiveWorkspaceID).toBe(worker);
+        expect(visibleWorkspaceOrder(h.state())).toContain(worker);
+    });
+
     it('places near the active sibling under near-selection', () => {
         const h = family();
         h.dispatch(

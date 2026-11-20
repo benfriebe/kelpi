@@ -56,6 +56,7 @@ import {
     type JsonObject,
     type WorkspaceColor,
     type WorkspaceCreateMessage,
+    type WorkspaceCreateReply,
     type WorkspaceDeleteMessage,
     type WorkspaceListEntry,
     type WorkspaceNestMessage
@@ -297,6 +298,7 @@ interface CreateInput {
     readonly groupID: string | undefined;
     /** app-state-core.md §2.9: nest under this workspace (wins over `groupID`). */
     readonly parentID: string | undefined;
+    readonly collapseParent?: boolean | undefined;
     readonly workspaceID: string;
     readonly repoAssociations: readonly RepoAssociation[] | undefined;
     /**
@@ -308,7 +310,12 @@ interface CreateInput {
     readonly agent: AgentStart | undefined;
 }
 
-function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): void {
+function dispatchCreate(
+    ctx: AppContext,
+    deps: AppDeps,
+    input: CreateInput,
+    onDispatched?: (collapse: Pick<WorkspaceCreateReply, 'parent_collapsed'>) => void
+): Pick<WorkspaceCreateReply, 'parent_collapsed'> {
     const state = ctx.store.getState();
     const paneID = deps.uuid();
     ctx.store.dispatch({
@@ -322,6 +329,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.workingDirectory !== undefined ? { workingDirectory: input.workingDirectory } : {}),
         ...(input.groupID !== undefined ? { groupID: input.groupID } : {}),
         ...(input.parentID !== undefined ? { parentID: input.parentID } : {}),
+        ...(input.collapseParent ? { collapseParent: true } : {}),
         ...(input.profile !== undefined ? { profileName: input.profile } : {}),
         ...(input.muted ? { muted: true } : {}),
         ...(input.icon !== null ? { icon: input.icon } : {}),
@@ -329,6 +337,13 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
         ...(input.repoAssociations !== undefined ? { repoAssociations: input.repoAssociations } : {}),
         focus: input.focus
     });
+    const collapse = input.collapseParent
+        ? {
+            parent_collapsed:
+                input.parentID !== undefined && workspaceByID(ctx.store.getState(), input.parentID)?.childrenCollapsed === true
+        }
+        : {};
+    onDispatched?.(collapse);
     deps.scrollTarget(workspaceSidebarID(input.workspaceID));
     const firstPaneID = spawnFirstPane(ctx, deps, input.workspaceID);
     if (input.agent !== undefined) {
@@ -347,6 +362,7 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
     // create`) leaves every window, and the daemon's active workspace, where they were; the
     // windows point their sidebar at the new row instead (`app/new-workspace-cue.ts`).
     if (input.focus) revealCreatedWorkspace(ctx, input.workspaceID, paneID);
+    return collapse;
 }
 
 /**
@@ -717,7 +733,7 @@ function handleWorktreeCreate(
                     }
                 });
             }
-            dispatchCreate(ctx, deps, {
+            const collapse = dispatchCreate(ctx, deps, {
                 name: workspaceName,
                 workingDirectory: seed.path,
                 color: msg.color,
@@ -727,6 +743,7 @@ function handleWorktreeCreate(
                 keepEmoji: msg.keep_emoji === true,
                 groupID,
                 parentID: parentLost === null ? parentID : undefined,
+                collapseParent: msg.collapse_parent,
                 workspaceID,
                 focus: msg.focus === true,
                 repoAssociations: [
@@ -756,6 +773,7 @@ function handleWorktreeCreate(
                 ...iconEcho(created?.icon ?? null),
                 ...(groupName !== undefined ? { group: groupName } : {}),
                 ...parentEcho(ctx.store.getState(), workspaceID),
+                ...collapse,
                 ...(parentLost !== null ? { parent_lost: true, parent_lost_reason: parentLost } : {})
             });
         })
@@ -832,7 +850,7 @@ function handleCreateWithRepo(
                     ctx.store.dispatch({ type: 'create-group', id: groupID, name: trimmedGroup, now: deps.now() });
                 }
             }
-            dispatchCreate(ctx, deps, {
+            const collapse = dispatchCreate(ctx, deps, {
                 name: workspaceName,
                 workingDirectory: msg.path ?? association.worktreePath,
                 color: msg.color,
@@ -842,6 +860,7 @@ function handleCreateWithRepo(
                 keepEmoji: msg.keep_emoji === true,
                 groupID,
                 parentID,
+                collapseParent: msg.collapse_parent,
                 workspaceID,
                 focus: msg.focus === true,
                 repoAssociations: [association],
@@ -856,7 +875,8 @@ function handleCreateWithRepo(
                 ...iconEcho(created?.icon ?? null),
                 repo_path: resolution.repo.path,
                 ...(trimmedGroup !== '' ? { group: groupName } : {}),
-                ...parentEcho(ctx.store.getState(), workspaceID)
+                ...parentEcho(ctx.store.getState(), workspaceID),
+                ...collapse
             });
         })
         .catch((error: unknown) => {
@@ -886,8 +906,12 @@ function handleWorkspaceCreate(
         return;
     }
     const parentID = nesting.parentID;
+    if (msg.collapse_parent && (parentID === undefined || msg.focus === true)) {
+        fail(request, 'collapse_parent requires a background nested workspace create');
+        return;
+    }
 
-    // §6.2 "Starting an agent": checked after the two pure checks above (the last of its own
+    // §6.2 "Starting an agent": checked after the pure checks above (the last of its own
     // checks writes the prompt file) and before ANY branch's own checks, mutations or git work.
     const prepared = prepareAgentLaunch(msg, request, deps);
     if (prepared === null) return;
@@ -927,17 +951,18 @@ function handleWorkspaceCreate(
 
     const workspaceID = deps.uuid();
 
-    // (b) Top-level branch: reply first, then create.
+    // (b) Top-level branch: reply before pane setup. Confirm collapse after the store update.
     // A nested create is this branch too: the child follows its parent, so no group is made.
     if (trimmedGroup === '') {
         const parent = parentID === undefined ? null : workspaceByID(state, parentID);
-        ok(reply, {
+        const created = {
             workspace_id: uuidOut(workspaceID),
             ...createEcho(workspaceName, icon, msg.keep_emoji === true),
             muted: msg.muted === true,
             ...(parent !== null ? { parent_id: uuidOut(parent.id), parent_name: parent.name } : {})
-        });
-        dispatchCreate(ctx, deps, {
+        };
+        if (!msg.collapse_parent) ok(reply, created);
+        const input: CreateInput = {
             name: workspaceName,
             workingDirectory: msg.path,
             color: msg.color,
@@ -947,11 +972,18 @@ function handleWorkspaceCreate(
             keepEmoji: msg.keep_emoji === true,
             groupID: undefined,
             parentID,
+            collapseParent: msg.collapse_parent,
             workspaceID,
             focus: msg.focus === true,
             repoAssociations: undefined,
             agent
-        });
+        };
+        dispatchCreate(
+            ctx,
+            deps,
+            input,
+            msg.collapse_parent ? (collapse) => ok(reply, { ...created, ...collapse }) : undefined
+        );
         return;
     }
 

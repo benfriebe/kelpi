@@ -85,14 +85,21 @@ export function createKelpiAPI(transport, getContext = () => ({}), on = undefine
     };
     const createWorkspace = async (options) => {
         const parent = parentArgument(options.parentID, 'workspace-create');
+        if (options.collapseParent !== undefined && typeof options.collapseParent !== 'boolean') {
+            throw new KelpiError('workspace-create collapseParent must be a boolean', { code: 'INVALID_ARGUMENT', method: 'workspace-create' });
+        }
+        const collapseParent = options.collapseParent === true;
+        if (collapseParent && (parent === undefined || options.focus === true)) {
+            throw new KelpiError('workspace-create collapseParent requires parentID and background creation', { code: 'INVALID_ARGUMENT', method: 'workspace-create' });
+        }
         const result = await run('workspace-create', clean({
             name: options.name, path: options.path, color: options.color, group: options.groupID,
             profile: options.profile, worktree: options.worktree, branch: options.branch,
             update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
             keep_emoji: options.keepEmoji,
             // #307: the wire's absent `focus` is a background create (the CLI/agent default); the
-            // helper assumes a gesture and switches to the workspace unless told `focus: false`.
-            parent, focus: options.focus ?? true,
+            // helper assumes a gesture unless asked to create in the background or collapse.
+            parent, focus: options.focus ?? !collapseParent, collapse_parent: collapseParent ? true : undefined,
         }));
         // The workspace exists either way; `details` carries it so the caller can move or remove it.
         if (parent !== undefined && result.parentLost === true) {

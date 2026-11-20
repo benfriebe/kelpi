@@ -97,6 +97,7 @@ export const WIRE_FIELD_TYPES = {
     group_defaults: 'bool',
     parent: 'string',
     parent_pane_id: 'uuid',
+    collapse_parent: 'bool',
     focus: 'bool',
     worktree_paths: 'string[]',
     force_worktree_paths: 'string[]',

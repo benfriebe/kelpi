@@ -1193,8 +1193,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     //
     // Mount is one ordered chain, and the FONT is its first link (`fonts.ts`):
     //
-    //   font ready → measure the box → construct the engine AT that grid → attach at the same
-    //   grid → the daemon sizes the PTY + its VT, snapshots, and replays → paint.
+    //   font settles or wait times out → measure the box → construct the engine AT that grid →
+    //   attach at the same grid → the daemon sizes the PTY + its VT, snapshots, and replays → paint.
     //
     // Two links used to be missing, and both are visible defects. Measuring before the bundled
     // face has loaded measures the FALLBACK metrics, so the pane attaches with columns the
@@ -1302,7 +1302,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     releasePosterWhenPainted();
                 }) ?? null;
             // Measured through the renderer's own cell metrics, which before `open()` are the
-            // font-derived estimate — now accurate, because the face has loaded.
+            // font-derived estimate. If the font wait timed out, this uses the fallback face.
             const initial = measureGeometry(host, renderer, current.measure);
             if (initial !== null) renderer.resize(initial.cols, initial.rows);
             // A retry builds a fresh renderer, which starts with copy-on-select on; the effect

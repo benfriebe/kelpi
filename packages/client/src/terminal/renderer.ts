@@ -1635,6 +1635,9 @@ class AdapterRenderer implements TerminalRenderer {
 
     remeasure(cellHeightAdjust?: number): void {
         if (this.disposed || this.poisoned) return;
+        if (this.engine === 'ghostty' && cellHeightAdjust !== undefined && Number.isFinite(cellHeightAdjust)) {
+            this.options = { ...this.options, cellHeightAdjust: Math.round(cellHeightAdjust) };
+        }
         this.swallow(() => this.handle?.remeasure?.(cellHeightAdjust));
     }
 
@@ -2149,7 +2152,8 @@ class AdapterRenderer implements TerminalRenderer {
         const planted = this.faults?.fault('load', this.engine);
         if (planted !== undefined) throw new Error(planted);
 
-        const handle = await this.loader(this.options);
+        const loadOptions = this.options;
+        const handle = await this.loader(loadOptions);
         if (this.disposed) {
             try {
                 handle.dispose?.();
@@ -2228,9 +2232,11 @@ class AdapterRenderer implements TerminalRenderer {
             // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what
             // stacks duplicate prompt copies on re-attach (terminal-surface.md §4).
             try {
-                handle.remeasure?.();
+                // The font can settle while the loader still holds the fallback adjustment.
+                const adjustment = this.options.cellHeightAdjust;
+                handle.remeasure?.(adjustment === loadOptions.cellHeightAdjust ? undefined : adjustment);
             } catch {
-                /* an engine without a remeasure hook keeps its construction metrics */
+                /* a failed remeasure leaves the engine on its construction metrics */
             }
             if (terminal.cols !== this.requestedCols || terminal.rows !== this.requestedRows) {
                 terminal.resize(this.requestedCols, this.requestedRows);

@@ -51,8 +51,8 @@ export interface GhosttyAppearance {
      * `adjust-cell-height`: how much taller (or shorter) every terminal row is than the font's
      * own height, as whole pixels or a percentage of that height (`4`, `-2`, `50%`). Null = unset
      * or unparseable, rows keep the font's height. Clamped (see `MIN_/MAX_CELL_HEIGHT_ADJUST_*`)
-     * so a runaway value cannot make a row absurd. The client also stops a shrink at half the
-     * row, because only it knows the font a pane really uses.
+     * so a runaway value cannot make a row absurd. The client limits shrinking to the two
+     * pixels of padding the renderer adds to each row.
      */
     readonly cellHeightAdjust: GhosttyCellHeightAdjust | null;
     /**

@@ -340,6 +340,43 @@ describe('TerminalRenderer adapter', () => {
         renderer.dispose();
     });
 
+    it('applies a row adjustment received while the loader is pending before replay', async () => {
+        const engine = stubEngine();
+        let signalStarted!: (adjustment: number) => void;
+        const started = new Promise<number>((resolve) => {
+            signalStarted = resolve;
+        });
+        const renderer = createRendererFromLoader(
+            'ghostty',
+            (options) => {
+                signalStarted(options.cellHeightAdjust);
+                return engine.loader();
+            },
+            { cellHeightAdjust: 4 }
+        );
+        const opening = renderer.open(host());
+        expect(await started).toBe(4);
+
+        renderer.remeasure?.(9);
+        renderer.remeasure?.();
+        renderer.write('REPLAY');
+        expect(engine.terminal.opened).toBeNull();
+        expect(engine.remeasureArgs).toEqual([]);
+        expect(engine.terminal.writes).toEqual([]);
+
+        let replayAdjustment: number | undefined;
+        engine.terminal.onWriteRecorded = () => {
+            replayAdjustment = engine.remeasureArgs.at(-1);
+        };
+        engine.settle();
+        await opening;
+
+        expect(engine.remeasureArgs).toEqual([9]);
+        expect(replayAdjustment).toBe(9);
+        expect(engine.terminal.writes).toEqual(['REPLAY']);
+        renderer.dispose();
+    });
+
     it('applies a grid requested before the engine finished loading', async () => {
         const engine = stubEngine();
         const renderer = createRendererFromLoader('xterm', engine.loader);
@@ -1419,8 +1456,7 @@ describe('ghostty loader (mocked module)', () => {
                 allowTransparency: false
             });
             const terminal = handle.terminal as unknown as FakeGhosttyTerminal;
-            // The engine gets the pixel adjustment at construction, which is the only time it
-            // is set (a change rebuilds the engine, like a font change).
+            // The engine gets the initial pixel adjustment at construction.
             expect((terminal.options as { cellHeightAdjust?: number }).cellHeightAdjust).toBe(6);
 
             // The measured cell comes straight from the engine's metrics (CSS px).

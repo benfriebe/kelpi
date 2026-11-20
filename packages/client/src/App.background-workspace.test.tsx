@@ -137,10 +137,11 @@ describe('a workspace the daemon creates in the background leaves the window alo
         expect(rowOf(W2)?.getAttribute('data-just-created')).toBe('true');
         h.daemon({ type: 'create-workspace', id: W3, paneID: PANE_W3, name: 'worker two', now: NOW, focus: false, parentID: W1, collapseParent: true });
         expect(rowOf(W2)).toBeNull();
-        expect(document.querySelector('[data-testid="workspace-row"][data-just-created="true"]')).toBeNull();
+        expect(document.querySelector('[data-just-created]')).toBeNull();
 
         await act(async () => { await vi.advanceTimersByTimeAsync(NEW_WORKSPACE_CUE_MS + 1); });
 
+        expect(document.querySelector('[data-just-created]')).toBeNull();
         expect(rowOf(W1)?.querySelector('[data-testid="workspace-children-chevron"]')?.getAttribute('aria-expanded')).toBe('false');
         expect(rowOf(W2)).toBeNull();
         expect(rowOf(W3)).toBeNull();

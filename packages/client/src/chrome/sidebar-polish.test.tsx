@@ -1225,8 +1225,9 @@ describe('row removal animates (§WS-008)', () => {
      */
     it('leaves a collapsing ghost behind, while the row itself is gone at once', () => {
         vi.useFakeTimers();
-        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
+        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} highlightWorkspaceID={W4} />);
         expect(screen.queryAllByTestId('sidebar-row-ghost')).toHaveLength(0);
+        expect(document.querySelector('[data-just-created]')?.getAttribute('data-workspace-id')).toBe(W4);
 
         const shrunk = entries().filter((entry) => entry.kind !== 'workspace' || entry.workspace.id !== W4);
         act(() => {
@@ -1238,7 +1239,8 @@ describe('row removal animates (§WS-008)', () => {
         expect(screen.getAllByTestId('workspace-row')).toHaveLength(3);
 
         const ghost = screen.getByTestId('sidebar-row-ghost');
-        // A ghost answers to nothing: no workspace id, no role, no row testid.
+        // The leaving row cannot restart its creation highlight on the copy.
+        expect(ghost.getAttribute('data-just-created')).toBeNull();
         expect(ghost.getAttribute('data-workspace-id')).toBeNull();
         expect(ghost.getAttribute('role')).toBeNull();
         expect(ghost.parentElement?.dataset['testid']).toBe('sidebar-ghost-layer');

@@ -121,6 +121,57 @@ describe('public SDK over Kelpi command handlers', () => {
             { id: worker.workspaceID, name: 'Worker', parentID: lead.workspaceID, parentName: 'Lead' }
         ]);
     });
+    it('creates a collapsed child in the background when collapseParent is set', async () => {
+        const { api, app, sent } = host();
+        const worker = await api.workspaces.create({ name: 'Worker', parentID: W1, collapseParent: true });
+        expect(sent.at(-1)).toEqual({
+            command: 'workspace-create', name: 'Worker', parent: W1, focus: false, collapse_parent: true
+        });
+        expect(worker).toMatchObject({ parentID: W1, parentCollapsed: true });
+        expect(app.state().workspaces.find(workspace => workspace.id === W1)).toMatchObject({
+            childrenCollapsed: true, childOrder: [worker.workspaceID]
+        });
+        expect(app.state().lastActiveWorkspaceID).toBe(W1);
+
+        const active = await api.workspaces.create({ name: 'Active worker', parentID: W1, collapseParent: false });
+        expect(sent.at(-1)).toEqual({ command: 'workspace-create', name: 'Active worker', parent: W1, focus: true });
+        expect(active).not.toHaveProperty('parentCollapsed');
+        expect(app.state().lastActiveWorkspaceID).toBe(active.workspaceID);
+        await expect(api.workspaces.create({ parentID: W1, focus: false, collapseParent: true }))
+            .resolves.toMatchObject({ parentID: W1, parentCollapsed: false });
+        expect(app.state().lastActiveWorkspaceID).toBe(active.workspaceID);
+    });
+
+    it('refuses invalid collapseParent requests before sending anything', async () => {
+        const { api, app, sent } = host();
+        const before = app.state();
+        for (const options of [{}, { parentID: W1, focus: true }]) {
+            await expect(api.workspaces.create({ collapseParent: true, ...options })).rejects.toMatchObject({
+                code: 'INVALID_ARGUMENT',
+                message: 'workspace-create collapseParent requires parentID and background creation'
+            });
+        }
+        for (const value of ['true', 1, null]) {
+            await expect(api.workspaces.create({ parentID: W1, collapseParent: value as unknown as boolean })).rejects.toMatchObject({
+                code: 'INVALID_ARGUMENT',
+                message: 'workspace-create collapseParent must be a boolean'
+            });
+        }
+        expect(sent).toEqual([]);
+        expect(app.state()).toBe(before);
+    });
+
+    it('returns the child without parentCollapsed when the daemon supports nesting but ignores collapseParent', async () => {
+        const transport = vi.fn(async () => ({
+            ok: true, workspace_id: 'NEW', workspace_name: 'Worker', parent_id: W1, muted: false
+        }));
+        const older = createKelpiAPI(transport);
+        await expect(older.workspaces.create({ name: 'Worker', parentID: W1, collapseParent: true })).resolves.toStrictEqual({
+            workspaceID: 'NEW', workspaceName: 'Worker', parentID: W1, muted: false
+        });
+        expect(transport).toHaveBeenCalledOnce();
+    });
+
     it('rejects a parentID list or create that a daemon predating nesting ignored (§2.9)', async () => {
         // An older daemon: it drops `parent`, lists everything and creates at the top level.
         const older = createKelpiAPI(async (_method, args) => {
@@ -130,9 +181,13 @@ describe('public SDK over Kelpi command handlers', () => {
         });
         await expect(older.workspaces.list({ parentID: 'boss' })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
         await expect(older.workspaces.list()).resolves.toHaveLength(2);
-        await expect(older.workspaces.create({ name: 'Worker', parentID: 'boss' })).rejects.toMatchObject({
-            code: 'UNSUPPORTED', details: { workspaceID: 'NEW' }
-        });
+        for (const options of [{}, { collapseParent: true }]) {
+            await expect(older.workspaces.create({ name: 'Worker', parentID: 'boss', ...options })).rejects.toMatchObject({
+                code: 'UNSUPPORTED',
+                message: 'workspace-create ignored parentID: the daemon predates nested workspaces; it was created at the top level',
+                details: { workspaceID: 'NEW' }
+            });
+        }
         // A parent deleted while a worktree create ran: created at the top level, and said so.
         const lost = createKelpiAPI(async () => ({
             ok: true, workspace_id: 'NEW', workspace_name: 'Worker', muted: false,

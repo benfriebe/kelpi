@@ -165,6 +165,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const keepEmoji = popSwitch('--keep-emoji', args);
     const parent = parseFlag('--parent', args);
     const nested = popSwitch('--nested', args);
+    const collapseParent = popSwitch('--collapse-parent', args);
     const agentRaw = parseFlag('--agent', args);
     const prompt = parseFlag('--prompt', args);
     const promptFile = parseFlag('--prompt-file', args);
@@ -197,6 +198,10 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
         exit(1);
     }
     const nesting = parent !== null || nested;
+    if (collapseParent && (!nesting || focus)) {
+        errLine('workspace create --collapse-parent requires --parent or --nested and background creation');
+        exit(1);
+    }
     if (prompt !== null && promptFile !== null) {
         errLine("workspace create can't take both --prompt and --prompt-file");
         exit(1);
@@ -233,6 +238,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     if (keepEmoji) payload['keep_emoji'] = true;
     if (parent !== null) payload['parent'] = parent;
     if (callerPane !== undefined) payload['parent_pane_id'] = callerPane;
+    if (collapseParent) payload['collapse_parent'] = true;
     // #307: without --focus nothing is sent, and the daemon creates the workspace in the
     // background (no window switches to it, and ACTIVE in `workspace list` stays put).
     if (focus) payload['focus'] = true;
@@ -328,6 +334,11 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
                 `(workspace ${workspaceName} (${workspaceID}) was created at the top level)`
         );
         exit(1);
+    }
+    if (collapseParent && asBool(reply['parent_collapsed']) === undefined) {
+        errLine(
+            `Warning: the daemon does not support --collapse-parent. Workspace ${workspaceName} (${workspaceID}) was created.`
+        );
     }
     if (asJSON) {
         printLine(stableStringify(reply));

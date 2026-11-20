@@ -426,6 +426,13 @@ export class FakeRenderer implements TerminalRenderer {
         this.repaints += 1;
     }
 
+    /** Every `remeasure` call, with the row adjustment it carried (`undefined` when none). */
+    readonly remeasures: (number | undefined)[] = [];
+
+    remeasure(cellHeightAdjust?: number): void {
+        this.remeasures.push(cellHeightAdjust);
+    }
+
     revealMatch(match: TerminalMatchLocation): void {
         this.revealed.push(match);
     }

@@ -3,6 +3,7 @@ export declare class CanvasRenderer {
     private ctx;
     private fontSize;
     private fontFamily;
+    private cellHeightAdjust;
     private cursorStyle;
     private cursorBlink;
     private theme;
@@ -84,6 +85,7 @@ export declare class CanvasRenderer {
     private previousHoveredLinkRange;
     constructor(canvas: HTMLCanvasElement, options?: RendererOptions);
     private measureFont;
+    private static wholePixels;
     /**
      * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
      * and the blink timer call it, so the terminal's on-demand render loop wakes.
@@ -275,6 +277,10 @@ export declare class CanvasRenderer {
      * Update font family
      */
     setFontFamily(family: string): void;
+    /**
+     * Update the extra cell height in CSS pixels (vendor 0.4.0-kelpi.26)
+     */
+    setCellHeightAdjust(pixels: number): void;
     /**
      * Update cursor style
      */
@@ -1255,6 +1261,7 @@ export declare interface ITerminalOptions {
     scrollback?: number;
     fontSize?: number;
     fontFamily?: string;
+    cellHeightAdjust?: number;
     allowTransparency?: boolean;
     convertEol?: boolean;
     disableStdin?: boolean;
@@ -1632,6 +1639,11 @@ export declare class OSC8LinkProvider implements ILinkProvider {
 export declare interface RendererOptions {
     fontSize?: number;
     fontFamily?: string;
+    /**
+     * Extra CSS pixels added to (or, negative, taken from) every cell's height (vendor
+     * 0.4.0-kelpi.26). The glyph sits in the middle of the taller cell. Whole pixels; default 0.
+     */
+    cellHeightAdjust?: number;
     cursorStyle?: 'block' | 'underline' | 'bar';
     cursorBlink?: boolean;
     theme?: ITheme;

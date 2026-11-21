@@ -10,7 +10,7 @@
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import type { JsonObject } from '@kelpi/protocol';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
@@ -278,7 +278,7 @@ describe('the inspector', () => {
 });
 
 describe('the sidebar’s width (§WS-002)', () => {
-    it('renders at 220 with a drag handle, and clamps a drag to 300', async () => {
+    it('renders at 220 with a drag handle, and clamps a drag to 480', async () => {
         setup();
         const handle = screen.getByTestId('sidebar-resizer');
         const shell = handle.parentElement as HTMLElement;
@@ -291,9 +291,38 @@ describe('the sidebar’s width (§WS-002)', () => {
         });
         await waitFor(() => {
             expect((screen.getByTestId('sidebar-resizer').parentElement as HTMLElement).style.width).toBe(
-                '300px'
+                '480px'
             );
         });
+    });
+
+    it('keeps room for panes with the inspector open and restores the saved width in a wider window', async () => {
+        localStorage.setItem('kelpi.sidebar.width', '480');
+        const resize = (width: number): void => {
+            vi.stubGlobal('innerWidth', width);
+            fireEvent(window, new Event('resize'));
+        };
+
+        try {
+            resize(600);
+            setup();
+            fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
+            const handle = screen.getByTestId('sidebar-resizer');
+            await waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('200'));
+            expect(handle.getAttribute('aria-valuemax')).toBe('200');
+
+            fireEvent(handle, new MouseEvent('pointerdown', { clientX: 200, button: 0, bubbles: true }));
+            fireEvent(window, new MouseEvent('pointermove', { clientX: 400 }));
+            fireEvent(window, new MouseEvent('pointerup', { clientX: 400 }));
+            expect(handle.getAttribute('aria-valuenow')).toBe('200');
+            expect(localStorage.getItem('kelpi.sidebar.width')).toBe('480');
+
+            resize(1000);
+            expect(handle.getAttribute('aria-valuenow')).toBe('480');
+        } finally {
+            vi.unstubAllGlobals();
+            localStorage.removeItem('kelpi.sidebar.width');
+        }
     });
 });
 

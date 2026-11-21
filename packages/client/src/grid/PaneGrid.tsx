@@ -468,7 +468,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
          * `chrome/gesture-reset.ts` reported a gesture live, flush kept everywhere else) was run
          * against `scripts/ui-audit/resize-lockout.mjs`'s grid probe, which is §N31's own
          * instrument: a second `ResizeObserver` on this container reading how far the pane
-         * wrappers fall short of it. Over a 180 → 300 → 180 sidebar drag with eight panes it
+         * wrappers fall short of it. Over a 180 → 480 → 180 sidebar drag with eight panes it
          * reported an unpainted band in **32 of 65 observations, worst 8.01 CSS px** - §N31
          * exactly, moved from the slide onto the drag. rAF runs before the NEXT frame's
          * rendering steps, so the debt is a frame however cheap the read is.

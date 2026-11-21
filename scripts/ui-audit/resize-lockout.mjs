@@ -46,7 +46,7 @@
  *      body, and a subsequent BARE mousemove does not move the sidebar;
  *   B. the same for a sidebar closed mid-drag with ⇧⌘S, which unmounts the handle;
  *   C. the divider drag ends the same way when the window loses focus;
- *   D. round trips during a 180 → 300 → 180 width drag over eight big panes: p95 < 150 ms;
+ *   D. round trips during a 180 → 480 → 180 width drag over eight big panes: p95 < 150 ms;
  *   E. the drag paints no unpainted band (§N31's grid probe, worst uncovered px).
  *
  *     node scripts/ui-audit/resize-lockout.mjs [--build] [--verbose] [--keep]
@@ -306,7 +306,7 @@ async function main() {
         };
 
         /**
-         * One 180 → 300 → 180 sweep, as a sequence of moves with the button held. Returns the
+         * One 180 → 480 → 180 sweep, as a sequence of moves with the button held. Returns the
          * pointer x it ended on, so the caller can decide how the gesture is (not) released.
          */
         const sweep = async (startX, y, cycles) => {
@@ -315,7 +315,7 @@ async function main() {
             await page.mouse('mousePressed', startX, y, { button: 'left', clickCount: 1 });
             let x = startX;
             for (let cycle = 0; cycle < cycles; cycle += 1) {
-                for (const goal of [300, 180]) {
+                for (const goal of [480, 180]) {
                     const targetX = startX + (goal - base);
                     const steps = 16;
                     for (let step = 1; step <= steps; step += 1) {

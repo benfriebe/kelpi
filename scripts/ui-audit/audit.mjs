@@ -12641,7 +12641,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-resize',
             expect:
-                'The sidebar’s invisible edge handle resizes it, clamped to 180–300 px from a 220 px default, and the width survives a drag past both limits.',
+                'The sidebar’s invisible edge handle resizes it, clamped to 180–480 px from a 220 px default, and the width survives a drag past both limits.',
             needsEyes: true,
             async run(recorder) {
                 const widthOf = () =>
@@ -12669,7 +12669,7 @@ function buildFlows(ctx) {
                 await page.drag(handle.cx + 60, handle.cy, handle.cx + 600, handle.cy);
                 await sleep(400);
                 const clampedMax = await widthOf();
-                recorder.check('and it clamps at 300', clampedMax === 300, `${String(clampedMax)} px`);
+                recorder.check('and it clamps at 480', clampedMax === 480, `${String(clampedMax)} px`);
 
                 const wide = await page.box('[data-testid="sidebar-resizer"]');
                 await page.drag(wide.cx, wide.cy, wide.cx - 600, wide.cy);

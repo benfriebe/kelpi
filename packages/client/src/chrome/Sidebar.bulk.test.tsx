@@ -431,10 +431,10 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
 });
 
 describe('sidebar resize (§WS-002 / §APP-065)', () => {
-    it('clamps to 180–300 and defaults to 220', () => {
+    it('clamps to 180–480 and defaults to 220', () => {
         expect(clampSidebarWidth(220)).toBe(220);
         expect(clampSidebarWidth(10)).toBe(180);
-        expect(clampSidebarWidth(9999)).toBe(300);
+        expect(clampSidebarWidth(9999)).toBe(480);
         expect(clampSidebarWidth(Number.NaN)).toBe(220);
     });
 
@@ -447,8 +447,10 @@ describe('sidebar resize (§WS-002 / §APP-065)', () => {
             }
         } as unknown as Storage;
         expect(readStoredSidebarWidth(storage)).toBe(220);
+        storeSidebarWidth(420, storage);
+        expect(readStoredSidebarWidth(storage)).toBe(420);
         storeSidebarWidth(999, storage);
-        expect(readStoredSidebarWidth(storage)).toBe(300);
+        expect(readStoredSidebarWidth(storage)).toBe(480);
         store.set('kelpi.sidebar.width', 'not-a-number');
         expect(readStoredSidebarWidth(storage)).toBe(220);
     });
@@ -469,10 +471,12 @@ describe('sidebar resize (§WS-002 / §APP-065)', () => {
         // Second move is measured from the START (220 + 60), not from the first result.
         expect(onResize.mock.calls.map((call) => call[0])).toEqual([260, 280]);
 
+        window.dispatchEvent(new MouseEvent('pointermove', { clientX: 420 }));
+        expect(onResize).toHaveBeenLastCalledWith(420);
         window.dispatchEvent(new MouseEvent('pointermove', { clientX: 700 }));
-        expect(onResize).toHaveBeenLastCalledWith(300);
+        expect(onResize).toHaveBeenLastCalledWith(480);
         window.dispatchEvent(new MouseEvent('pointerup', { clientX: 700 }));
-        expect(onCommit).toHaveBeenCalledWith(300);
+        expect(onCommit).toHaveBeenCalledWith(480);
 
         // The listeners are gone: a stray move after the release must not resize anything.
         onResize.mockClear();

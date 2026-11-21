@@ -40,7 +40,7 @@ on the right; either sidebar can host either feature or a compatible plugin:
 ├──────────┬───────────────────────────────┬───────────────┤
 │ Sidebar  │ Pane grid (active workspace)  │ Inspector     │
 │ (optional│                               │ (optional,    │
-│ 180–300, │                               │ fixed 280)    │
+│ 180–480, │                               │ fixed 280)    │
 │ default  │                               │               │
 │ 220)     │                               │               │
 ├──────────┴───────────────────────────────┴───────────────┤
@@ -58,7 +58,7 @@ on the right; either sidebar can host either feature or a compatible plugin:
 - Workspaces has a 1px divider line on the edge nearest the pane grid (theme `divider`
   color: its right edge when placed left, or its left edge when placed right) and an
   invisible resize handle at that edge: zero-width strip with a ±3pt hit inset, shows a
-  left-right resize cursor on hover, drag adjusts width clamped to **[180, 300]** (measured
+  left-right resize cursor on hover, drag adjusts width clamped to **[180, 480]** (measured
   from the width at gesture start, so the edge tracks the cursor). The width is client-local
   (persisted per browser/window in `localStorage` under `kelpi.sidebar.width`; never daemon
   state; `packages/client/src/chrome/SidebarResizer.tsx:9-56`). The gesture ends on

@@ -154,6 +154,7 @@ import {
     SidebarResizer,
     ThemeProvider,
     menuAnchorFromEvent,
+    clampSidebarWidth,
     readStoredSidebarWidth,
     resetGestures,
     cancelHeldGesture,
@@ -521,7 +522,7 @@ function Shell(props: AppProps): ReactElement {
     const [sidebarPhase, setSidebarPhase] = useState<SidebarPhase>(() => (sidebarVisible ? 'open' : 'hidden'));
     /**
      * §WS-002 / §APP-065: the sidebar's width is client-local UI state (the shipped app keeps it
-     * in a view-local `@State`), clamped to 180–300 and remembered across reloads.
+     * in a view-local `@State`), clamped to 180–480 and remembered across reloads.
      */
     const [sidebarWidth, setSidebarWidth] = useState(() => readStoredSidebarWidth());
     /**
@@ -817,7 +818,6 @@ function Shell(props: AppProps): ReactElement {
     }, [sidebarPhase]);
 
     const sidebarMounted = isSidebarMounted(sidebarPhase);
-    const sidebarSlide = sidebarSlideStyle(sidebarPhase, sidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
 
     // ── §APP-066: the INSPECTOR's show/hide slide, the same machine mirrored ─────────
     //
@@ -853,6 +853,16 @@ function Shell(props: AppProps): ReactElement {
     }, [inspectorPhase]);
 
     const inspectorMounted = isSidebarMounted(inspectorPhase);
+    const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+    useEffect(() => {
+        const update = (): void => setWindowWidth(window.innerWidth);
+        window.addEventListener('resize', update);
+        return () => window.removeEventListener('resize', update);
+    }, []);
+    // Leave room for the pane grid while keeping the saved width for larger windows.
+    const sidebarLimit = clampSidebarWidth(windowWidth - (inspectorMounted ? INSPECTOR_WIDTH_PX : 0) - 120);
+    const displayedSidebarWidth = Math.min(sidebarWidth, sidebarLimit);
+    const sidebarSlide = sidebarSlideStyle(sidebarPhase, displayedSidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
     const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, sidebarsSwapped ? 'leading' : 'trailing');
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
@@ -5514,7 +5524,8 @@ function Shell(props: AppProps): ReactElement {
                     {sidebarPhase === 'closing' ? null : (
                         <SidebarResizer
                             side={sidebarsSwapped ? 'right' : 'left'}
-                            width={sidebarWidth}
+                            width={displayedSidebarWidth}
+                            maxWidth={sidebarLimit}
                             onResizeStart={() => setSidebarResizing(true)}
                             /* Issue #79: the flag comes off when the GESTURE ends, not when a
                                width is committed. `onCommit` is skipped for a press that never

@@ -304,7 +304,7 @@ describe('the sidebar’s width (§WS-002)', () => {
         };
 
         try {
-            resize(600);
+            resize(640);
             setup();
             fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
             const handle = screen.getByTestId('sidebar-resizer');
@@ -319,6 +319,15 @@ describe('the sidebar’s width (§WS-002)', () => {
 
             resize(1000);
             expect(handle.getAttribute('aria-valuenow')).toBe('480');
+
+            resize(640);
+            fireEvent(handle, new MouseEvent('pointerdown', { clientX: 200, button: 0, bubbles: true }));
+            fireEvent(window, new MouseEvent('pointermove', { clientX: 180 }));
+            fireEvent(window, new MouseEvent('pointermove', { clientX: 200 }));
+            fireEvent(window, new MouseEvent('pointerup', { clientX: 200 }));
+            expect(localStorage.getItem('kelpi.sidebar.width')).toBe('200');
+            resize(1000);
+            expect(handle.getAttribute('aria-valuenow')).toBe('200');
         } finally {
             vi.unstubAllGlobals();
             localStorage.removeItem('kelpi.sidebar.width');

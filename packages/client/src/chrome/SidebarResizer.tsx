@@ -87,7 +87,7 @@ export interface SidebarResizerProps {
 }
 
 export function SidebarResizer(props: SidebarResizerProps): ReactElement {
-    const drag = useRef<{ startX: number; startWidth: number; latest: number; direction: 1 | -1 } | null>(null);
+    const drag = useRef<{ startX: number; startWidth: number; latest: number; moved: boolean; direction: 1 | -1 } | null>(null);
     /** The exact `removeEventListener` calls for the listeners that are actually installed. */
     const detach = useRef<(() => void) | null>(null);
     /*
@@ -108,6 +108,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
         const next = Math.min(desired, latest.current.maxWidth ?? SIDEBAR_MAX_WIDTH);
         if (next === state.latest) return;
         state.latest = next;
+        state.moved = true;
         latest.current.onResize(next);
     }, []);
 
@@ -120,7 +121,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
         // Unconditional, and BEFORE the commit: this is the "nothing owns the width" signal,
         // and it has to be delivered even for a pointerdown that never moved.
         latest.current.onResizeEnd?.();
-        if (state !== null && state.latest !== state.startWidth) latest.current.onCommit?.(state.latest);
+        if (state?.moved === true) latest.current.onCommit?.(state.latest);
     }, []);
 
     /*
@@ -161,7 +162,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
                 // without a `button` field (jsdom, some remote-input paths) still drags.
                 if (event.button > 0) return;
                 event.preventDefault();
-                drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width, direction: props.side === 'right' ? -1 : 1 };
+                drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width, moved: false, direction: props.side === 'right' ? -1 : 1 };
                 // Before any move: tell assembly a gesture owns the width now, so §WS-001's
                 // slide transition comes off the slot for the length of it.
                 props.onResizeStart?.();

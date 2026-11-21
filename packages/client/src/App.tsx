@@ -86,7 +86,7 @@ import { renderRegisteredView } from './plugins/renderers';
  */
 
 import { canonicalTriggerForPlatform, chordKeyIdentity, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
-import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
+import { MIN_PANE_EXTENT_PX, isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type RunningServiceEntry, type RunningServicePort, type RunningStopResult, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
@@ -859,10 +859,6 @@ function Shell(props: AppProps): ReactElement {
         window.addEventListener('resize', update);
         return () => window.removeEventListener('resize', update);
     }, []);
-    // Leave room for the pane grid while keeping the saved width for larger windows.
-    const sidebarLimit = clampSidebarWidth(windowWidth - (inspectorMounted ? INSPECTOR_WIDTH_PX : 0) - 120);
-    const displayedSidebarWidth = Math.min(sidebarWidth, sidebarLimit);
-    const sidebarSlide = sidebarSlideStyle(sidebarPhase, displayedSidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
     const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, sidebarsSwapped ? 'leading' : 'trailing');
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
@@ -1082,6 +1078,11 @@ function Shell(props: AppProps): ReactElement {
     // ── derived reads ───────────────────────────────────────────────────────────────
 
     const workspace = useMemo(() => selectActiveWorkspace(kelpi), [kelpi]);
+    const inspectorShown = inspectorMounted && workspace !== null;
+    // Leave room for the pane grid while keeping the saved width for larger windows.
+    const sidebarLimit = clampSidebarWidth(windowWidth - (inspectorShown ? INSPECTOR_WIDTH_PX : 0) - MIN_PANE_EXTENT_PX);
+    const displayedSidebarWidth = Math.min(sidebarWidth, sidebarLimit);
+    const sidebarSlide = sidebarSlideStyle(sidebarPhase, displayedSidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
     const focusedPaneID = useMemo(() => selectFocusedPaneID(kelpi), [kelpi]);
     const workspacesModel = useWorkspacesFeatureModel(kelpi);
     const agentSummary = useMemo(() => selectAgentSummary(kelpi), [kelpi]);
@@ -5264,7 +5265,7 @@ function Shell(props: AppProps): ReactElement {
     // the inspector's border is its last pixel too, but the sidebar's line is the resizer's,
     // one pixel past the slot (`SidebarResizer`), so the lead is one pixel wider there.
     const leftSlot = sidebarsSwapped
-        ? inspectorMounted && workspace !== null
+        ? inspectorShown
             ? { width: inspectorSlide.slot.width, animated: true }
             : null
         : sidebarMounted
@@ -5715,7 +5716,7 @@ function Shell(props: AppProps): ReactElement {
               * rather than `inspectorVisible` is what keeps it in the tree for the length of a
               * close; a conditional mount has nothing to transition from.
               */}
-            {inspectorMounted && workspace !== null ? (
+            {inspectorShown ? (
                 <div
                     data-testid="inspector-slot"
                     data-sidebar-side={sidebarsSwapped ? 'left' : 'right'}

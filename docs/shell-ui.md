@@ -59,12 +59,14 @@ on the right; either sidebar can host either feature or a compatible plugin:
   color: its right edge when placed left, or its left edge when placed right) and an
   invisible resize handle at that edge: zero-width strip with a ±3pt hit inset, shows a
   left-right resize cursor on hover, drag adjusts width clamped to **[180, 480]** (measured
-  from the width at gesture start, so the edge tracks the cursor). The width is client-local
+  from the width at gesture start, so the edge tracks the cursor). In a narrow window, the
+  sidebar adapts to leave room for the terminal and Inspector. The saved width returns when
+  space is available again. The width is client-local
   (persisted per browser/window in `localStorage` under `kelpi.sidebar.width`; never daemon
   state; `packages/client/src/chrome/SidebarResizer.tsx:9-56`). The gesture ends on
   `pointerup`, on `pointercancel`, on the handle unmounting mid-drag, and on the window losing
   the pointer (see "Recovering a stuck window" below); every one of those routes fires
-  `onResizeEnd` and commits the width the user last saw.
+  `onResizeEnd` and commits the width if the drag resized the sidebar.
 - When no workspace is active, the pane-grid slot shows an empty state: a large terminal
   glyph (48pt, very faint), "No workspace selected" (secondary text), and a
   "Create Workspace" button that opens the New Workspace sheet.

@@ -1679,11 +1679,27 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         publishMirror,
         releasePosterWhenPainted,
         props.fontFamily,
-        props.fontSize,
-        // The unit and value, not the object: a caller passing a fresh literal must not rebuild it.
-        props.cellHeightAdjust?.unit,
-        props.cellHeightAdjust?.value
+        props.fontSize
     ]);
+
+    const cellHeightAdjust = props.cellHeightAdjust;
+    const previousCellHeightAdjust = useRef(cellHeightAdjust);
+    useEffect(() => {
+        const previous = previousCellHeightAdjust.current;
+        previousCellHeightAdjust.current = cellHeightAdjust;
+        if (previous?.unit === cellHeightAdjust?.unit && previous?.value === cellHeightAdjust?.value) return;
+
+        const renderer = rendererRef.current;
+        if (renderer === null) return;
+        const current = latest.current;
+        renderer.remeasure?.(resolveCellHeightAdjust(
+            cellHeightAdjust,
+            current.fontSize ?? DEFAULT_FONT_SIZE,
+            current.fontFamily ?? DEFAULT_FONT_FAMILY
+        ));
+        syncGeometry(true);
+        renderer.repaint();
+    }, [cellHeightAdjust, syncGeometry]);
 
     // A failed engine shows its error placeholder, and a poster must not cover it.
     useEffect(() => {

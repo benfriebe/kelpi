@@ -2,14 +2,14 @@
  * A MINIMAL `~/.config/ghostty/config` reader (content-panes.md §3.1, §3.8 + port note 9).
  *
  * The Swift app links libghostty and asks it for the resolved terminal config; the daemon has
- * no ghostty, so it reads the seven keys that actually change how Kelpi draws — and nothing else.
+ * no ghostty, so it reads the eight keys that actually change how Kelpi draws — and nothing else.
  * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/kelpi/config`,
  * so the line splitter is `@kelpi/core/config`'s: one parser, one set of quirks.
  *
  * Scope, stated honestly so nobody mistakes this for a ghostty config implementation:
  *
  *   - keys read: `background`, `background-opacity`, `font-family`, `font-size`, `theme`,
- *     `window-padding-x`, `window-padding-y`;
+ *     `window-padding-x`, `window-padding-y`, `adjust-cell-height`;
  *   - every other key is ignored (ghostty has hundreds);
  *   - `config-file = …` includes are NOT followed;
  *   - a `theme` name is reported verbatim here and RESOLVED next door in `./theme.ts`

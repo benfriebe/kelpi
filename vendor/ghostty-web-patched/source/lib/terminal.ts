@@ -318,6 +318,19 @@ export class Terminal implements ITerminalCore {
     }
   }
 
+  /** Refresh metrics and canvas geometry after a font loads without an option change. */
+  public refreshMetrics(): void {
+    const renderer = this.renderer;
+    if (!renderer) return;
+    const previous = renderer.getMetrics();
+    renderer.remeasureFont();
+    const current = renderer.getMetrics();
+    if (previous.width !== current.width || previous.height !== current.height ||
+        previous.baseline !== current.baseline) {
+      this.handleFontChange();
+    }
+  }
+
   /**
    * Handle font changes (fontSize or fontFamily)
    * Updates canvas size to match new font metrics and forces a full re-render

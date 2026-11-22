@@ -2035,8 +2035,8 @@ class R {
     const s = E, h = C + this.metrics.baseline;
     let a;
     if (A.grapheme_len > 0 && ((e = this.currentBuffer) != null && e.getGraphemeString) ? a = this.currentBuffer.getGraphemeString(B, Q) : a = String.fromCodePoint(A.codepoint || 32), this.ctx.fillText(a, s, h), A.flags & J.FAINT && (this.ctx.globalAlpha = 1), A.flags & J.UNDERLINE) {
-      const t = C + this.metrics.baseline + 2;
-      this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, t), this.ctx.lineTo(E + I, t), this.ctx.stroke();
+      const t = this.metrics.baseline + 2, N = C + (this.cellHeightAdjust < 0 ? Math.min(t, this.metrics.height - 0.5) : t);
+      this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, N), this.ctx.lineTo(E + I, N), this.ctx.stroke();
     }
     if (A.flags & J.STRIKETHROUGH) {
       const t = C + this.metrics.height / 2;
@@ -3061,6 +3061,16 @@ const T = class H {
           this.resize(this.options.cols, this.options.rows);
           break;
       }
+  }
+  /** Refresh metrics and canvas geometry after a font loads without an option change. */
+  refreshMetrics() {
+    const A = this.renderer;
+    if (!A)
+      return;
+    const Q = A.getMetrics();
+    A.remeasureFont();
+    const B = A.getMetrics();
+    (Q.width !== B.width || Q.height !== B.height || Q.baseline !== B.baseline) && this.handleFontChange();
   }
   /**
    * Handle font changes (fontSize or fontFamily)

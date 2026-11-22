@@ -693,7 +693,7 @@ describe('TerminalRenderer adapter', () => {
         renderer.dispose();
     });
 
-    it('adds the row height adjustment to the estimate for ghostty only, and never below one pixel', () => {
+    it('adds the row height adjustment to the estimate for ghostty only, and limits shrink to the engine’s padding', () => {
         const natural = estimateCellSize(20, DEFAULT_FONT_FAMILY);
         const estimate = (engine: 'ghostty' | 'xterm', cellHeightAdjust: number): { width: number; height: number } =>
             createRendererFromLoader(engine, stubEngine().loader, { fontSize: 20, cellHeightAdjust }).cellSize();
@@ -702,7 +702,7 @@ describe('TerminalRenderer adapter', () => {
         expect(estimate('ghostty', 0)).toEqual(natural);
         // The xterm engine has no such option, so its estimate must not pretend otherwise.
         expect(estimate('xterm', 5)).toEqual(natural);
-        expect(estimate('ghostty', -500).height).toBe(1);
+        expect(estimate('ghostty', -500).height).toBe(natural.height - 2);
         // A value that is not a finite number is no adjustment at all.
         expect(estimate('ghostty', Number.POSITIVE_INFINITY)).toEqual(natural);
         expect(estimate('ghostty', Number.NaN)).toEqual(natural);

@@ -378,6 +378,9 @@ The daemon reads these keys out of the user's ghostty config (`parseGhosttyAppea
 - `theme` (verbatim, it may be `dark:X,light:Y`; resolved as in section 3.1)
 - `window-padding-x`, `window-padding-y` (whole pixels, rounded and clamped to 0–64; unset
   means the client's shipped default)
+- `adjust-cell-height` (pixels or percentages of the measured row, for local Ghostty-rendered
+  panes). Kelpi limits shrinking to the row's padding and keeps the configured value within
+  -2 to 64 pixels or -10% to 200%.
 
 `isDark` is computed once from the resolved background by the daemon so its rendered
 markdown/diff HTML and the client chrome cannot disagree.

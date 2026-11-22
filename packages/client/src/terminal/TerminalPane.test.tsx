@@ -459,7 +459,7 @@ describe('TerminalPane — row height adjustment', () => {
         );
     }
 
-    it('hands the engine whole pixels, and rebuilds it only when the unit or value changes', async () => {
+    it('applies row height changes and removal without replacing the renderer', async () => {
         const renderers = createFakeRendererFactory();
         const pty = createFakePtyApi();
         const view = render(pane(renderers, pty, { unit: 'px', value: 6 }));
@@ -474,8 +474,13 @@ describe('TerminalPane — row height adjustment', () => {
 
         view.rerender(pane(renderers, pty, { unit: 'px', value: 8 }));
         await settle();
-        expect(renderers.instances).toHaveLength(2);
-        expect(renderers.last().options?.cellHeightAdjust).toBe(8);
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.last().remeasures.at(-1)).toBe(8);
+
+        view.rerender(pane(renderers, pty, undefined));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.last().remeasures.at(-1)).toBe(0);
     });
 
     it('turns a percentage into pixels of the measured row, and passes nothing it was not given', async () => {
@@ -536,17 +541,25 @@ describe('TerminalPane — row height adjustment', () => {
 
         it('resolves the row height again against the real font, not the fallback it opened on', async () => {
             const renderers = createFakeRendererFactory();
-            await openOnFallbackFont(renderers, { unit: 'percent', value: 50 });
-            expect(renderers.last().remeasures).toEqual([]);
+            let ascent = 8;
+            const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+                measureText: () => ({ width: 8, actualBoundingBoxAscent: ascent, actualBoundingBoxDescent: 2 })
+            } as unknown as CanvasRenderingContext2D);
+            try {
+                await openOnFallbackFont(renderers, { unit: 'percent', value: 50 });
+                expect(renderers.last().options?.cellHeightAdjust).toBe(6);
+                expect(renderers.last().remeasures).toEqual([]);
 
-            await act(async () => {
-                finishLoad();
-                await Promise.resolve();
-                await Promise.resolve();
-            });
-            // jsdom has no 2D context, so both measurements are the same 18px estimate: what
-            // this pins is that the pane hands the engine a resolved value at all.
-            expect(renderers.last().remeasures).toEqual([9]);
+                ascent = 12;
+                await act(async () => {
+                    finishLoad();
+                    await Promise.resolve();
+                    await Promise.resolve();
+                });
+                expect(renderers.last().remeasures).toEqual([8]);
+            } finally {
+                canvas.mockRestore();
+            }
         });
 
         it('leaves the row height alone when none was configured', async () => {

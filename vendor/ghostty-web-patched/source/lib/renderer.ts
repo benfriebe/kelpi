@@ -1129,7 +1129,10 @@ export class CanvasRenderer {
 
     // Draw underline
     if (cell.flags & CellFlags.UNDERLINE) {
-      const underlineY = cellY + this.metrics.baseline + 2;
+      const offset = this.metrics.baseline + 2;
+      const underlineY = cellY + (this.cellHeightAdjust < 0
+        ? Math.min(offset, this.metrics.height - 0.5)
+        : offset);
       this.ctx.strokeStyle = this.ctx.fillStyle;
       this.ctx.lineWidth = 1;
       this.ctx.beginPath();

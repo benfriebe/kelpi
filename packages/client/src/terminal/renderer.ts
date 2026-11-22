@@ -35,7 +35,7 @@
  *      run-F N1.
  */
 
-import { loadTerminalFonts, measureCellSize, TERMINAL_FONT_FALLBACKS } from './fonts';
+import { loadTerminalFonts, MAX_CELL_HEIGHT_SHRINK_PX, measureCellSize, TERMINAL_FONT_FALLBACKS } from './fonts';
 import { REPLAY_CANCEL_SEQUENCE, REPLAY_CHUNK_BYTES, REPLAY_TICK_BUDGET_MS, sliceChunk } from './ingest';
 
 export type TerminalEngine = 'ghostty' | 'xterm';
@@ -1624,7 +1624,7 @@ class AdapterRenderer implements TerminalRenderer {
         if (measured !== undefined && measured.width > 0 && measured.height > 0) return measured;
         const estimate = estimateCellSize(this.options.fontSize, this.options.fontFamily);
         if (this.options.engine !== 'ghostty' || this.options.cellHeightAdjust === 0) return estimate;
-        return { width: estimate.width, height: Math.max(1, estimate.height + this.options.cellHeightAdjust) };
+        return { width: estimate.width, height: estimate.height + Math.max(-MAX_CELL_HEIGHT_SHRINK_PX, this.options.cellHeightAdjust) };
     }
 
     repaint(): void {
@@ -2411,10 +2411,12 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         remeasure: (cellHeightAdjust?: number): void => {
             // Belt and braces: the loader already awaited the font, but a face that landed
             // during `open()` would otherwise leave the cell at fallback metrics forever.
-            if (cellHeightAdjust !== undefined && Number.isFinite(cellHeightAdjust)) {
+            if (cellHeightAdjust !== undefined && Number.isFinite(cellHeightAdjust) &&
+                Math.round(cellHeightAdjust) !== terminal.options.cellHeightAdjust) {
                 terminal.options.cellHeightAdjust = Math.round(cellHeightAdjust);
+            } else {
+                terminal.refreshMetrics();
             }
-            terminal.renderer?.remeasureFont();
         },
         // §N20 — `ghostty_surface_set_focus`'s port. Safe before `open()`: the engine keeps the
         // flag and hands it to the renderer it builds there (`0.4.0-kelpi.4`).

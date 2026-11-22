@@ -217,7 +217,7 @@ export function measureCellSize(fontSize: number, fontFamily: string): MeasuredC
 }
 
 /** The engine pads every row by 2px; that padding is all a shrink may take. */
-const MAX_CELL_HEIGHT_SHRINK_PX = 2;
+export const MAX_CELL_HEIGHT_SHRINK_PX = 2;
 
 /**
  * ghostty's `adjust-cell-height` as whole CSS pixels. A percentage is of the font's own row

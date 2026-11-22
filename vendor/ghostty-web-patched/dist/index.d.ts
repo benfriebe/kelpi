@@ -2038,6 +2038,8 @@ export declare class Terminal implements ITerminalCore {
      * This enables xterm.js compatibility where options can be changed at runtime
      */
     private handleOptionChange;
+    /** Refresh metrics and canvas geometry after a font loads without an option change. */
+    refreshMetrics(): void;
     /**
      * Handle font changes (fontSize or fontFamily)
      * Updates canvas size to match new font metrics and forces a full re-render

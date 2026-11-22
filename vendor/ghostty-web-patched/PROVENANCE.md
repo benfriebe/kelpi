@@ -72,8 +72,8 @@ Ghostty itself has `adjust-cell-height` for this.
 **The change.** `RendererOptions.cellHeightAdjust` / `ITerminalOptions.cellHeightAdjust` is a whole
 number of CSS pixels, default 0. `measureFont` adds it to the natural height and moves the
 baseline down by half of the change, so the glyph stays centred. A shrink stops at the 2 px of
-padding the natural height already carries: past that the glyph's top and its underline no longer
-fit the row, and the next row's background paints over the underline. The
+padding the natural height already carries. On shrunken rows the underline is drawn inside the
+row boundary so the next row cannot paint over it. The
 terminal option is mutable: `setCellHeightAdjust` remeasures, wakes the on-demand render loop
 (`-kelpi.25`) and `handleFontChange` resizes the canvas, as for a font size change. Percentages
 are the embedder's business: Kelpi turns `adjust-cell-height = 50%` into pixels before it gets here.

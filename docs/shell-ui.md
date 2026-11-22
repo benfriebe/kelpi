@@ -60,8 +60,8 @@ on the right; either sidebar can host either feature or a compatible plugin:
   invisible resize handle at that edge: zero-width strip with a ±3pt hit inset, shows a
   left-right resize cursor on hover, drag adjusts width clamped to **[180, 480]** (measured
   from the width at gesture start, so the edge tracks the cursor). In a narrow window, the
-  sidebar adapts to leave room for the terminal and Inspector. The saved width returns when
-  space is available again. The width is client-local
+  sidebar leaves space for the Inspector and aims to reserve 160 px for the pane grid,
+  down to the 180 px sidebar minimum. The saved width returns when space is available again. The width is client-local
   (persisted per browser/window in `localStorage` under `kelpi.sidebar.width`; never daemon
   state; `packages/client/src/chrome/SidebarResizer.tsx:9-56`). The gesture ends on
   `pointerup`, on `pointercancel`, on the handle unmounting mid-drag, and on the window losing

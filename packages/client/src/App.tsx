@@ -854,10 +854,20 @@ function Shell(props: AppProps): ReactElement {
 
     const inspectorMounted = isSidebarMounted(inspectorPhase);
     const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+    const [windowResizing, setWindowResizing] = useState(false);
     useEffect(() => {
-        const update = (): void => setWindowWidth(window.innerWidth);
+        let settle: ReturnType<typeof setTimeout> | undefined;
+        const update = (): void => {
+            setWindowResizing(true);
+            setWindowWidth(window.innerWidth);
+            clearTimeout(settle);
+            settle = setTimeout(() => setWindowResizing(false), 100);
+        };
         window.addEventListener('resize', update);
-        return () => window.removeEventListener('resize', update);
+        return () => {
+            window.removeEventListener('resize', update);
+            clearTimeout(settle);
+        };
     }, []);
     const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, sidebarsSwapped ? 'leading' : 'trailing');
 
@@ -1082,7 +1092,8 @@ function Shell(props: AppProps): ReactElement {
     // Leave room for the pane grid while keeping the saved width for larger windows.
     const sidebarLimit = clampSidebarWidth(windowWidth - (inspectorShown ? INSPECTOR_WIDTH_PX : 0) - MIN_PANE_EXTENT_PX);
     const displayedSidebarWidth = Math.min(sidebarWidth, sidebarLimit);
-    const sidebarSlide = sidebarSlideStyle(sidebarPhase, displayedSidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
+    const animateSidebar = !sidebarResizing && !windowResizing;
+    const sidebarSlide = sidebarSlideStyle(sidebarPhase, displayedSidebarWidth, animateSidebar, sidebarsSwapped ? 'trailing' : 'leading');
     const focusedPaneID = useMemo(() => selectFocusedPaneID(kelpi), [kelpi]);
     const workspacesModel = useWorkspacesFeatureModel(kelpi);
     const agentSummary = useMemo(() => selectAgentSummary(kelpi), [kelpi]);
@@ -5269,7 +5280,7 @@ function Shell(props: AppProps): ReactElement {
             ? { width: inspectorSlide.slot.width, animated: true }
             : null
         : sidebarMounted
-          ? { width: sidebarSlide.slot.width + 1, animated: !sidebarResizing }
+          ? { width: sidebarSlide.slot.width + 1, animated: animateSidebar }
           : null;
     const tabLeadWidth = leftSlot === null ? undefined : leftSlot.width;
     const tabLeadAnimated = leftSlot?.animated === true;

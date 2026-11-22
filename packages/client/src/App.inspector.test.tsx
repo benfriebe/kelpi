@@ -319,6 +319,7 @@ describe('the sidebar’s width (§WS-002)', () => {
 
             resize(1000);
             expect(handle.getAttribute('aria-valuenow')).toBe('480');
+            expect(screen.getByTestId('sidebar-slot').style.transition).toBe('none');
 
             resize(640);
             fireEvent(handle, new MouseEvent('pointerdown', { clientX: 200, button: 0, bubbles: true }));

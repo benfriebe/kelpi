@@ -151,5 +151,18 @@ describe('a workspace the daemon creates in the background leaves the window alo
         const messages = JSON.stringify(h.socket().messages());
         expect(messages).not.toContain(W3);
         expect(messages).not.toContain('set-workspace-children-collapsed');
+
+        const originalScroll = Element.prototype.scrollIntoView;
+        const scrolled: Element[] = [];
+        Element.prototype.scrollIntoView = function (this: Element): void {
+            scrolled.push(this);
+        };
+        try {
+            h.daemon({ type: 'set-workspace-children-collapsed', id: W1, collapsed: false });
+            expect(rowOf(W3)).not.toBeNull();
+            expect(scrolled).not.toContain(rowOf(W3));
+        } finally {
+            Element.prototype.scrollIntoView = originalScroll;
+        }
     });
 });

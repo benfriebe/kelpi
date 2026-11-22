@@ -622,8 +622,9 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
 # Background by default: no window switches to the new workspace and ACTIVE
 # stays put (the sidebar points at it). Capture its id and pass --workspace
 # to follow-ups. --focus switches every window to it: only when the user
-# asked to be taken there.
-kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name> | --nested | --parent <ws>] [--profile <name>] [--muted] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--focus] [--json]
+# asked to be taken there. For a nested background worker, --collapse-parent
+# keeps the children tucked under their parent workspace.
+kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name> | --nested | --parent <ws>] [--collapse-parent] [--profile <name>] [--muted] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--focus] [--json]
 
 # Nest an existing workspace under another (or reorder it among the parent's
 # nested workspaces with --index); request/response, so a refusal (the parent
@@ -1272,7 +1273,7 @@ address each one by the id you captured, never by assuming it is active.
 ```bash
 # In the orchestrator's pane. Capture each worker's workspace id.
 ORCH=$(kelpi pane list --current --json | jq -r '.[0].workspace_id')
-WS=$(kelpi workspace create --nested --name worker-auth --worktree worker-auth --muted --json \
+WS=$(kelpi workspace create --nested --name worker-auth --worktree worker-auth --muted --collapse-parent --json \
   | jq -r '.workspace_id')
 
 # The new workspace's first pane has no label; name it, then start the agent.

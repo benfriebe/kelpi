@@ -203,8 +203,8 @@ function createWorkspace(
             childOrder,
             childrenCollapsed
         }));
-        if (!collapseParent) {
-            // Ordinary creates reveal the new row in the sidebar (#307), including its group.
+        if (!collapseParent || !keepsActive) {
+            // Reveal ordinary creates and children that become active, including their group.
             const parentGroup = groupOfWorkspace(next, parent.id);
             if (parentGroup !== null) next = expandGroup(next, parentGroup.id);
         }

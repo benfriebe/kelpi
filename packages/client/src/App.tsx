@@ -1623,6 +1623,8 @@ function Shell(props: AppProps): ReactElement {
     const newWorkspaceCue = useMemo(() => createNewWorkspaceCue(setHighlightWorkspaceID), [setHighlightWorkspaceID]);
     useEffect(() => () => newWorkspaceCue.dispose(), [newWorkspaceCue]);
     useNewWorkspaceArrivals(workspaceIDs, daemon.hasSnapshot, (workspaceID) => {
+        // A hidden child has no row to reveal. Queuing a cue here would jump to it when its parent opens.
+        if (daemon.state.workspaces.some((parent) => parent.childrenCollapsed && parent.childOrder.includes(workspaceID))) return;
         setScrollToWorkspaceID(workspaceID);
         if (workspaceID !== selectActiveWorkspaceID(store.getState())) newWorkspaceCue.show(workspaceID);
     });

@@ -1430,7 +1430,7 @@ non-zero.
 collapses the parent in the same state update, preserving the containing group's visibility.
 If the daemon's active workspace is already a child, the parent keeps its current disclosure
 state. Otherwise, another request can collapse a parent after the user opens it. If the new child
-becomes active because no workspace was active, its parent's children stay expanded. Each window
+becomes active because no workspace was active, its parent and containing group stay expanded. Each window
 keeps its own focus even if its active row gets hidden by the collapse.
 
 The reply includes `parent_collapsed` when requested. It is true if the parent is collapsed

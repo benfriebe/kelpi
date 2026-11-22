@@ -134,8 +134,13 @@ describe('creating a nested workspace', () => {
         expect(visibleWorkspaceOrder(h.state())).toEqual([W1, W4]);
     });
 
-    it('keeps the new child visible when no workspace was active', () => {
-        const initial = family().state();
+    it('keeps the new child visible in a collapsed group when no workspace was active', () => {
+        const grouped = family();
+        grouped.dispatch(
+            { type: 'create-group', id: G1, name: 'Client', now: NOW, initialWorkspaceIDs: [W1] },
+            { type: 'set-group-collapsed', id: G1, collapsed: true }
+        );
+        const initial = grouped.state();
         const h = harness({ ...initial, lastActiveWorkspaceID: null });
         h.dispatch({ type: 'set-workspace-children-collapsed', id: W1, collapsed: true });
         const worker = id('bbbbbbbb', 5);

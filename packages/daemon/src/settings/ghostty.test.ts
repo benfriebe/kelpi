@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { isDarkBackground } from '../content/html.js';
-import { DEFAULT_GHOSTTY_APPEARANCE, MAX_WINDOW_PADDING, parseGhosttyAppearance, parseGhosttyColor } from './ghostty.js';
+import {
+    DEFAULT_GHOSTTY_APPEARANCE,
+    MAX_CELL_HEIGHT_ADJUST_PERCENT,
+    MAX_CELL_HEIGHT_ADJUST_PX,
+    MAX_WINDOW_PADDING,
+    MIN_CELL_HEIGHT_ADJUST_PERCENT,
+    MIN_CELL_HEIGHT_ADJUST_PX,
+    parseGhosttyAppearance,
+    parseGhosttyColor
+} from './ghostty.js';
 
 describe('parseGhosttyColor', () => {
     it('accepts the hex spellings ghostty writes, with or without the hash', () => {
@@ -22,7 +31,7 @@ describe('parseGhosttyColor', () => {
 });
 
 describe('parseGhosttyAppearance', () => {
-    it('reads the seven keys and ignores everything else', () => {
+    it('reads its keys and ignores everything else', () => {
         const appearance = parseGhosttyAppearance(`# my ghostty config
 background = #ffffff
 background-opacity = 0.85
@@ -41,8 +50,46 @@ mouse-hide-while-typing = true
             theme: 'Catppuccin Latte',
             windowPaddingX: 8,
             windowPaddingY: null,
+            cellHeightAdjust: null,
             hasExplicitBackground: true
         });
+    });
+
+    it('adjust-cell-height: pixels or a percentage, clamped, later line wins, junk refused', () => {
+        const parse = (line: string) => parseGhosttyAppearance(`${line}\n`).cellHeightAdjust;
+        expect(parse('adjust-cell-height = 4')).toEqual({ unit: 'px', value: 4 });
+        expect(parse('adjust-cell-height = -2')).toEqual({ unit: 'px', value: -2 });
+        expect(parse('adjust-cell-height = +4')).toEqual({ unit: 'px', value: 4 });
+        expect(parse('adjust-cell-height = 50%')).toEqual({ unit: 'percent', value: 50 });
+        expect(parse('adjust-cell-height = 12.6%')).toEqual({ unit: 'percent', value: 13 });
+        // A runaway value must not make a row taller than the pane, or mean less than nothing.
+        expect(parse('adjust-cell-height = 5000')).toEqual({ unit: 'px', value: MAX_CELL_HEIGHT_ADJUST_PX });
+        expect(parse('adjust-cell-height = -5000')).toEqual({ unit: 'px', value: MIN_CELL_HEIGHT_ADJUST_PX });
+        expect(parse('adjust-cell-height = 900%')).toEqual({ unit: 'percent', value: MAX_CELL_HEIGHT_ADJUST_PERCENT });
+        expect(parse('adjust-cell-height = -900%')).toEqual({ unit: 'percent', value: MIN_CELL_HEIGHT_ADJUST_PERCENT });
+        // A shrink is NOT cut down here. The limit is the two pixels of padding a row has, which
+        // only the client can apply: it knows the row's height and the display's scale. Clamped
+        // here as well, `-20%` reached the client as `-10%` and shrank a 15px row by one pixel.
+        expect(parse('adjust-cell-height = -20%')).toEqual({ unit: 'percent', value: -20 });
+        expect(parse('adjust-cell-height = -5')).toEqual({ unit: 'px', value: -5 });
+        // Pixels are a whole number in ghostty, which refuses a fraction. A percentage may have one.
+        expect(parse('adjust-cell-height = 4.5')).toBeNull();
+        expect(parse('adjust-cell-height = 4.0')).toBeNull();
+        // Unparseable values are not an adjustment: the key stays unset, rows keep the font's height.
+        for (const junk of ['tall', '10 %', '%', '1e2', '5px']) {
+            expect(parse(`adjust-cell-height = ${junk}`)).toBeNull();
+        }
+        expect(parseGhosttyAppearance('font-size = 15\n').cellHeightAdjust).toBeNull();
+        // Ghostty's scalar rule: the LAST line wins, and a junk line after a good one does not undo it.
+        expect(
+            parseGhosttyAppearance('adjust-cell-height = 4\nadjust-cell-height = 20%\n').cellHeightAdjust
+        ).toEqual({ unit: 'percent', value: 20 });
+        expect(parseGhosttyAppearance('adjust-cell-height = 4\nadjust-cell-height = tall\n').cellHeightAdjust).toEqual({
+            unit: 'px',
+            value: 4
+        });
+        // An empty value resets the key, the way ghostty reads it.
+        expect(parseGhosttyAppearance('adjust-cell-height = 4\nadjust-cell-height =\n').cellHeightAdjust).toBeNull();
     });
 
     it('window-padding: non-negative whole pixels, clamped, later line wins, junk refused', () => {

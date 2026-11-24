@@ -317,6 +317,16 @@ interface DefinitionBase {
      * cannot travel with it, because `SettingsTransportStatus` has nowhere to put one.
      */
     readonly captionFrom?: 'transport' | undefined;
+    /**
+     * A caption the SETTINGS decide, shown in place of `detail` when it returns one.
+     *
+     * For a row whose control cannot show what the file holds: Row height is a percentage slider,
+     * and a hand-written ghostty config may give the value in pixels. The slider has no position
+     * for that, so the caption says what is in effect rather than leaving a readout that is wrong.
+     * Unlike `captionFrom` this needs nothing from the host, so `describeSettingsField` applies it
+     * itself and the search index keeps the static `detail`.
+     */
+    readonly caption?: ((settings: WsSettingsSnapshot) => string | undefined) | undefined;
 }
 
 type ToggleDefinition = DefinitionBase & {
@@ -394,7 +404,7 @@ export const SETTINGS_FOCUS_DELAY_STEP = 25;
 export const SETTINGS_FOCUS_DELAY_MAX = 500;
 
 /**
- * The three slider readouts, declared ONCE.
+ * The four slider readouts, declared ONCE.
  *
  * A descriptor cannot carry a closure, so a slider's `valueLabel` is formatted here and the
  * bundled `SliderField` - which has to re-format as the user drags, before anything is committed -
@@ -404,6 +414,24 @@ export const SETTINGS_FOCUS_DELAY_MAX = 500;
 export const settingsPercentLabel = (value: number): string => `${String(Math.round(value * 100))}%`;
 export const settingsPixelLabel = (value: number): string => `${String(Math.round(value))}px`;
 export const settingsWholeLabel = (value: number): string => String(Math.round(value));
+/** A change relative to nothing: `+20%`, `0%`, `-10%`. The value is already a percentage. */
+export const settingsSignedPercentLabel = (value: number): string => {
+    const whole = Math.round(value);
+    return `${whole > 0 ? '+' : ''}${String(whole)}%`;
+};
+
+/**
+ * Row height's slider range, in percent of the font's own row height (ghostty's
+ * `adjust-cell-height`).
+ *
+ * The bottom is -20 rather than something rounder because a row can lose two pixels at most
+ * (`MAX_CELL_HEIGHT_SHRINK_PX` in `terminal/fonts.ts`), and -20% is that much or more at every
+ * font size the Font size row offers, so the last stop is always "as tight as it goes". The top
+ * is a row twice the font's height; the daemon reads up to 200% from a hand-written file.
+ */
+export const SETTINGS_ROW_HEIGHT_MIN = -20;
+export const SETTINGS_ROW_HEIGHT_MAX = 100;
+export const SETTINGS_ROW_HEIGHT_STEP = 5;
 
 /**
  * The pane's shipped edge padding, which is what an unset ghostty `window-padding-x` / `-y` means.
@@ -1127,6 +1155,38 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         encode: (value) => value
     },
     {
+        id: 'appearance.rowHeight',
+        sectionID: 'appearance',
+        groupID: 'appearance-terminal',
+        kind: 'slider',
+        label: 'Row height',
+        keywords: ['line height', 'line spacing', 'row spacing', 'cell height'],
+        detail: "Height added to every terminal row, as a percentage of the font's own row height - ghostty's adjust-cell-height. A negative value tightens rows by up to 2 pixels.",
+        testID: 'terminal-row-height',
+        target: { file: 'ghostty', key: 'adjust-cell-height' },
+        default: 0,
+        min: SETTINGS_ROW_HEIGHT_MIN,
+        max: SETTINGS_ROW_HEIGHT_MAX,
+        step: SETTINGS_ROW_HEIGHT_STEP,
+        format: settingsSignedPercentLabel,
+        // A pixel value has no position on a percentage slider, so the row reads 0 and `caption`
+        // below says what is in effect. Turning pixels into a percentage here would need the
+        // font's measured row height and the display's scale, neither of which this module has.
+        read: (settings) => {
+            const adjust = settings.appearance.cellHeightAdjust;
+            return adjust !== null && adjust.unit === 'percent' ? adjust.value : 0;
+        },
+        caption: (settings) => {
+            const adjust = settings.appearance.cellHeightAdjust;
+            if (adjust === null || adjust.unit !== 'px') return undefined;
+            const pixels = `${adjust.value > 0 ? '+' : ''}${String(adjust.value)}`;
+            return `The ghostty config sets ${pixels} pixels (adjust-cell-height = ${String(adjust.value)}), which this slider cannot show. Moving it replaces that with a percentage.`;
+        },
+        // 0 REMOVES the key rather than writing `0%`: no adjustment is what an unset key means,
+        // and a file that never asked for one should not grow a line because a slider passed 0.
+        encode: (value) => (Math.round(value) === 0 ? null : `${String(Math.round(value))}%`)
+    },
+    {
         id: 'appearance.windowPaddingX',
         sectionID: 'appearance',
         groupID: 'appearance-terminal',
@@ -1531,6 +1591,11 @@ export function settingsTransportCaption(
     return `Port ${String(configured)} takes effect on the next daemon start - this daemon started with no TCP listener.`;
 }
 
+/** A field's caption under these settings: its own `caption` when that has something to say, else `detail`. */
+export function settingsFieldCaption(definition: SettingsFieldDefinition, settings: WsSettingsSnapshot): string {
+    return definition.caption?.(settings) ?? definition.detail;
+}
+
 /** What the surface overlays onto the catalog data: the live edit state for one field. */
 export interface SettingsFieldState {
     readonly detail?: string | undefined;
@@ -1557,7 +1622,7 @@ export function describeSettingsField(
         groupID: definition.groupID,
         label: definition.label,
         ...(definition.keywords === undefined ? {} : { keywords: definition.keywords }),
-        detail: state.detail ?? definition.detail,
+        detail: state.detail ?? settingsFieldCaption(definition, settings),
         testID: definition.testID,
         ...(definition.rowTestID === undefined ? {} : { rowTestID: definition.rowTestID }),
         ...(state.disabled === undefined ? {} : { disabled: state.disabled }),

@@ -445,7 +445,7 @@ describe('settings-changed broadcast', () => {
 
 /**
  * The one settings verb that writes a file Kelpi does not own. Everything below is about that
- * boundary: only the seven keys the daemon can read back are writable, `null` means REMOVE, and
+ * boundary: only the eight keys the daemon can read back are writable, `null` means REMOVE, and
  * a user's own ghostty lines survive untouched.
  */
 describe('set-ghostty-setting', () => {

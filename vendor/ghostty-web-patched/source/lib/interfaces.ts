@@ -13,6 +13,7 @@ export interface ITerminalOptions {
   scrollback?: number; // Default: 1000
   fontSize?: number; // Default: 15
   fontFamily?: string; // Default: 'monospace'
+  cellHeightAdjust?: number; // Default: 0. Extra CSS pixels of cell height (vendor 0.4.0-kelpi.26)
   allowTransparency?: boolean;
 
   // Phase 1 additions

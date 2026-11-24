@@ -16,6 +16,7 @@ import {
 import { PhoneKeyBar } from './PhoneKeyBar';
 import { restartUI } from '../app/reload';
 import { registerModal } from '../chrome/modal-presence';
+import { TERMINAL_FONT_WAIT_MS, resetTerminalFontsForTests } from './fonts';
 import { paneHandle, type TerminalLinkCommands } from './pane-registry';
 import type { TerminalHistoryAt } from '../connection';
 import { lastSelection, recordSelection, resetSelectionBufferForTests } from './selection-buffer';
@@ -436,6 +437,141 @@ describe('TerminalPane — resize', () => {
 
         expect(stream.resizes.at(-1)).toEqual({ cols: 40, rows: 24 });
         expect(renderer.repaints).toBeGreaterThan(repaintsBefore);
+    });
+});
+
+describe('TerminalPane — row height adjustment', () => {
+    function pane(
+        renderers: ReturnType<typeof createFakeRendererFactory>,
+        pty: ReturnType<typeof createFakePtyApi>,
+        cellHeightAdjust: { unit: 'px' | 'percent'; value: number } | undefined
+    ): React.ReactElement {
+        return (
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+                {...(cellHeightAdjust === undefined ? {} : { cellHeightAdjust })}
+            />
+        );
+    }
+
+    it('applies row height changes and removal without replacing the renderer', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        const view = render(pane(renderers, pty, { unit: 'px', value: 6 }));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.last().options?.cellHeightAdjust).toBe(6);
+
+        // A fresh object with the same values, as every settings snapshot builds one.
+        view.rerender(pane(renderers, pty, { unit: 'px', value: 6 }));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+
+        view.rerender(pane(renderers, pty, { unit: 'px', value: 8 }));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.last().remeasures.at(-1)).toBe(8);
+
+        view.rerender(pane(renderers, pty, undefined));
+        await settle();
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.last().remeasures.at(-1)).toBe(0);
+    });
+
+    it('turns a percentage into pixels of the measured row, and passes nothing it was not given', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        render(pane(renderers, pty, { unit: 'percent', value: 50 }));
+        await settle();
+        // jsdom has no 2D context, so the row is the font-derived fallback (13px font: 18px).
+        expect(renderers.last().options?.cellHeightAdjust).toBe(9);
+
+        cleanup();
+        const plain = createFakeRendererFactory();
+        render(pane(plain, pty, undefined));
+        await settle();
+        expect(plain.last().options?.cellHeightAdjust).toBe(0);
+    });
+
+    describe('when the bundled font arrives after the pane opened', () => {
+        // One pending load per font weight; `finishLoad` lets them all go.
+        const loads: (() => void)[] = [];
+        const finishLoad = (): void => {
+            for (const release of loads.splice(0)) release();
+        };
+
+        beforeEach(() => {
+            resetTerminalFontsForTests();
+            loads.length = 0;
+            // A FontFaceSet whose loads stay pending until the test lets them go.
+            Object.defineProperty(document, 'fonts', {
+                configurable: true,
+                value: {
+                    load: () =>
+                        new Promise<unknown[]>((resolve) => {
+                            loads.push(() => resolve([]));
+                        }),
+                    ready: Promise.resolve()
+                }
+            });
+        });
+
+        afterEach(() => {
+            Reflect.deleteProperty(document, 'fonts');
+            resetTerminalFontsForTests();
+        });
+
+        async function openOnFallbackFont(
+            renderers: ReturnType<typeof createFakeRendererFactory>,
+            cellHeightAdjust: { unit: 'px' | 'percent'; value: number } | undefined
+        ): Promise<void> {
+            render(pane(renderers, createFakePtyApi(), cellHeightAdjust));
+            // The pane waits for the font, gives up after the bounded wait, and opens anyway.
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(TERMINAL_FONT_WAIT_MS);
+            });
+            await settle();
+            expect(renderers.instances).toHaveLength(1);
+        }
+
+        it('resolves the row height again against the real font, not the fallback it opened on', async () => {
+            const renderers = createFakeRendererFactory();
+            let ascent = 8;
+            const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+                measureText: () => ({ width: 8, actualBoundingBoxAscent: ascent, actualBoundingBoxDescent: 2 })
+            } as unknown as CanvasRenderingContext2D);
+            try {
+                await openOnFallbackFont(renderers, { unit: 'percent', value: 50 });
+                expect(renderers.last().options?.cellHeightAdjust).toBe(6);
+                expect(renderers.last().remeasures).toEqual([]);
+
+                ascent = 12;
+                await act(async () => {
+                    finishLoad();
+                    await Promise.resolve();
+                    await Promise.resolve();
+                });
+                expect(renderers.last().remeasures).toEqual([8]);
+            } finally {
+                canvas.mockRestore();
+            }
+        });
+
+        it('leaves the row height alone when none was configured', async () => {
+            const renderers = createFakeRendererFactory();
+            await openOnFallbackFont(renderers, undefined);
+            await act(async () => {
+                finishLoad();
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(renderers.last().remeasures).toEqual([undefined]);
+        });
     });
 });
 

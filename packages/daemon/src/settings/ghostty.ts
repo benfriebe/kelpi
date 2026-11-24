@@ -2,14 +2,14 @@
  * A MINIMAL `~/.config/ghostty/config` reader (content-panes.md §3.1, §3.8 + port note 9).
  *
  * The Swift app links libghostty and asks it for the resolved terminal config; the daemon has
- * no ghostty, so it reads the seven keys that actually change how Kelpi draws — and nothing else.
+ * no ghostty, so it reads the eight keys that actually change how Kelpi draws — and nothing else.
  * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/kelpi/config`,
  * so the line splitter is `@kelpi/core/config`'s: one parser, one set of quirks.
  *
  * Scope, stated honestly so nobody mistakes this for a ghostty config implementation:
  *
  *   - keys read: `background`, `background-opacity`, `font-family`, `font-size`, `theme`,
- *     `window-padding-x`, `window-padding-y`;
+ *     `window-padding-x`, `window-padding-y`, `adjust-cell-height`;
  *   - every other key is ignored (ghostty has hundreds);
  *   - `config-file = …` includes are NOT followed;
  *   - a `theme` name is reported verbatim here and RESOLVED next door in `./theme.ts`
@@ -25,7 +25,7 @@
  */
 
 import { parseConfigLines } from '@kelpi/core/config';
-import { DEFAULT_SETTINGS_BACKGROUND } from '@kelpi/protocol';
+import { DEFAULT_SETTINGS_BACKGROUND, type WsCellHeightAdjust } from '@kelpi/protocol';
 
 export interface GhosttyAppearance {
     /** `#rrggbb`, lowercase. Always concrete: the luminance rule needs a real color. */
@@ -48,6 +48,19 @@ export interface GhosttyAppearance {
     readonly windowPaddingX: number | null;
     readonly windowPaddingY: number | null;
     /**
+     * `adjust-cell-height`: how much taller (or shorter) every terminal row is than the font's
+     * own height, as whole pixels or a percentage of that height (`4`, `-2`, `50%`). Null = unset
+     * or unparseable, rows keep the font's height. Clamped (see `MAX_CELL_HEIGHT_ADJUST_*`) so a
+     * runaway value cannot make a row absurd.
+     *
+     * Pixels are ghostty's: DEVICE pixels, which the client divides by its display scale. A
+     * shrink is bounded here only as far as ghostty's own meaning goes (a row cannot lose more
+     * than all of its height). The limit that matters is the CLIENT's, the two pixels of padding
+     * the renderer adds to each row, and it is applied there and nowhere else: clamping a
+     * negative value here as well would turn `-20%` into less than the shrink the row can take.
+     */
+    readonly cellHeightAdjust: GhosttyCellHeightAdjust | null;
+    /**
      * Did the file actually carry a parseable `background = …` line?
      *
      * `backgroundColor` is always concrete (the luminance rule needs a real colour), so "the
@@ -67,8 +80,48 @@ export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
     theme: null,
     windowPaddingX: null,
     windowPaddingY: null,
+    cellHeightAdjust: null,
     hasExplicitBackground: false
 };
+
+export type GhosttyCellHeightAdjust = WsCellHeightAdjust;
+
+/** See `GhosttyAppearance.cellHeightAdjust` — the range a parsed value is clamped to. */
+export const MIN_CELL_HEIGHT_ADJUST_PX = -64;
+export const MAX_CELL_HEIGHT_ADJUST_PX = 64;
+export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -100;
+export const MAX_CELL_HEIGHT_ADJUST_PERCENT = 200;
+
+/**
+ * ghostty reads a value ending in `%` as a percentage, which may carry a fraction, and anything
+ * else as a whole number of pixels. `4.5` is not a whole number, so ghostty refuses the line and
+ * so does this: rounding it would draw a row height ghostty itself never shows for that file.
+ */
+const CELL_HEIGHT_ADJUST = /^(?:([+-]?\d+(?:\.\d+)?)%|([+-]?\d+))$/;
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+}
+
+function parseCellHeightAdjust(raw: string): GhosttyCellHeightAdjust | null {
+    const match = CELL_HEIGHT_ADJUST.exec(raw.trim());
+    if (match === null) return null;
+    const percent = match[1];
+    if (percent !== undefined) {
+        return {
+            unit: 'percent',
+            value: clamp(
+                Math.round(Number.parseFloat(percent)),
+                MIN_CELL_HEIGHT_ADJUST_PERCENT,
+                MAX_CELL_HEIGHT_ADJUST_PERCENT
+            )
+        };
+    }
+    return {
+        unit: 'px',
+        value: clamp(Number.parseInt(match[2] as string, 10), MIN_CELL_HEIGHT_ADJUST_PX, MAX_CELL_HEIGHT_ADJUST_PX)
+    };
+}
 
 /** See `GhosttyAppearance.windowPaddingX` — the ceiling a parsed padding is clamped to. */
 export const MAX_WINDOW_PADDING = 64;
@@ -128,6 +181,7 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
     let theme: string | null = null;
     let windowPaddingX: number | null = null;
     let windowPaddingY: number | null = null;
+    let cellHeightAdjust: GhosttyCellHeightAdjust | null = null;
     let families: string[] = [];
     let hasExplicitBackground = false;
 
@@ -171,6 +225,16 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
                 if (parsed !== null) windowPaddingY = parsed;
                 break;
             }
+            case 'adjust-cell-height': {
+                // ghostty: an empty value resets the key to its default, like `font-family`.
+                if (value.trim() === '') {
+                    cellHeightAdjust = null;
+                    break;
+                }
+                const parsed = parseCellHeightAdjust(value);
+                if (parsed !== null) cellHeightAdjust = parsed;
+                break;
+            }
             default:
                 break;
         }
@@ -184,6 +248,7 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
         theme,
         windowPaddingX,
         windowPaddingY,
+        cellHeightAdjust,
         hasExplicitBackground
     };
 }

@@ -3,6 +3,7 @@ export declare class CanvasRenderer {
     private ctx;
     private fontSize;
     private fontFamily;
+    private cellHeightAdjust;
     private cursorStyle;
     private cursorBlink;
     private theme;
@@ -84,6 +85,7 @@ export declare class CanvasRenderer {
     private previousHoveredLinkRange;
     constructor(canvas: HTMLCanvasElement, options?: RendererOptions);
     private measureFont;
+    private static wholePixels;
     /**
      * Called whenever the next frame would differ (vendor 0.4.0-kelpi.25): every public setter
      * and the blink timer call it, so the terminal's on-demand render loop wakes.
@@ -224,6 +226,16 @@ export declare class CanvasRenderer {
      */
     private renderCellText;
     /**
+     * Where an underline sits below a cell's top edge (vendor 0.4.0-kelpi.26).
+     *
+     * Two pixels under the baseline, as upstream draws it. A shrunken row can be too short for
+     * that: the line would land on the boundary with the next row, whose background then paints
+     * over half of it. There it is pulled up to the row's last pixel line. One rule for all four
+     * underlines (SGR 4, an OSC 8 link under the pointer, the embedder's link underline and the
+     * hovered link range), so a link in a shrunken row is drawn as firmly as underlined text.
+     */
+    private underlineOffset;
+    /**
      * Render cursor
      */
     private renderCursor;
@@ -275,6 +287,10 @@ export declare class CanvasRenderer {
      * Update font family
      */
     setFontFamily(family: string): void;
+    /**
+     * Update the extra cell height in CSS pixels (vendor 0.4.0-kelpi.26)
+     */
+    setCellHeightAdjust(pixels: number): void;
     /**
      * Update cursor style
      */
@@ -1255,6 +1271,7 @@ export declare interface ITerminalOptions {
     scrollback?: number;
     fontSize?: number;
     fontFamily?: string;
+    cellHeightAdjust?: number;
     allowTransparency?: boolean;
     convertEol?: boolean;
     disableStdin?: boolean;
@@ -1632,6 +1649,11 @@ export declare class OSC8LinkProvider implements ILinkProvider {
 export declare interface RendererOptions {
     fontSize?: number;
     fontFamily?: string;
+    /**
+     * Extra CSS pixels added to (or, negative, taken from) every cell's height (vendor
+     * 0.4.0-kelpi.26). The glyph sits in the middle of the taller cell. Whole pixels; default 0.
+     */
+    cellHeightAdjust?: number;
     cursorStyle?: 'block' | 'underline' | 'bar';
     cursorBlink?: boolean;
     theme?: ITheme;
@@ -2026,6 +2048,8 @@ export declare class Terminal implements ITerminalCore {
      * This enables xterm.js compatibility where options can be changed at runtime
      */
     private handleOptionChange;
+    /** Refresh metrics and canvas geometry after a font loads without an option change. */
+    refreshMetrics(): void;
     /**
      * Handle font changes (fontSize or fontFamily)
      * Updates canvas size to match new font metrics and forces a full re-render

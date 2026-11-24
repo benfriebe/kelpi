@@ -220,6 +220,7 @@ export class Terminal implements ITerminalCore {
       scrollback: options.scrollback ?? 10000,
       fontSize: options.fontSize ?? 15,
       fontFamily: options.fontFamily ?? 'monospace',
+      cellHeightAdjust: options.cellHeightAdjust ?? 0,
       allowTransparency: options.allowTransparency ?? false,
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
@@ -294,6 +295,14 @@ export class Terminal implements ITerminalCore {
         }
         break;
 
+      case 'cellHeightAdjust':
+        // vendor 0.4.0-kelpi.26: a taller or shorter cell moves every pixel position
+        if (this.renderer) {
+          this.renderer.setCellHeightAdjust(this.options.cellHeightAdjust);
+          this.handleFontChange();
+        }
+        break;
+
       case 'fontFamily':
         if (this.renderer) {
           this.renderer.setFontFamily(this.options.fontFamily);
@@ -309,6 +318,19 @@ export class Terminal implements ITerminalCore {
     }
   }
 
+  /** Refresh metrics and canvas geometry after a font loads without an option change. */
+  public refreshMetrics(): void {
+    const renderer = this.renderer;
+    if (!renderer) return;
+    const previous = renderer.getMetrics();
+    renderer.remeasureFont();
+    const current = renderer.getMetrics();
+    if (previous.width !== current.width || previous.height !== current.height ||
+        previous.baseline !== current.baseline) {
+      this.handleFontChange();
+    }
+  }
+
   /**
    * Handle font changes (fontSize or fontFamily)
    * Updates canvas size to match new font metrics and forces a full re-render
@@ -321,17 +343,17 @@ export class Terminal implements ITerminalCore {
       this.selectionManager.clearSelection();
     }
 
-    // Resize canvas to match new font metrics
+    // Resize canvas to match new font metrics.
+    //
+    // vendor 0.4.0-kelpi.26: `renderer.resize()` is the ONLY thing that sizes the canvas here.
+    // Upstream then assigned `canvas.width`/`height` again in CSS pixels, which wipes the canvas
+    // and drops the device-pixel-ratio scaling `renderer.resize()` just applied. The forced render
+    // below repairs that, but while paint is suspended (`-kelpi.6`) that render returns at once,
+    // so the frozen frame was replaced by a blank, half-resolution canvas until paint resumed.
+    // `resize()` above guards the same block for the same reason.
     this.renderer.resize(this.cols, this.rows);
 
-    // Update canvas element dimensions to match renderer
-    const metrics = this.renderer.getMetrics();
-    this.canvas.width = metrics.width * this.cols;
-    this.canvas.height = metrics.height * this.rows;
-    this.canvas.style.width = `${metrics.width * this.cols}px`;
-    this.canvas.style.height = `${metrics.height * this.rows}px`;
-
-    // Force full re-render with new font
+    // Force full re-render with new font (a no-op while suspended)
     this.renderer.render(this.wasmTerm, true, this.viewportY, this);
   }
 
@@ -562,6 +584,7 @@ export class Terminal implements ITerminalCore {
       this.renderer = new CanvasRenderer(this.canvas, {
         fontSize: this.options.fontSize,
         fontFamily: this.options.fontFamily,
+        cellHeightAdjust: this.options.cellHeightAdjust,
         cursorStyle: this.options.cursorStyle,
         cursorBlink: this.options.cursorBlink,
         theme: this.options.theme,

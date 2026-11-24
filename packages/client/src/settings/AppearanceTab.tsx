@@ -10,8 +10,8 @@
  *     `key = value` lines in `~/.config/kelpi/config`, written with `set-general-setting`
  *     (`@kelpi/protocol` `WsChromeSettings` documents each key). They are ours, so they live in
  *     our file.
- *   - **ghostty-owned** — background, opacity, font and terminal theme belong to ghostty's
- *     config, written with `set-ghostty-setting`, which touches only the seven keys the daemon
+ *   - **ghostty-owned** — background, opacity, font, row height and terminal theme belong to
+ *     ghostty's config, written with `set-ghostty-setting`, which touches only the eight keys the daemon
  *     can read back and preserves every other line of a user's file byte-for-byte.
  *
  * Nothing here holds a copy of the settings. Every control renders from the daemon snapshot
@@ -725,6 +725,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 {row('appearance.fontFamily')}
                 {row('appearance.fontSize')}
                 {row('appearance.fontSizeScope')}
+                {row('appearance.rowHeight')}
                 {row('appearance.windowPaddingX')}
                 {row('appearance.windowPaddingY')}
 

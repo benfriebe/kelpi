@@ -1,4 +1,4 @@
-# ghostty-web 0.4.0-kelpi.25 (vendored)
+# ghostty-web 0.4.0-kelpi.26 (vendored)
 
 **Version labels.** These versions were tagged `-nex.N` before the Nex to Kelpi rename and were
 relabelled `-kelpi.N` on 2026-10-03 with the same numbering, so an older commit, log or audit
@@ -24,7 +24,8 @@ view scrolled to a fractional offset paints every row, so no line shows twice; `
 copy-on-select can be turned off; `-kelpi.22`: a click selects nothing; `-kelpi.23`: a drag selects
 from the pressed cell to the cell under the pointer, both included, once it leaves a dead zone
 around the press; `-kelpi.24`: the cursor is repainted when it changes, not every frame;
-`-kelpi.25`: the render loop runs only when something has changed).
+`-kelpi.25`: the render loop runs only when something has changed; `-kelpi.26`: a cell's height
+can be adjusted by whole pixels).
 
 **`-kelpi.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-kelpi.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-kelpi.13`
@@ -60,6 +61,47 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-kelpi.23` | a single-click drag selects from the pressed cell to the cell under the pointer, both included, once the pointer is 60% of a cell width from the press point in either axis; a selection that starts on a wide glyph's second half starts on its first (#404) |
 | `0.4.0-kelpi.24` | the cursor lines are repainted and the cursor drawn only when the cursor as drawn differs from the last painted one (position, shown or hidden, style, focus treatment), not on every frame while `cursorBlink` is set; a DECTCEM hide now erases the cursor |
 | `0.4.0-kelpi.25` | the render loop runs on demand: output, renderer setters, the blink timer, scrolling, the scrollbar fade, selection and input events wake it for a ten-frame tail, then it stops; a 2 s heartbeat renders anything still dirty |
+| `0.4.0-kelpi.26` | `cellHeightAdjust`: whole CSS pixels added to (or taken from) every cell's height, settable at construction and at runtime; the glyph stays centred in the cell |
+
+## Kelpi adaptation: a cell's height can be adjusted (`0.4.0-kelpi.26`, 2026-11-10)
+
+**The gap.** The renderer's cell height was fixed by the font: `ceil(ascent + descent) + 2`.
+An embedder could make rows roomier only by changing the font, which also changes the width.
+Ghostty itself has `adjust-cell-height` for this.
+
+**The change.** `RendererOptions.cellHeightAdjust` / `ITerminalOptions.cellHeightAdjust` is a whole
+number of CSS pixels, default 0. `measureFont` adds it to the natural height and moves the
+baseline down by half of the change, so the glyph stays centred. A shrink stops at the 2 px of
+padding the natural height already carries. On shrunken rows every underline (SGR 4, an OSC 8
+link under the pointer, the embedder's link underline and the hovered link range) is drawn inside
+the row boundary so the next row cannot paint over it: `underlineOffset()` is the one rule all
+four share. The
+terminal option is mutable: `setCellHeightAdjust` remeasures, wakes the on-demand render loop
+(`-kelpi.25`) and `handleFontChange` resizes the canvas, as for a font size change. Percentages
+and display scale are the embedder's business: Kelpi turns `adjust-cell-height = 50%`, or a
+count of device pixels, into CSS pixels before it gets here.
+
+**`handleFontChange` no longer resets the canvas.** Upstream followed `renderer.resize()` with its
+own `canvas.width`/`height` assignments in CSS pixels, the same block `-kelpi.6` guards in
+`Terminal.resize()`. It wipes the canvas and drops the device-pixel-ratio scaling; the forced
+render straight after repairs both, unless paint is suspended, when that render returns at once.
+Nothing in Kelpi changed a font option on a live terminal before this version, so the path was
+never run. A live row height change does run it, and one landing inside a resize hold left the
+pane blank and at 1x backing resolution until paint resumed. The assignments are gone:
+`renderer.resize()` already sizes the canvas and keeps a suspended frame (`-kelpi.6`).
+
+**Verification (2026-11-24).** The built bundle in headless Chrome at device scale 2 and 1, a
+40x6 terminal on the bundled face:
+- adjust 0 to 4, not suspended: one canvas allocation (640x228 at 2x) where the upstream block
+  made three (640x228, 320x114, 640x228);
+- adjust 0 to 4 while suspended: the backing store is 640x228 with the context still scaled by 2
+  and the frozen frame still on it (before the fix: 320x114, scale 1, every pixel transparent);
+- adjust -2 at font sizes 8 to 16 px: the SGR, embedder-link and hovered-range underlines are
+  drawn at the same offset with the same ink at every size (before the fix the two link
+  underlines sat on the row boundary at 8 to 11 px and kept half their ink).
+
+**Known limit.** Box-drawing and Powerline glyphs are plain font glyphs here, so in a taller row a
+border that crosses rows shows small gaps. Native Ghostty draws them to fill the cell.
 
 ## Kelpi adaptation: the render loop runs on demand (`0.4.0-kelpi.25`, 2026-10-23)
 

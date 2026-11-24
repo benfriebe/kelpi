@@ -67,6 +67,7 @@ import {
     encodeSettingsFieldValue,
     isNativeSettingsSection,
     isVisible,
+    settingsFieldCaption,
     settingsFieldDefinition,
     settingsFieldsInSection,
     settingsGroupsInSection,
@@ -407,7 +408,7 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
     const caption = (definition: SettingsFieldDefinition, settings: WsSettingsSnapshot): string =>
         definition.captionFrom === 'transport'
             ? settingsTransportCaption(settings, config.transport?.() ?? null)
-            : definition.detail;
+            : settingsFieldCaption(definition, settings);
 
     const describe = (
         definition: SettingsFieldDefinition,

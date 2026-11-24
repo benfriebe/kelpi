@@ -26,7 +26,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { tokens } from '../chrome';
 import type { SettingsDraftValue, SettingsFieldDescriptor } from './contract';
 import { ColorField, SegmentedField, SelectField, SliderField, TextField } from './controls';
-import { settingsPercentLabel, settingsPixelLabel, settingsWholeLabel } from './sections';
+import { settingsPercentLabel, settingsPixelLabel, settingsSignedPercentLabel, settingsWholeLabel } from './sections';
 import { SettingsRow, SettingsToggle } from './ui';
 
 /**
@@ -75,7 +75,7 @@ const TEXT_PRESENTATION: Readonly<
  *     write has always gone out on every change and whose readout is L82's separate 55 px span.
  *
  * `format` is the same function the catalog formats `valueLabel` with (`sections.ts` exports the
- * three), because a `SliderField` re-formats as the user DRAGS - before anything is committed -
+ * four), because a `SliderField` re-formats as the user DRAGS - before anything is committed -
  * and a readout that disagreed with the frame's would be two spellings of one number.
  */
 const SLIDER_PRESENTATION: Readonly<
@@ -90,6 +90,7 @@ const SLIDER_PRESENTATION: Readonly<
     'appearance.sidebarGroupStroke': { format: settingsPercentLabel },
     'appearance.backgroundOpacity': { format: settingsPercentLabel },
     'appearance.fontSize': { format: settingsPixelLabel },
+    'appearance.rowHeight': { format: settingsSignedPercentLabel },
     'appearance.windowPaddingX': { format: settingsPixelLabel },
     'appearance.windowPaddingY': { format: settingsPixelLabel },
     // L82's third clause: Graph width is not a `sliderRow` in the Swift - it writes its own

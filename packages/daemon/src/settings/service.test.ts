@@ -656,6 +656,22 @@ describe('setGhosttySetting', () => {
         expect(readGhostty(f)).toContain('window-padding-y = 4');
     });
 
+    it('writes adjust-cell-height, reads it back, and removes it', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const next = f.service.setGhosttySetting('adjust-cell-height', '20%');
+        expect(next.appearance.cellHeightAdjust).toEqual({ unit: 'percent', value: 20 });
+        expect(readGhostty(f)).toContain('adjust-cell-height = 20%');
+        // A second write replaces the line rather than adding one: ghostty's last line wins, but
+        // a file that grows a line per drag of a slider is not one a person can read.
+        const again = f.service.setGhosttySetting('adjust-cell-height', '-10%');
+        expect(again.appearance.cellHeightAdjust).toEqual({ unit: 'percent', value: -10 });
+        expect(readGhostty(f).match(/adjust-cell-height/g)).toHaveLength(1);
+        // Null removes the key, which is how the Settings row says "the font's own height".
+        const cleared = f.service.setGhosttySetting('adjust-cell-height', null);
+        expect(cleared.appearance.cellHeightAdjust).toBeNull();
+        expect(readGhostty(f)).not.toContain('adjust-cell-height');
+    });
+
     it('collapses accumulating font-family lines to the one that was asked for', () => {
         const f = fixture({ ghostty: 'font-family = JetBrains Mono\nfont-family = Symbols Nerd Font\n' });
         const next = f.service.setGhosttySetting('font-family', 'Menlo');

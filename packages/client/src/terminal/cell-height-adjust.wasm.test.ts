@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Ghostty, Terminal } from 'ghostty-web';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 let realGetContext: unknown;
 let fontAscent = 8;
@@ -118,6 +118,67 @@ describe('cellHeightAdjust (0.4.0-kelpi.26)', () => {
             expect(strokeStarts).not.toContain(10);
         } finally {
             done();
+        }
+    });
+
+    it('draws link underlines inside a row at maximum shrink, where the text underline is', () => {
+        const { term, done } = open(-2);
+        try {
+            term.write('AAAAAA\r\nBBBBBB\r\nCCCCCC');
+            const renderer = term.renderer!;
+            // Row 1 carries the embedder's link underline, row 2 the hovered link range. Rows are
+            // 10px tall with the baseline at 8, so two pixels under the baseline is the row's
+            // boundary (20, 30), which the next row's background paints over half of.
+            renderer.setLinkUnderline([{ row: 1, col: 0, width: 6 }]);
+            renderer.setHoveredLinkRange({ startX: 0, startY: 2, endX: 5, endY: 2 });
+            strokeStarts.length = 0;
+            renderer.render((term as unknown as { wasmTerm: Parameters<typeof renderer.render>[0] }).wasmTerm, true, 0, term);
+            expect(strokeStarts).toContain(19.5);
+            expect(strokeStarts).toContain(29.5);
+            expect(strokeStarts).not.toContain(20);
+            expect(strokeStarts).not.toContain(30);
+        } finally {
+            done();
+        }
+    });
+
+    /**
+     * A row height change that lands while paint is suspended (the resize hold) must leave the
+     * frozen frame alone. Upstream's `handleFontChange` followed `renderer.resize()` with its own
+     * `canvas.width`/`height` assignments in CSS pixels: a second allocation that wipes the canvas
+     * and drops the display scale, with the render that would repair it suppressed.
+     */
+    it('sizes the canvas once, at the display scale, when the option changes while paint is suspended', () => {
+        vi.stubGlobal('devicePixelRatio', 2);
+        const { term, done } = open();
+        try {
+            const canvas = term.renderer!.getCanvas();
+            const assigned: string[] = [];
+            for (const key of ['width', 'height'] as const) {
+                const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, key)!;
+                Object.defineProperty(canvas, key, {
+                    configurable: true,
+                    get: () => descriptor.get!.call(canvas) as number,
+                    set: (value: number) => {
+                        assigned.push(`${key}=${String(value)}`);
+                        descriptor.set!.call(canvas, value);
+                    }
+                });
+            }
+            term.setPaintSuspended(true);
+            term.options.cellHeightAdjust = 4;
+            // 40 columns of 8px and 6 rows of 16px, both times the display scale, and nothing after.
+            expect(assigned).toEqual(['width=640', 'height=192']);
+            expect(canvas.height).toBe(192);
+
+            // Not suspended, the same change is one allocation too, where it used to be three.
+            term.setPaintSuspended(false);
+            assigned.length = 0;
+            term.options.cellHeightAdjust = 0;
+            expect(assigned).toEqual(['width=640', 'height=144']);
+        } finally {
+            done();
+            vi.unstubAllGlobals();
         }
     });
 

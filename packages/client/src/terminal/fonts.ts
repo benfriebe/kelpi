@@ -219,21 +219,43 @@ export function measureCellSize(fontSize: number, fontFamily: string): MeasuredC
 /** The engine pads every row by 2px; that padding is all a shrink may take. */
 export const MAX_CELL_HEIGHT_SHRINK_PX = 2;
 
+/** The display's scale, or 1 where there is no window or it reports nothing usable. */
+function displayScale(): number {
+    const scale = (globalThis as { devicePixelRatio?: unknown }).devicePixelRatio;
+    return typeof scale === 'number' && Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
 /**
  * ghostty's `adjust-cell-height` as whole CSS pixels. A percentage is of the font's own row
  * height, measured here the way the engine measures it, so it follows a per-pane font size.
+ *
+ * A pixel count is in DEVICE pixels, because ghostty adds it to a cell it measured at the
+ * display's own resolution: `adjust-cell-height = 4` is two points of extra height on a 2x
+ * display and four on a 1x one. Taken as CSS pixels it would be twice what ghostty draws from
+ * the same file on a Retina display, so it is divided by the display's scale. The scale is read
+ * when the value is resolved, which is as often as the engine itself reads it (once, when it is
+ * built), and the engine takes whole CSS pixels, so an odd count on a 2x display rounds.
+ *
  * A shrink stops at the 2px of padding the engine adds to every row, the same floor the engine
- * keeps: past it the glyph and its underline no longer fit the row.
+ * keeps: past it the glyph and its underline no longer fit the row. This is the ONE place that
+ * limit is applied to a configured value. The daemon passes a negative value through as written,
+ * so `-20%` takes all the shrink a row has rather than a fraction of it.
  */
 export function resolveCellHeightAdjust(
     adjust: { readonly unit: 'px' | 'percent'; readonly value: number } | null | undefined,
     fontSize: number,
-    fontFamily: string
+    fontFamily: string,
+    devicePixelRatio: number = displayScale()
 ): number {
     if (adjust === null || adjust === undefined || !Number.isFinite(adjust.value)) return 0;
-    const natural = measureCellSize(fontSize, fontFamily).height;
-    const pixels = adjust.unit === 'px' ? adjust.value : (natural * adjust.value) / 100;
-    return Math.max(-MAX_CELL_HEIGHT_SHRINK_PX, Math.round(pixels));
+    const scale = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+    const pixels =
+        adjust.unit === 'px'
+            ? adjust.value / scale
+            : (measureCellSize(fontSize, fontFamily).height * adjust.value) / 100;
+    // `+ 0` turns the -0 that `Math.round(-0.4)` gives into 0: the two compare equal, but a
+    // caller that tells "changed" from "unchanged" with `Object.is` would see a difference.
+    return Math.max(-MAX_CELL_HEIGHT_SHRINK_PX, Math.round(pixels)) + 0;
 }
 
 function fallbackCell(fontSize: number): MeasuredCell {

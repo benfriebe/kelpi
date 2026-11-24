@@ -31,7 +31,7 @@ describe('parseGhosttyColor', () => {
 });
 
 describe('parseGhosttyAppearance', () => {
-    it('reads the seven keys and ignores everything else', () => {
+    it('reads its keys and ignores everything else', () => {
         const appearance = parseGhosttyAppearance(`# my ghostty config
 background = #ffffff
 background-opacity = 0.85
@@ -62,11 +62,19 @@ mouse-hide-while-typing = true
         expect(parse('adjust-cell-height = +4')).toEqual({ unit: 'px', value: 4 });
         expect(parse('adjust-cell-height = 50%')).toEqual({ unit: 'percent', value: 50 });
         expect(parse('adjust-cell-height = 12.6%')).toEqual({ unit: 'percent', value: 13 });
-        // A runaway value must not collapse a row or make one taller than the pane.
+        // A runaway value must not make a row taller than the pane, or mean less than nothing.
         expect(parse('adjust-cell-height = 5000')).toEqual({ unit: 'px', value: MAX_CELL_HEIGHT_ADJUST_PX });
         expect(parse('adjust-cell-height = -5000')).toEqual({ unit: 'px', value: MIN_CELL_HEIGHT_ADJUST_PX });
         expect(parse('adjust-cell-height = 900%')).toEqual({ unit: 'percent', value: MAX_CELL_HEIGHT_ADJUST_PERCENT });
-        expect(parse('adjust-cell-height = -99%')).toEqual({ unit: 'percent', value: MIN_CELL_HEIGHT_ADJUST_PERCENT });
+        expect(parse('adjust-cell-height = -900%')).toEqual({ unit: 'percent', value: MIN_CELL_HEIGHT_ADJUST_PERCENT });
+        // A shrink is NOT cut down here. The limit is the two pixels of padding a row has, which
+        // only the client can apply: it knows the row's height and the display's scale. Clamped
+        // here as well, `-20%` reached the client as `-10%` and shrank a 15px row by one pixel.
+        expect(parse('adjust-cell-height = -20%')).toEqual({ unit: 'percent', value: -20 });
+        expect(parse('adjust-cell-height = -5')).toEqual({ unit: 'px', value: -5 });
+        // Pixels are a whole number in ghostty, which refuses a fraction. A percentage may have one.
+        expect(parse('adjust-cell-height = 4.5')).toBeNull();
+        expect(parse('adjust-cell-height = 4.0')).toBeNull();
         // Unparseable values are not an adjustment: the key stays unset, rows keep the font's height.
         for (const junk of ['tall', '10 %', '%', '1e2', '5px']) {
             expect(parse(`adjust-cell-height = ${junk}`)).toBeNull();

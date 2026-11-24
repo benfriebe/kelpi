@@ -307,6 +307,8 @@ export interface ApplicationSettings {
     appearance: {
         backgroundColor: string; backgroundOpacity: number; fontFamily: string | null; fontSize: number | null;
         windowPaddingX: number | null; windowPaddingY: number | null; isDark: boolean; theme: string | null;
+        /** ghostty's adjust-cell-height: device pixels, or a percentage of the font's row height. Null when unset. */
+        cellHeightAdjust: { unit: 'px' | 'percent'; value: number } | null;
         terminalTheme: { name: string | null; path: string | null; palette: Record<string, string>; error: string | null };
     };
     chrome: Data; profiles: Profile[]; remoteDaemons: RemoteDaemon[];
@@ -318,7 +320,8 @@ export type GeneralSettingKey = 'focus-follows-mouse' | 'focus-follows-mouse-del
     | 'sparkline-color' | 'sparkline-width' | 'search-match-color' | 'search-match-text-color' | 'search-match-current-color'
     | 'search-match-current-text-color' | 'auto-detect-repos' | 'workspace-pr-status' | 'worktree-base-path' | 'new-workspace-placement'
     | 'new-group-placement' | 'inherit-group-on-new-workspace' | 'expand-group-on-workspace-drop' | 'clipboard-write';
-export type AppearanceSettingKey = 'background' | 'background-opacity' | 'font-family' | 'font-size' | 'theme' | 'window-padding-x' | 'window-padding-y';
+export type AppearanceSettingKey = 'adjust-cell-height' | 'background' | 'background-opacity' | 'font-family' | 'font-size' | 'theme'
+    | 'window-padding-x' | 'window-padding-y';
 export interface ApplicationSettingsAPI {
     /** Daemon application settings. api.settings remains scoped to this plugin. */
     get(): Promise<ApplicationSettings>;

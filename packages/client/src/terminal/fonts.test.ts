@@ -176,6 +176,38 @@ describe('measureCellSize', () => {
         expect(resolveCellHeightAdjust(undefined, 13, 'Menlo')).toBe(0);
     });
 
+    it('reads an adjust-cell-height pixel count as device pixels, the way ghostty does', () => {
+        stubCanvas(8); // row height 15
+        // ghostty adds the number to a cell measured in device pixels, so on a 2x display `4`
+        // is two points of extra height. As CSS pixels it would be double what ghostty draws.
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 4 }, 13, 'Menlo', 2)).toBe(2);
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 4 }, 13, 'Menlo', 1)).toBe(4);
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 6 }, 13, 'Menlo', 3)).toBe(2);
+        // The engine takes whole CSS pixels, so an odd count rounds.
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 3 }, 13, 'Menlo', 2)).toBe(2);
+        // The 2px floor is in CSS pixels, after the division: -4 device pixels at 2x is all of it.
+        expect(resolveCellHeightAdjust({ unit: 'px', value: -4 }, 13, 'Menlo', 2)).toBe(-2);
+        expect(resolveCellHeightAdjust({ unit: 'px', value: -2 }, 13, 'Menlo', 2)).toBe(-1);
+        // Half a device pixel short of one CSS pixel is no change, and it is 0, never -0.
+        expect(Object.is(resolveCellHeightAdjust({ unit: 'px', value: -1 }, 13, 'Menlo', 4), 0)).toBe(true);
+        // A percentage is of the row, which is already in CSS pixels: the scale does not touch it.
+        expect(resolveCellHeightAdjust({ unit: 'percent', value: 40 }, 13, 'Menlo', 2)).toBe(6);
+        // The default is the window's own scale, and a missing or nonsense one counts as 1.
+        vi.stubGlobal('devicePixelRatio', 2);
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 4 }, 13, 'Menlo')).toBe(2);
+        vi.stubGlobal('devicePixelRatio', 0);
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 4 }, 13, 'Menlo')).toBe(4);
+        vi.unstubAllGlobals();
+        expect(resolveCellHeightAdjust({ unit: 'px', value: 4 }, 13, 'Menlo', Number.NaN)).toBe(4);
+    });
+
+    it('gives a large percentage shrink all the room a row has', () => {
+        stubCanvas(8); // row height 15
+        // The daemon no longer cuts `-20%` to `-10%`, which was one pixel off a 15px row.
+        expect(resolveCellHeightAdjust({ unit: 'percent', value: -20 }, 13, 'Menlo')).toBe(-2);
+        expect(resolveCellHeightAdjust({ unit: 'percent', value: -100 }, 13, 'Menlo')).toBe(-2);
+    });
+
     it('falls back to font-derived ratios without a 2D context', () => {
         vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
         const cell = measureCellSize(13, 'Menlo');

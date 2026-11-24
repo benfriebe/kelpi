@@ -2035,28 +2035,41 @@ class R {
     const s = E, h = C + this.metrics.baseline;
     let a;
     if (A.grapheme_len > 0 && ((e = this.currentBuffer) != null && e.getGraphemeString) ? a = this.currentBuffer.getGraphemeString(B, Q) : a = String.fromCodePoint(A.codepoint || 32), this.ctx.fillText(a, s, h), A.flags & J.FAINT && (this.ctx.globalAlpha = 1), A.flags & J.UNDERLINE) {
-      const t = this.metrics.baseline + 2, N = C + (this.cellHeightAdjust < 0 ? Math.min(t, this.metrics.height - 0.5) : t);
-      this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, N), this.ctx.lineTo(E + I, N), this.ctx.stroke();
+      const t = C + this.underlineOffset();
+      this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, t), this.ctx.lineTo(E + I, t), this.ctx.stroke();
     }
     if (A.flags & J.STRIKETHROUGH) {
       const t = C + this.metrics.height / 2;
       this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, t), this.ctx.lineTo(E + I, t), this.ctx.stroke();
     }
     if (A.hyperlink_id > 0 && A.hyperlink_id === this.hoveredHyperlinkId) {
-      const N = C + this.metrics.baseline + 2;
+      const N = C + this.underlineOffset();
       this.ctx.strokeStyle = "#4A90E2", this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, N), this.ctx.lineTo(E + I, N), this.ctx.stroke();
     }
     if (this.linkUnderline !== null && !(A.flags & J.UNDERLINE) && this.isLinkUnderlined(Q, B)) {
-      const t = C + this.metrics.baseline + 2;
+      const t = C + this.underlineOffset();
       this.ctx.strokeStyle = this.ctx.fillStyle, this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, t), this.ctx.lineTo(E + I, t), this.ctx.stroke();
     }
     if (this.hoveredLinkRange) {
       const t = this.hoveredLinkRange;
       if (B === t.startY && Q >= t.startX && (B < t.endY || Q <= t.endX) || B > t.startY && B < t.endY || B === t.endY && Q <= t.endX && (B > t.startY || Q >= t.startX)) {
-        const k = C + this.metrics.baseline + 2;
+        const k = C + this.underlineOffset();
         this.ctx.strokeStyle = "#4A90E2", this.ctx.lineWidth = 1, this.ctx.beginPath(), this.ctx.moveTo(E, k), this.ctx.lineTo(E + I, k), this.ctx.stroke();
       }
     }
+  }
+  /**
+   * Where an underline sits below a cell's top edge (vendor 0.4.0-kelpi.26).
+   *
+   * Two pixels under the baseline, as upstream draws it. A shrunken row can be too short for
+   * that: the line would land on the boundary with the next row, whose background then paints
+   * over half of it. There it is pulled up to the row's last pixel line. One rule for all four
+   * underlines (SGR 4, an OSC 8 link under the pointer, the embedder's link underline and the
+   * hovered link range), so a link in a shrunken row is drawn as firmly as underlined text.
+   */
+  underlineOffset() {
+    const A = this.metrics.baseline + 2;
+    return this.cellHeightAdjust < 0 ? Math.min(A, this.metrics.height - 0.5) : A;
   }
   /**
    * Render cursor
@@ -3077,11 +3090,7 @@ const T = class H {
    * Updates canvas size to match new font metrics and forces a full re-render
    */
   handleFontChange() {
-    if (!this.renderer || !this.wasmTerm || !this.canvas)
-      return;
-    this.selectionManager && this.selectionManager.clearSelection(), this.renderer.resize(this.cols, this.rows);
-    const A = this.renderer.getMetrics();
-    this.canvas.width = A.width * this.cols, this.canvas.height = A.height * this.rows, this.canvas.style.width = `${A.width * this.cols}px`, this.canvas.style.height = `${A.height * this.rows}px`, this.renderer.render(this.wasmTerm, !0, this.viewportY, this);
+    !this.renderer || !this.wasmTerm || !this.canvas || (this.selectionManager && this.selectionManager.clearSelection(), this.renderer.resize(this.cols, this.rows), this.renderer.render(this.wasmTerm, !0, this.viewportY, this));
   }
   /**
    * Parse a CSS color string to 0xRRGGBB format.

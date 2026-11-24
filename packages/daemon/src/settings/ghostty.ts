@@ -50,9 +50,14 @@ export interface GhosttyAppearance {
     /**
      * `adjust-cell-height`: how much taller (or shorter) every terminal row is than the font's
      * own height, as whole pixels or a percentage of that height (`4`, `-2`, `50%`). Null = unset
-     * or unparseable, rows keep the font's height. Clamped (see `MIN_/MAX_CELL_HEIGHT_ADJUST_*`)
-     * so a runaway value cannot make a row absurd. The client limits shrinking to the two
-     * pixels of padding the renderer adds to each row.
+     * or unparseable, rows keep the font's height. Clamped (see `MAX_CELL_HEIGHT_ADJUST_*`) so a
+     * runaway value cannot make a row absurd.
+     *
+     * Pixels are ghostty's: DEVICE pixels, which the client divides by its display scale. A
+     * shrink is bounded here only as far as ghostty's own meaning goes (a row cannot lose more
+     * than all of its height). The limit that matters is the CLIENT's, the two pixels of padding
+     * the renderer adds to each row, and it is applied there and nowhere else: clamping a
+     * negative value here as well would turn `-20%` into less than the shrink the row can take.
      */
     readonly cellHeightAdjust: GhosttyCellHeightAdjust | null;
     /**
@@ -82,12 +87,17 @@ export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
 export type GhosttyCellHeightAdjust = WsCellHeightAdjust;
 
 /** See `GhosttyAppearance.cellHeightAdjust` — the range a parsed value is clamped to. */
-export const MIN_CELL_HEIGHT_ADJUST_PX = -2;
+export const MIN_CELL_HEIGHT_ADJUST_PX = -64;
 export const MAX_CELL_HEIGHT_ADJUST_PX = 64;
-export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -10;
+export const MIN_CELL_HEIGHT_ADJUST_PERCENT = -100;
 export const MAX_CELL_HEIGHT_ADJUST_PERCENT = 200;
 
-const CELL_HEIGHT_ADJUST = /^([+-]?\d+(?:\.\d+)?)(%?)$/;
+/**
+ * ghostty reads a value ending in `%` as a percentage, which may carry a fraction, and anything
+ * else as a whole number of pixels. `4.5` is not a whole number, so ghostty refuses the line and
+ * so does this: rounding it would draw a row height ghostty itself never shows for that file.
+ */
+const CELL_HEIGHT_ADJUST = /^(?:([+-]?\d+(?:\.\d+)?)%|([+-]?\d+))$/;
 
 function clamp(value: number, min: number, max: number): number {
     return Math.min(max, Math.max(min, value));
@@ -96,14 +106,21 @@ function clamp(value: number, min: number, max: number): number {
 function parseCellHeightAdjust(raw: string): GhosttyCellHeightAdjust | null {
     const match = CELL_HEIGHT_ADJUST.exec(raw.trim());
     if (match === null) return null;
-    const value = Number.parseFloat(match[1] as string);
-    if (match[2] === '%') {
+    const percent = match[1];
+    if (percent !== undefined) {
         return {
             unit: 'percent',
-            value: clamp(Math.round(value), MIN_CELL_HEIGHT_ADJUST_PERCENT, MAX_CELL_HEIGHT_ADJUST_PERCENT)
+            value: clamp(
+                Math.round(Number.parseFloat(percent)),
+                MIN_CELL_HEIGHT_ADJUST_PERCENT,
+                MAX_CELL_HEIGHT_ADJUST_PERCENT
+            )
         };
     }
-    return { unit: 'px', value: clamp(Math.round(value), MIN_CELL_HEIGHT_ADJUST_PX, MAX_CELL_HEIGHT_ADJUST_PX) };
+    return {
+        unit: 'px',
+        value: clamp(Number.parseInt(match[2] as string, 10), MIN_CELL_HEIGHT_ADJUST_PX, MAX_CELL_HEIGHT_ADJUST_PX)
+    };
 }
 
 /** See `GhosttyAppearance.windowPaddingX` — the ceiling a parsed padding is clamped to. */

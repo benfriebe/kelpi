@@ -331,8 +331,9 @@ export interface TerminalPaneProps {
     readonly fontFamily?: string | undefined;
     readonly fontSize?: number | undefined;
     /**
-     * ghostty's `adjust-cell-height`: pixels or a percentage of the font's row height. Undefined
-     * = rows keep the font's height. Like the font, it is fixed at engine construction.
+     * ghostty's `adjust-cell-height`: device pixels or a percentage of the font's row height.
+     * Undefined = rows keep the font's height. A change is applied to the live engine
+     * (`renderer.remeasure`), which resizes the canvas and the grid without rebuilding the pane.
      */
     readonly cellHeightAdjust?: { readonly unit: 'px' | 'percent'; readonly value: number } | undefined;
     /**

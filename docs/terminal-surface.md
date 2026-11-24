@@ -379,8 +379,12 @@ The daemon reads these keys out of the user's ghostty config (`parseGhosttyAppea
 - `window-padding-x`, `window-padding-y` (whole pixels, rounded and clamped to 0–64; unset
   means the client's shipped default)
 - `adjust-cell-height` (pixels or percentages of the measured row, for local Ghostty-rendered
-  panes). Kelpi limits shrinking to the row's padding and keeps the configured value within
-  -2 to 64 pixels or -10% to 200%.
+  panes). A pixel count is in device pixels, as in Ghostty, so the client divides it by the
+  display's scale and rounds to a whole CSS pixel; a fractional pixel count is refused, as
+  Ghostty refuses it. The daemon keeps the configured value within -64 to 64 pixels or -100% to
+  200%. The client is the one place a shrink is limited: a row can lose its 2 pixels of padding
+  and no more, whichever unit asked. Settings ▸ Appearance ▸ Row height writes a percentage
+  (-20% to 100%, where 0 removes the key).
 
 `isDark` is computed once from the resolved background by the daemon so its rendered
 markdown/diff HTML and the client chrome cannot disagree.

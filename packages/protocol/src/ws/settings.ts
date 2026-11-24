@@ -377,7 +377,14 @@ export const DEFAULT_WS_TERMINAL_THEME: WsTerminalThemeResolution = {
     error: null
 };
 
-/** ghostty's `adjust-cell-height`: whole pixels, or a percentage of the font's own row height. */
+/**
+ * ghostty's `adjust-cell-height`: whole pixels, or a percentage of the font's own row height.
+ *
+ * `px` counts DEVICE pixels, because that is what the number means in ghostty: it is added to a
+ * cell measured at the display's own resolution, so `4` is two points on a 2x display and four
+ * on a 1x one. A client divides by its display scale before it draws. `percent` needs no such
+ * care, which is why it is the unit Settings writes.
+ */
 export interface WsCellHeightAdjust {
     readonly unit: 'px' | 'percent';
     readonly value: number;
@@ -414,7 +421,8 @@ export interface WsAppearanceSettings {
     /**
      * ghostty `adjust-cell-height`: extra (or, negative, fewer) pixels of height for every
      * terminal row, whole pixels or a percentage of the font's own row height. Null = key unset,
-     * rows keep the font's height. Additive: a daemon that predates it omits the field and the
+     * rows keep the font's height. A negative value arrives as written: the client owns the limit
+     * on how far a row can shrink. Additive: a daemon that predates it omits the field and the
      * hydrator fills null.
      */
     readonly cellHeightAdjust: WsCellHeightAdjust | null;
@@ -634,7 +642,7 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'clipboard-write',
     // #171's ⌥ rule. Ghostty owns a key of this name in ITS file, and this port does what it did
     // for `clipboard-write` directly above: the same spelling, the same default, but a KELPI key,
-    // because the daemon is not a ghostty config implementation (it parses seven ghostty keys and
+    // because the daemon is not a ghostty config implementation (it parses eight ghostty keys and
     // says so) and the value is enforced in the client rather than by ghostty.
     'macos-option-as-alt',
     // Copy-on-select, the third ghostty spelling here and for the same reason: the client's
@@ -658,15 +666,17 @@ export function isWsWritableGeneralKey(key: string): key is WsWritableGeneralKey
 }
 
 /**
- * The ghostty keys `set-ghostty-setting` may write — exactly the seven `settings/ghostty.ts`
+ * The ghostty keys `set-ghostty-setting` may write — exactly the eight `settings/ghostty.ts`
  * READS, and not one more.
  *
  * The daemon is not a ghostty config implementation (that file's header says so): writing a
  * key it cannot parse back would let the UI claim a change it can neither show nor undo. A
  * value of `null` removes every line for the key, which is how "no explicit background, fall
- * back to the theme" is expressed — and how a padding row returns to the shipped default.
+ * back to the theme" is expressed — and how a padding or row height row returns to the shipped
+ * default.
  */
 export const WS_WRITABLE_GHOSTTY_KEYS = [
+    'adjust-cell-height',
     'background',
     'background-opacity',
     'font-family',

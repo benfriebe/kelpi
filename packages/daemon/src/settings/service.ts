@@ -590,7 +590,7 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
         setGhosttySetting(key, value) {
             const name = key.trim();
             if (!isWsWritableGhosttyKey(name)) {
-                // The five keys `./ghostty.ts` parses, and no others: writing a key this
+                // The keys `./ghostty.ts` parses, and no others: writing a key this
                 // daemon cannot read back would let the UI claim a change it cannot show.
                 throw new SettingsError(`'${key}' is not a writable ghostty setting`);
             }

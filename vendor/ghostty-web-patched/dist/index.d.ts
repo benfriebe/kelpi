@@ -226,6 +226,16 @@ export declare class CanvasRenderer {
      */
     private renderCellText;
     /**
+     * Where an underline sits below a cell's top edge (vendor 0.4.0-kelpi.26).
+     *
+     * Two pixels under the baseline, as upstream draws it. A shrunken row can be too short for
+     * that: the line would land on the boundary with the next row, whose background then paints
+     * over half of it. There it is pulled up to the row's last pixel line. One rule for all four
+     * underlines (SGR 4, an OSC 8 link under the pointer, the embedder's link underline and the
+     * hovered link range), so a link in a shrunken row is drawn as firmly as underlined text.
+     */
+    private underlineOffset;
+    /**
      * Render cursor
      */
     private renderCursor;

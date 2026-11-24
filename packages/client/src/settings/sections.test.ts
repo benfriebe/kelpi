@@ -271,6 +271,7 @@ describe('the field table', () => {
             'terminal-font-family',
             'terminal-font-size',
             'terminal-font-size-scope',
+            'terminal-row-height',
             'terminal-padding-x',
             'terminal-padding-y',
             'search-match-color',
@@ -412,6 +413,62 @@ describe('reading and encoding', () => {
         expect(encodeSettingsFieldValue(field('general.worktreeBasePath'), '  ~/code  ')).toBe('~/code');
         expect(encodeSettingsFieldValue(field('workspaces.focusDelay'), 250)).toBe('250');
         expect(() => encodeSettingsFieldValue(field('general.autoDetectRepos'), 'true')).toThrow('switch');
+    });
+
+    /*
+     * Row height: ghostty's `adjust-cell-height`, as a percentage slider.
+     *
+     * The file may hold either unit and the slider speaks one, so the three things below are the
+     * whole contract: a percentage is shown as written, a pixel count is NOT shown as a made-up
+     * percentage (the caption says what is in effect instead), and 0 removes the key.
+     */
+    it('shows Row height as a signed percentage, and says so when the file holds pixels', () => {
+        const withAdjust = (cellHeightAdjust: WsSettingsSnapshot['appearance']['cellHeightAdjust']) => ({
+            ...DEFAULT_WS_SETTINGS,
+            appearance: { ...DEFAULT_WS_SETTINGS.appearance, cellHeightAdjust }
+        });
+        const row = field('appearance.rowHeight');
+
+        expect(describeSettingsField(row, withAdjust(null))).toMatchObject({
+            kind: 'slider',
+            value: 0,
+            valueLabel: '0%',
+            min: -20,
+            max: 100,
+            step: 5,
+            detail: row.detail
+        });
+        expect(describeSettingsField(row, withAdjust({ unit: 'percent', value: 20 }))).toMatchObject({
+            value: 20,
+            valueLabel: '+20%',
+            detail: row.detail
+        });
+        expect(describeSettingsField(row, withAdjust({ unit: 'percent', value: -10 }))).toMatchObject({
+            value: -10,
+            valueLabel: '-10%'
+        });
+        // A hand-written value off the slider's grid is shown as it is, not snapped.
+        expect(describeSettingsField(row, withAdjust({ unit: 'percent', value: 150 }))).toMatchObject({
+            value: 150,
+            valueLabel: '+150%'
+        });
+
+        const pixels = describeSettingsField(row, withAdjust({ unit: 'px', value: 4 }));
+        expect(pixels).toMatchObject({ value: 0, valueLabel: '0%' });
+        expect(pixels.detail).toContain('+4 pixels');
+        expect(pixels.detail).toContain('replaces that with a percentage');
+        expect(describeSettingsField(row, withAdjust({ unit: 'px', value: -2 })).detail).toContain('-2 pixels');
+        // The surface's own caption still outranks it, as it does for every row.
+        expect(describeSettingsField(row, withAdjust({ unit: 'px', value: 4 }), { detail: 'x' }).detail).toBe('x');
+    });
+
+    it('writes Row height as a percentage and removes the key at 0', () => {
+        const row = field('appearance.rowHeight');
+        expect(encodeSettingsFieldValue(row, 20)).toBe('20%');
+        expect(encodeSettingsFieldValue(row, -15)).toBe('-15%');
+        // No adjustment is what an unset key means, so 0 deletes the line rather than writing `0%`.
+        expect(encodeSettingsFieldValue(row, 0)).toBeNull();
+        expect(row.target).toEqual({ file: 'ghostty', key: 'adjust-cell-height' });
     });
 
     it('overlays the surface’s edit state without touching the catalog data', () => {

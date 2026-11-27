@@ -740,6 +740,7 @@ arrangement commands from the chrome snapshot.
 `title`, `placements`, `layout` (`row`, `column`, or `tabs`), and `slots`. Each slot declares
 a namespaced `id`, `title`, optional `defaultView`, and optional `weight` (0.1–100). A view
 or another container participates by listing that slot ID in its `placements`.
+A sidebar with two stacked slots has a draggable divider. Arrow keys also adjust the split when the divider is focused, and Kelpi saves the split for that layout. Double-click the divider to restore the default.
 
 ```json
 {

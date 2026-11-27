@@ -1,12 +1,13 @@
 import type { PluginChrome } from './chrome';
 import { featureBindings, type BundledFeatureBinding } from '../features/feature';
-import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { Fragment, createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { PLUGIN_BAND_HEIGHTS, isPluginID, isPluginPlacement, type JsonObject, type JsonValue, type PluginPlacement } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { ChromeIcon } from '../chrome/icons';
 import { ContextMenu, menuAnchorFromEvent } from '../chrome/ContextMenu';
 import { tokens } from '../chrome/tokens';
+import { registerGestureReset } from '../chrome/gesture-reset';
 import { PluginView } from './PluginView';
 import { usePlugins } from './client';
 import { contributedSlots, DEFAULT_SLOTS, MAX_CONTAINER_DEPTH, planComposedViews, readWorkbenchSelections, resolveSidebarViews, resolveSlot, selectWorkbenchView, slotViews, viewRegistry, type SidebarPlacement, type ViewContribution, type WorkbenchSelections } from './registry';
@@ -221,13 +222,16 @@ function NativeRendererScope(props: { selected: ViewContribution; adapters: Nati
     return <NativeRendererContext.Provider value={{ adapters: props.adapters, paths: plan.nativePaths, mountedPaths: plan.paths, compact: props.compact ?? false }}>{props.children}</NativeRendererContext.Provider>;
 }
 
-function RegisteredView(props: { view: ViewContribution; path: string; ancestors?: readonly string[]; visible?: boolean }): ReactElement {
+function RegisteredView(props: { view: ViewContribution; path: string; ancestors?: readonly string[]; visible?: boolean; sidebar?: boolean }): ReactElement {
     const host = useWorkbench();
     const native = useContext(NativeRendererContext);
     const { view, path, ancestors = [] } = props;
     if (ancestors.includes(view.id) || (view.container && ancestors.length >= MAX_CONTAINER_DEPTH)) return <div role="status" className="p-3 text-xs">This layout contains a cycle or is nested too deeply. Choose another view or restore its default.</div>;
     if (!native.mountedPaths.has(path)) return <div role="status" className="p-3 text-xs">This layout has too many views. Choose another view or empty a slot.</div>;
-    if (view.container) return <WorkbenchContainer view={view} path={path} ancestors={[...ancestors, view.id]} visible={props.visible ?? true} />;
+    if (view.container) {
+        const resizable = props.sidebar === true && view.container.layout === 'column' && view.container.slots.length === 2;
+        return <WorkbenchContainer key={resizable ? view.id : undefined} resizable={resizable} view={view} path={path} ancestors={[...ancestors, view.id]} visible={props.visible ?? true} />;
+    }
     if (view.pluginID) return <PluginView runtime={host.runtime} pluginID={view.pluginID} viewID={view.id} workspaceID={host.workspaceID} claimedChords={host.chords} visible={props.visible ?? true} />;
     const adapter = native.adapters[view.id];
     if (!adapter) return <div role="status" className="p-3 text-xs">{view.title} is unavailable in this host. Choose another view.</div>;
@@ -235,7 +239,7 @@ function RegisteredView(props: { view: ViewContribution; path: string; ancestors
     return <>{renderRegisteredView(native.adapters, view.id, () => null, { visible: props.visible ?? true, trafficLightInset: 0 })}</>;
 }
 
-function WorkbenchContainer(props: { view: ViewContribution; path: string; ancestors: readonly string[]; visible: boolean }): ReactElement {
+function WorkbenchContainer(props: { view: ViewContribution; path: string; ancestors: readonly string[]; visible: boolean; resizable: boolean }): ReactElement {
     const host = useWorkbench();
     const container = props.view.container!;
     const { compact } = useContext(NativeRendererContext);
@@ -244,6 +248,46 @@ function WorkbenchContainer(props: { view: ViewContribution; path: string; ances
     const setActive = (slotID: string): void => host.activateTab(container.id, slotID);
     const activeSlot = container.slots.some(slot => slot.id === active) ? active : container.slots[0]?.id;
     const tabs = container.layout === 'tabs';
+    const { resizable } = props;
+    const topWeight = container.slots[0]?.weight ?? 1;
+    const bottomWeight = container.slots[1]?.weight ?? 1;
+    const defaultSplit = 100 * topWeight / (topWeight + bottomWeight);
+    const minSplit = Math.min(15, Math.floor(defaultSplit));
+    const maxSplit = Math.max(85, Math.ceil(defaultSplit));
+    const splitKey = `kelpi.sidebar.split.v1:${container.id}`;
+    const clampSplit = (value: number): number => Math.min(maxSplit, Math.max(minSplit, Math.round(value)));
+    const [savedSplit, setSplit] = useState<number | null>(() => {
+        if (!resizable) return null;
+        try {
+            const saved = localStorage.getItem(splitKey);
+            return saved && Number.isFinite(Number(saved)) ? clampSplit(Number(saved)) : null;
+        } catch {
+            return null;
+        }
+    });
+    const split = savedSplit ?? defaultSplit;
+    const row = useRef<HTMLDivElement>(null);
+    const drag = useRef<{ pointer: number; handle: HTMLDivElement; startY: number; split: number; height: number; latest: number } | null>(null);
+    const saveSplit = useCallback((value: number | null): void => {
+        try {
+            if (value === null) localStorage.removeItem(splitKey);
+            else localStorage.setItem(splitKey, String(value));
+        } catch {
+            // Keep resizing usable when browser storage is blocked.
+        }
+    }, [splitKey]);
+    const endDrag = useCallback((): void => {
+        const start = drag.current;
+        if (start === null) return;
+        drag.current = null;
+        if (start.handle.hasPointerCapture?.(start.pointer)) start.handle.releasePointerCapture(start.pointer);
+        if (start.latest !== start.split) saveSplit(start.latest);
+    }, [saveSplit]);
+    useEffect(() => {
+        if (!resizable) return;
+        const unregister = registerGestureReset(endDrag);
+        return () => { unregister(); endDrag(); };
+    }, [resizable, endDrag]);
     const previousTab = useRef(activeSlot);
     useLayoutEffect(() => {
         const previous = previousTab.current;
@@ -267,14 +311,51 @@ function WorkbenchContainer(props: { view: ViewContribution; path: string; ances
                 document.getElementById(`${tabPrefix}-tab-${next}`)?.focus();
             }}
         >{slot.title}</button>)}</div> : null}
-        <div className={`flex min-h-0 min-w-0 flex-1 ${container.layout === 'row' ? 'flex-row' : 'flex-col'}`}>
+        <div ref={row} className={`flex min-h-0 min-w-0 flex-1 ${container.layout === 'row' ? 'flex-row' : 'flex-col'}`}>
             {container.slots.map((slot, index) => {
                 const selected = resolveSlot(host.views, slot.id, host.selections[slot.id]);
                 const shown = !tabs || activeSlot === slot.id;
                 const choices = slotViews(host.views, slot.id).filter(view => !props.ancestors.includes(view.id));
-                return <div key={slot.id} data-workbench-slot={slot.id} data-view-id={selected?.id} id={`${tabPrefix}-panel-${index}`}
+                return <Fragment key={slot.id}>
+                    {resizable && index === 1 ? <div
+                        role="separator"
+                        tabIndex={0}
+                        aria-label="Resize sidebar sections"
+                        aria-orientation="horizontal"
+                        aria-controls={`${tabPrefix}-panel-0`}
+                        aria-valuemin={minSplit}
+                        aria-valuemax={maxSplit}
+                        aria-valuenow={Math.round(split)}
+                        className="group relative z-10 h-1.5 shrink-0 cursor-row-resize touch-none outline-none"
+                        onPointerDown={event => {
+                            const height = (row.current?.clientHeight ?? 0) - event.currentTarget.offsetHeight;
+                            if (event.button !== 0 || !event.isPrimary || height <= 0) return;
+                            event.preventDefault();
+                            event.currentTarget.setPointerCapture?.(event.pointerId);
+                            drag.current = { pointer: event.pointerId, handle: event.currentTarget, startY: event.clientY, split, height, latest: split };
+                        }}
+                        onPointerMove={event => {
+                            const start = drag.current;
+                            if (start?.pointer !== event.pointerId) return;
+                            start.latest = clampSplit(start.split + 100 * (event.clientY - start.startY) / start.height);
+                            setSplit(start.latest);
+                        }}
+                        onPointerUp={endDrag}
+                        onPointerCancel={endDrag}
+                        onLostPointerCapture={endDrag}
+                        onDoubleClick={() => { setSplit(null); saveSplit(null); }}
+                        onKeyDown={event => {
+                            const next = { ArrowUp: split - 5, ArrowDown: split + 5, Home: minSplit, End: maxSplit }[event.key];
+                            if (typeof next !== 'number') return;
+                            event.preventDefault();
+                            const value = clampSplit(next);
+                            setSplit(value);
+                            saveSplit(value);
+                        }}
+                    ><span className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-[var(--kelpi-border)] group-hover:border-[var(--kelpi-accent)] group-focus-visible:border-[var(--kelpi-accent)]" /></div> : null}
+                    <div data-workbench-slot={slot.id} data-view-id={selected?.id} id={`${tabPrefix}-panel-${index}`}
                     {...(tabs ? { role: 'tabpanel', 'aria-labelledby': `${tabPrefix}-tab-${index}` } : { role: 'group', 'aria-label': slot.title })}
-                    hidden={!shown} className="flex min-h-0 min-w-0 flex-col overflow-hidden" style={{ flex: `${slot.weight ?? 1} 1 0`, display: shown ? undefined : 'none' }}>
+                    hidden={!shown} className="flex min-h-0 min-w-0 flex-col overflow-hidden" style={{ flex: `${resizable && savedSplit !== null ? (index === 0 ? split : 100 - split) : slot.weight ?? 1} 1 0`, display: shown ? undefined : 'none' }}>
                     {!compact ? <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1" style={{ borderColor: tokens.divider }}>
                         <label className="min-w-0 flex-1 text-xs"><span className="sr-only">{slot.title} view</span><select className="w-full min-w-0" aria-label={`${slot.title} view`} value={selected?.id ?? ''} onChange={event => host.select(slot.id, event.target.value)}>
                             <option value="">Empty</option>{choices.map(view => <option key={view.id} value={view.id}>{view.title}</option>)}
@@ -282,7 +363,8 @@ function WorkbenchContainer(props: { view: ViewContribution; path: string; ances
                         <button type="button" className="shrink-0 text-xs" aria-label={`Restore ${slot.title}`} title="Restore default view" onClick={() => host.select(slot.id, slot.defaultView ?? '')}>Reset</button>
                     </div> : null}
                     <div className="min-h-0 min-w-0 flex-1">{selected ? <RegisteredView view={selected} path={`${props.path}/${slot.id}`} ancestors={props.ancestors} visible={props.visible && shown} /> : <div role="status" className="p-3 text-xs">Choose a view for {slot.title}.</div>}</div>
-                </div>;
+                    </div>
+                </Fragment>;
             })}
         </div>
     </section>;
@@ -389,7 +471,7 @@ export function WorkbenchSidebar(props: {
             {props.onClose ? <button type="button" className="shrink-0 rounded p-1" aria-label={`Close ${props.placement === 'sidebar.primary' ? 'left' : 'right'} sidebar`} onClick={props.onClose} style={{ color: tokens.textSecondary }}><ChromeIcon name="clear" size={12} /></button> : null}
         </div>
         <div className="min-h-0 flex-1">
-            <NativeRendererScope selected={selected} adapters={{ [props.nativeViewID]: native }}><RegisteredView view={selected} path="root" /></NativeRendererScope>
+            <NativeRendererScope selected={selected} adapters={{ [props.nativeViewID]: native }}><RegisteredView view={selected} path="root" sidebar /></NativeRendererScope>
         </div>
     </div>;
 }

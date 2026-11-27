@@ -57,13 +57,17 @@ function extension(): PluginInfo {
                 { id: 'sample.sidebar.duplicate', title: 'Duplicate', defaultView: 'kelpi.workspaces' },
                 { id: 'sample.sidebar.foreign', title: 'Other feature', defaultView: 'kelpi.inspector' }
             ] },
+            { id: 'sample.sidebar.stacked', title: 'Stacked Workspaces', placements: ['sidebar.primary'], layout: 'column', slots: [
+                { id: 'sample.sidebar.top', title: 'Workspaces', defaultView: 'kelpi.workspaces', weight: 2 },
+                { id: 'sample.sidebar.bottom', title: 'Agents', defaultView: 'sample.sidebar.custom', weight: 3 }
+            ] },
             { id: 'sample.sidebar.tabs', title: 'Tabbed Workspaces', placements: ['sidebar.primary', 'sidebar.secondary'], layout: 'tabs', slots: [
                 { id: 'sample.sidebar.native', title: 'Workspaces tab', defaultView: 'kelpi.workspaces' },
                 { id: 'sample.sidebar.detail', title: 'Plugin tab', defaultView: 'sample.sidebar.custom' }
             ] }
         ],
         views: [{ id: 'sample.sidebar.custom', title: 'Custom sidebar', entry: 'ui/index.html',
-            placements: ['sidebar.primary', 'sidebar.secondary', 'sample.sidebar.detail'] }]
+            placements: ['sidebar.primary', 'sidebar.secondary', 'sample.sidebar.detail', 'sample.sidebar.bottom'] }]
     } }), enabled: true, status: 'inactive', error: null, revision: 'revision', instanceID: 'instance' };
 }
 
@@ -93,6 +97,28 @@ beforeEach(() => { localStorage.clear(); plugins = [extension()]; active.clear()
 afterEach(() => { cleanup(); resetInteractionPresenterFailures(); resetSettingsPresenterFailures(); });
 
 describe('bundled feature registration in the workbench', () => {
+    it('resizes stacked sidebar sections and restores the saved split after remounting', () => {
+        const harness = render(<Harness features={bindings()} />);
+        selectLeft('sample.sidebar.stacked');
+        const divider = screen.getByRole('separator', { name: 'Resize sidebar sections' });
+        expect(divider.getAttribute('aria-valuenow')).toBe('40');
+        fireEvent.keyDown(divider, { key: 'ArrowUp' });
+        expect(divider.getAttribute('aria-valuenow')).toBe('35');
+        expect(screen.getByTestId('kelpi.workspaces').closest('[data-workbench-slot]')?.getAttribute('style')).toContain('flex: 35');
+        expect(screen.getByTestId('sample.sidebar.custom').closest('[data-workbench-slot]')?.getAttribute('style')).toContain('flex: 65');
+        fireEvent.keyDown(divider, { key: 'Home' });
+        fireEvent.keyDown(divider, { key: 'ArrowUp' });
+        expect(divider.getAttribute('aria-valuenow')).toBe('15');
+        harness.unmount();
+
+        render(<Harness features={bindings()} />);
+        expect(screen.getByRole('separator', { name: 'Resize sidebar sections' }).getAttribute('aria-valuenow')).toBe('15');
+        fireEvent.doubleClick(screen.getByRole('separator', { name: 'Resize sidebar sections' }));
+        expect(screen.getByRole('separator', { name: 'Resize sidebar sections' }).getAttribute('aria-valuenow')).toBe('40');
+        selectLeft('sample.sidebar.tabs');
+        expect(screen.queryByRole('separator', { name: 'Resize sidebar sections' })).toBeNull();
+    });
+
     it('rejects ambiguous native ownership in the feature registry', () => {
         const features = bindings();
         expect(() => featureBindings([features[0]!, features[0]!])).toThrow('already registered: kelpi.workspaces');

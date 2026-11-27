@@ -109,8 +109,7 @@ describe('sidebar resizer: a gesture always ends (issue #79)', () => {
         expect(onResizeStart).toHaveBeenCalledTimes(1);
 
         window.dispatchEvent(new MouseEvent('pointerup', { clientX: 220 }));
-        // `onCommit` fires with the unchanged width; `onResizeEnd` is the unconditional one
-        // App.tsx clears `sidebarResizing` from.
+        expect(onCommit).not.toHaveBeenCalled();
         expect(onResizeEnd).toHaveBeenCalledTimes(1);
     });
 

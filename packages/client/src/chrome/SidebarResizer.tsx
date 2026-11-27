@@ -3,8 +3,8 @@
  *
  * The shipped app puts a zero-width `Color.clear` on the sidebar's trailing edge with a −3 pt
  * content-shape inset, giving a 6 pt hit strip that shows the left-right resize cursor and
- * drags the width between 180 and 300 pt, starting at 220. Same numbers here, with the same
- * invisible strip straddling the edge.
+ * drags from 180 to 300 pt, starting at 220. The web client uses the same handle and allows
+ * up to 480 px to fit longer workspace and agent names.
  *
  * One deliberate fix, the same one the pane dividers got (PLAN.md "deliberate fixes"): the
  * shipped gesture adds `translation.width` to the CURRENT width on every change event, so the
@@ -22,11 +22,11 @@ import { registerGestureReset } from './gesture-reset';
 import { tokens } from './tokens';
 
 export const SIDEBAR_MIN_WIDTH = 180;
-export const SIDEBAR_MAX_WIDTH = 300;
+export const SIDEBAR_MAX_WIDTH = 480;
 export const SIDEBAR_DEFAULT_WIDTH = 220;
 export const SIDEBAR_WIDTH_STORAGE_KEY = 'kelpi.sidebar.width';
 
-/** Anything outside 180–300 (or not a number at all) lands on the nearest legal width. */
+/** Anything outside 180–480 (or not a number at all) lands on the nearest legal width. */
 export function clampSidebarWidth(value: number): number {
     if (!Number.isFinite(value)) return SIDEBAR_DEFAULT_WIDTH;
     return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)));
@@ -59,6 +59,7 @@ export interface SidebarResizerProps {
     readonly side?: 'left' | 'right';
     /** The width at the moment a drag starts; every move is measured against this snapshot. */
     readonly width: number;
+    readonly maxWidth?: number;
     readonly onResize: (width: number) => void;
     /** Fired once when the pointer is released, so assembly can persist the final width. */
     readonly onCommit?: ((width: number) => void) | undefined;
@@ -86,7 +87,7 @@ export interface SidebarResizerProps {
 }
 
 export function SidebarResizer(props: SidebarResizerProps): ReactElement {
-    const drag = useRef<{ startX: number; startWidth: number; latest: number; direction: 1 | -1 } | null>(null);
+    const drag = useRef<{ startX: number; startWidth: number; latest: number; moved: boolean; direction: 1 | -1 } | null>(null);
     /** The exact `removeEventListener` calls for the listeners that are actually installed. */
     const detach = useRef<(() => void) | null>(null);
     /*
@@ -103,8 +104,11 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
     const move = useCallback((event: PointerEvent): void => {
         const state = drag.current;
         if (state === null) return;
-        const next = clampSidebarWidth(state.startWidth + state.direction * (event.clientX - state.startX));
+        const desired = clampSidebarWidth(state.startWidth + state.direction * (event.clientX - state.startX));
+        const next = Math.min(desired, latest.current.maxWidth ?? SIDEBAR_MAX_WIDTH);
+        if (next === state.latest) return;
         state.latest = next;
+        state.moved = true;
         latest.current.onResize(next);
     }, []);
 
@@ -117,7 +121,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
         // Unconditional, and BEFORE the commit: this is the "nothing owns the width" signal,
         // and it has to be delivered even for a pointerdown that never moved.
         latest.current.onResizeEnd?.();
-        if (state !== null) latest.current.onCommit?.(state.latest);
+        if (state?.moved === true) latest.current.onCommit?.(state.latest);
     }, []);
 
     /*
@@ -148,7 +152,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
             aria-label="Resize sidebar"
             aria-valuenow={props.width}
             aria-valuemin={SIDEBAR_MIN_WIDTH}
-            aria-valuemax={SIDEBAR_MAX_WIDTH}
+            aria-valuemax={props.maxWidth ?? SIDEBAR_MAX_WIDTH}
             /* Zero-width in layout, 6 px of hit area straddling the edge — the shipped app's
                `contentShape(Rectangle().inset(by: -3))`, which is why the negative margin. */
             className="relative z-10 w-0 shrink-0 cursor-col-resize"
@@ -158,7 +162,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
                 // without a `button` field (jsdom, some remote-input paths) still drags.
                 if (event.button > 0) return;
                 event.preventDefault();
-                drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width, direction: props.side === 'right' ? -1 : 1 };
+                drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width, moved: false, direction: props.side === 'right' ? -1 : 1 };
                 // Before any move: tell assembly a gesture owns the width now, so §WS-001's
                 // slide transition comes off the slot for the length of it.
                 props.onResizeStart?.();

@@ -86,7 +86,7 @@ import { renderRegisteredView } from './plugins/renderers';
  */
 
 import { canonicalTriggerForPlatform, chordKeyIdentity, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
-import { isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
+import { MIN_PANE_EXTENT_PX, isUsingExternalEditor, wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import { CHOOSE_FOLDER_DIALOG_ACTION, UPDATE_ACTION_SHELL_ACTION, type JsonObject, type RunningServiceEntry, type RunningServicePort, type RunningStopResult, type WsOldTerminalHost } from '@kelpi/protocol';
 import {
     workspaceAgentSummary,
@@ -154,6 +154,7 @@ import {
     SidebarResizer,
     ThemeProvider,
     menuAnchorFromEvent,
+    clampSidebarWidth,
     readStoredSidebarWidth,
     resetGestures,
     cancelHeldGesture,
@@ -522,7 +523,7 @@ function Shell(props: AppProps): ReactElement {
     const [sidebarPhase, setSidebarPhase] = useState<SidebarPhase>(() => (sidebarVisible ? 'open' : 'hidden'));
     /**
      * §WS-002 / §APP-065: the sidebar's width is client-local UI state (the shipped app keeps it
-     * in a view-local `@State`), clamped to 180–300 and remembered across reloads.
+     * in a view-local `@State`), clamped to 180–480 and remembered across reloads.
      */
     const [sidebarWidth, setSidebarWidth] = useState(() => readStoredSidebarWidth());
     /**
@@ -818,7 +819,6 @@ function Shell(props: AppProps): ReactElement {
     }, [sidebarPhase]);
 
     const sidebarMounted = isSidebarMounted(sidebarPhase);
-    const sidebarSlide = sidebarSlideStyle(sidebarPhase, sidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
 
     // ── §APP-066: the INSPECTOR's show/hide slide, the same machine mirrored ─────────
     //
@@ -854,6 +854,22 @@ function Shell(props: AppProps): ReactElement {
     }, [inspectorPhase]);
 
     const inspectorMounted = isSidebarMounted(inspectorPhase);
+    const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+    const [windowResizing, setWindowResizing] = useState(false);
+    useEffect(() => {
+        let settle: ReturnType<typeof setTimeout> | undefined;
+        const update = (): void => {
+            setWindowResizing(true);
+            setWindowWidth(window.innerWidth);
+            clearTimeout(settle);
+            settle = setTimeout(() => setWindowResizing(false), 100);
+        };
+        window.addEventListener('resize', update);
+        return () => {
+            window.removeEventListener('resize', update);
+            clearTimeout(settle);
+        };
+    }, []);
     const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, sidebarsSwapped ? 'leading' : 'trailing');
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
@@ -1073,6 +1089,12 @@ function Shell(props: AppProps): ReactElement {
     // ── derived reads ───────────────────────────────────────────────────────────────
 
     const workspace = useMemo(() => selectActiveWorkspace(kelpi), [kelpi]);
+    const inspectorShown = inspectorMounted && workspace !== null;
+    // Leave room for the pane grid while keeping the saved width for larger windows.
+    const sidebarLimit = clampSidebarWidth(windowWidth - (inspectorShown ? INSPECTOR_WIDTH_PX : 0) - MIN_PANE_EXTENT_PX);
+    const displayedSidebarWidth = Math.min(sidebarWidth, sidebarLimit);
+    const animateSidebar = !sidebarResizing && !windowResizing;
+    const sidebarSlide = sidebarSlideStyle(sidebarPhase, displayedSidebarWidth, animateSidebar, sidebarsSwapped ? 'trailing' : 'leading');
     const focusedPaneID = useMemo(() => selectFocusedPaneID(kelpi), [kelpi]);
     const workspacesModel = useWorkspacesFeatureModel(kelpi);
     const agentSummary = useMemo(() => selectAgentSummary(kelpi), [kelpi]);
@@ -5275,11 +5297,11 @@ function Shell(props: AppProps): ReactElement {
     // the inspector's border is its last pixel too, but the sidebar's line is the resizer's,
     // one pixel past the slot (`SidebarResizer`), so the lead is one pixel wider there.
     const leftSlot = sidebarsSwapped
-        ? inspectorMounted && workspace !== null
+        ? inspectorShown
             ? { width: inspectorSlide.slot.width, animated: true }
             : null
         : sidebarMounted
-          ? { width: sidebarSlide.slot.width + 1, animated: !sidebarResizing }
+          ? { width: sidebarSlide.slot.width + 1, animated: animateSidebar }
           : null;
     const tabLeadWidth = leftSlot === null ? undefined : leftSlot.width;
     const tabLeadAnimated = leftSlot?.animated === true;
@@ -5535,7 +5557,8 @@ function Shell(props: AppProps): ReactElement {
                     {sidebarPhase === 'closing' ? null : (
                         <SidebarResizer
                             side={sidebarsSwapped ? 'right' : 'left'}
-                            width={sidebarWidth}
+                            width={displayedSidebarWidth}
+                            maxWidth={sidebarLimit}
                             onResizeStart={() => setSidebarResizing(true)}
                             /* Issue #79: the flag comes off when the GESTURE ends, not when a
                                width is committed. `onCommit` is skipped for a press that never
@@ -5725,7 +5748,7 @@ function Shell(props: AppProps): ReactElement {
               * rather than `inspectorVisible` is what keeps it in the tree for the length of a
               * close; a conditional mount has nothing to transition from.
               */}
-            {inspectorMounted && workspace !== null ? (
+            {inspectorShown ? (
                 <div
                     data-testid="inspector-slot"
                     data-sidebar-side={sidebarsSwapped ? 'left' : 'right'}

@@ -130,11 +130,46 @@ describe('a workspace the daemon creates in the background leaves the window alo
         expect(document.querySelector('[data-just-created]')).toBeNull();
     });
 
-    it('folds the worker rows on arrival without moving the caret or active workspace', async () => {
+    it('folds the first worker on arrival and keeps a parent the user opened open for the next', async () => {
+        const { h, caret } = await userTypingInW1();
+        vi.useFakeTimers();
+        const originalScroll = Element.prototype.scrollIntoView;
+        const scrolled: Element[] = [];
+        Element.prototype.scrollIntoView = function (this: Element): void {
+            scrolled.push(this);
+        };
+        try {
+            h.daemon({ type: 'create-workspace', id: W2, paneID: PANE_W2, name: 'worker one', now: NOW, focus: false, parentID: W1, collapseParent: true });
+            expect(rowOf(W1)?.querySelector('[data-testid="workspace-children-chevron"]')?.getAttribute('aria-expanded')).toBe('false');
+            expect(rowOf(W2)).toBeNull();
+            expect(document.querySelector('[data-just-created]')).toBeNull();
+            await act(async () => { await vi.advanceTimersByTimeAsync(NEW_WORKSPACE_CUE_MS + 1); });
+
+            // The user opens the parent to watch: the hidden arrival queued no jump to it.
+            h.daemon({ type: 'set-workspace-children-collapsed', id: W1, collapsed: false });
+            expect(rowOf(W2)).not.toBeNull();
+            expect(scrolled).not.toContain(rowOf(W2));
+
+            // The next worker leaves the parent as the user set it, and arrives like any background row.
+            h.daemon({ type: 'create-workspace', id: W3, paneID: PANE_W3, name: 'worker two', now: NOW, focus: false, parentID: W1, collapseParent: true });
+            expect(rowOf(W1)?.querySelector('[data-testid="workspace-children-chevron"]')?.getAttribute('aria-expanded')).toBe('true');
+            expect(rowOf(W3)?.getAttribute('data-just-created')).toBe('true');
+        } finally {
+            Element.prototype.scrollIntoView = originalScroll;
+        }
+        expect(rowOf(W1)?.getAttribute('data-active')).toBe('true');
+        expect(selectActiveWorkspaceID(h.runtime.store.getState())).toBe(W1);
+        expect(document.activeElement).toBe(caret);
+        expect(JSON.stringify(h.socket().messages())).not.toContain('set-workspace-children-collapsed');
+    });
+
+    it('keeps worker rows folded under a parent the user shut, without moving the caret or active workspace', async () => {
         const { h, caret } = await userTypingInW1();
         vi.useFakeTimers();
         h.daemon({ type: 'create-workspace', id: W2, paneID: PANE_W2, name: 'worker one', now: NOW, focus: false, parentID: W1 });
         expect(rowOf(W2)?.getAttribute('data-just-created')).toBe('true');
+        // The user shuts the parent (from this or another window) while the cue is still showing.
+        h.daemon({ type: 'set-workspace-children-collapsed', id: W1, collapsed: true });
         h.daemon({ type: 'create-workspace', id: W3, paneID: PANE_W3, name: 'worker two', now: NOW, focus: false, parentID: W1, collapseParent: true });
         expect(rowOf(W2)).toBeNull();
         expect(document.querySelector('[data-just-created]')).toBeNull();

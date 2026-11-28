@@ -1426,12 +1426,12 @@ store holds, so a caller can tell a daemon that predates nesting (which drops bo
 creates the workspace at the top level); `kelpi workspace create --parent/--nested` then exits
 non-zero.
 
-`collapse_parent: true` requires a parent and background creation. It appends the child and
-collapses the parent in the same state update, preserving the containing group's visibility.
-If the daemon's active workspace is already a child, the parent keeps its current disclosure
-state. Otherwise, another request can collapse a parent after the user opens it. If the new child
-becomes active because no workspace was active, its parent and containing group stay expanded. Each window
-keeps its own focus even if its active row gets hidden by the collapse.
+`collapse_parent: true` requires a parent and background creation. It appends the child in one
+state update, preserving the containing group's visibility. A parent's first child starts it
+collapsed; later children leave it as it is, so a later request never shuts a parent the user
+opened, or opens one they shut. If the new child becomes active because no workspace was active,
+its parent and containing group stay expanded. Each window keeps its own focus even if its active
+row gets hidden by the collapse.
 
 The reply includes `parent_collapsed` when requested. It is true if the parent is collapsed
 and false if the parent is expanded or a worktree create lost its parent. An older daemon that
@@ -2450,7 +2450,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `group_defaults` | bool | `workspace-create` |
 | `parent` | string | `workspace-create`, `workspace-nest`, `workspace-list` (workspace name-or-id, app-state-core.md §2.9) |
 | `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
-| `collapse_parent` | bool | `workspace-create` (collapse the parent of a background nested create) |
+| `collapse_parent` | bool | `workspace-create` (a background nested create starts a childless parent collapsed) |
 | `start_agent`, `agent_prompt` | string | `workspace-create` (`start_agent` decoded raw, §6.3) |
 | `send_prompt` | bool | `workspace-create` |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), `workspace-tab-new`, `workspace-tab-duplicate`, `workspace-tab-move-to-workspace`, `pane-move-to-tab`, `pane-move-to-new-tab` (§6.10), all absent = background |

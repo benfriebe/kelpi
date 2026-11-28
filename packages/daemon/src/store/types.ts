@@ -306,8 +306,8 @@ export type DomainAction =
            */
           readonly parentID?: string | undefined;
           /**
-           * With `focus: false` and a valid one-level parent, collapse its children and preserve
-           * group visibility. Keep the parent's disclosure state if a child is already active.
+           * With `focus: false` and a valid one-level parent, start the parent collapsed if it
+           * has no children yet, otherwise keep its disclosure state; group visibility is kept.
            */
           readonly collapseParent?: boolean | undefined;
           readonly profileName?: string | null | undefined;

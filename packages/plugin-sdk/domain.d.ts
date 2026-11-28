@@ -73,9 +73,9 @@ export interface WorkspaceCreateOptions {
      */
     focus?: boolean;
     /**
-     * Create in the background and collapse the parent's children. Requires `parentID`.
-     * The group keeps its visibility. If the daemon's active workspace is already a child,
-     * the parent's expanded or collapsed state is preserved.
+     * Create in the background, starting the parent collapsed if this is its first child.
+     * Requires `parentID`. A parent that already has children keeps its expanded or collapsed
+     * state, and the group keeps its visibility.
      */
     collapseParent?: boolean;
 }

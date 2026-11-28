@@ -566,8 +566,8 @@ Options:
                      follows its parent's group (and that group's repository).
   --nested           Nest the workspace under the one this pane belongs to
                      (KELPI_PANE_ID): an orchestrator spawning its workers.
-  --collapse-parent  Collapse the parent's children on a background create,
-                     keeping their current visibility if a child is active.
+  --collapse-parent  On a background create, start the parent collapsed if
+                     this is its first child; otherwise leave it as it is.
                      Requires --parent or --nested.
   --profile <name>   Assign a workspace profile at creation.
   --repo <path>      Repository to associate; with --worktree, the source repo

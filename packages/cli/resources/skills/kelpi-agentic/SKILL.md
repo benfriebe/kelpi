@@ -623,7 +623,8 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
 # stays put (the sidebar points at it). Capture its id and pass --workspace
 # to follow-ups. --focus switches every window to it: only when the user
 # asked to be taken there. For a nested background worker, --collapse-parent
-# keeps the children tucked under their parent workspace.
+# starts the parent collapsed with its first worker; later workers leave it as
+# the user set it.
 kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name> | --nested | --parent <ws>] [--collapse-parent] [--profile <name>] [--muted] [--icon <emoji>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--focus] [--json]
 
 # Nest an existing workspace under another (or reorder it among the parent's

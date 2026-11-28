@@ -87,26 +87,53 @@ describe('creating a nested workspace', () => {
         expect(childrenOf(h.state(), W2)).toEqual([]);
     });
 
-    it.each([false, true])('appends and collapses in one batch with group collapsed=%s', (groupCollapsed) => {
+    it.each([false, true])('appends the first child and collapses in one batch with group collapsed=%s', (groupCollapsed) => {
+        // W4 has no children yet: the orchestrator's first worker starts it collapsed.
         const h = family();
         h.dispatch(
-            { type: 'create-group', id: G1, name: 'Client', now: NOW, initialWorkspaceIDs: [W1] },
+            { type: 'create-group', id: G1, name: 'Client', now: NOW, initialWorkspaceIDs: [W4] },
             { type: 'set-group-collapsed', id: G1, collapsed: groupCollapsed },
-            { type: 'set-active-workspace', id: W4, now: NOW }
+            { type: 'set-active-workspace', id: W1, now: NOW }
         );
         const before = h.state();
         const batchIndex = h.batches.length;
         const worker = id('bbbbbbbb', 5);
-        h.dispatch(create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true }));
+        h.dispatch(create(worker, 'worker-c', { parentID: W4, focus: false, collapseParent: true }));
 
-        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: true });
+        expect(workspaceByID(h.state(), W4)).toMatchObject({ childOrder: [worker], childrenCollapsed: true });
         expect(h.state().groups).toEqual(before.groups);
         expect(h.state().topLevelOrder).toEqual(before.topLevelOrder);
-        expect(h.state().lastActiveWorkspaceID).toBe(W4);
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
         expect(h.batches).toHaveLength(batchIndex + 1);
         const mirror = applyDomainEvents(before, h.batches[batchIndex] ?? []);
-        expect(workspaceByID(mirror, W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: true });
+        expect(workspaceByID(mirror, W4)).toMatchObject({ childOrder: [worker], childrenCollapsed: true });
         expect(workspaceByID(mirror, worker)?.name).toBe('worker-c');
+    });
+
+    it('keeps a parent the user opened open when a later worker arrives', () => {
+        // W1 already shows W2 and W3, and the user is on the orchestrator itself.
+        const h = family();
+        const worker = id('bbbbbbbb', 5);
+        h.dispatch(
+            { type: 'set-active-workspace', id: W1, now: NOW },
+            { type: 'set-workspace-children-collapsed', id: W1, collapsed: false },
+            create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true })
+        );
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: false });
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+        expect(visibleWorkspaceOrder(h.state())).toEqual([W1, W2, W3, worker, W4]);
+    });
+
+    it('keeps a parent the user shut collapsed when a later worker arrives', () => {
+        const h = family();
+        const worker = id('bbbbbbbb', 5);
+        h.dispatch(
+            { type: 'set-active-workspace', id: W4, now: NOW },
+            { type: 'set-workspace-children-collapsed', id: W1, collapsed: true },
+            create(worker, 'worker-c', { parentID: W1, focus: false, collapseParent: true })
+        );
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [W2, W3, worker], childrenCollapsed: true });
+        expect(visibleWorkspaceOrder(h.state())).toEqual([W1, W4]);
     });
 
     it('keeps an active sibling visible and appends the background child', () => {

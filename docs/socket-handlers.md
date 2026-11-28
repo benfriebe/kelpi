@@ -1238,8 +1238,9 @@ carries `parent_id` and `parent_name`. Branch (b) uses the resolved parent. The 
 look up the created workspace's parent.
 
 `collapse_parent: true` requires a resolved parent and background creation. The handler rejects
-other combinations before starting any effects. The reducer changes the parent's disclosure state
-as it appends the child and preserves the group's visibility. The handler reads back
+other combinations before starting any effects. The reducer collapses a parent that had no
+children yet as it appends the child, leaves a parent that already had children as it is, and
+preserves the group's visibility. The handler reads back
 `parent_collapsed` after dispatch. With this option, branch (b) replies after the store update
 and before spawning the pane, starting an agent, or persisting.
 
@@ -1407,7 +1408,8 @@ twice is idempotent.
 `focus: false`: the reducer leaves `lastActiveWorkspaceID` where it was (unless no workspace is
 active at all, when the new one takes it), appends the row to the end of its scope (parent's
 children, group, or top level) regardless of `new-workspace-placement`, and broadcasts no
-`reveal-pane`. The destination opens unless `collapse_parent: true` was requested. The daemon
+`reveal-pane`. The destination opens unless `collapse_parent: true` was requested, which leaves
+it closed or as it was (see above). The daemon
 and the windows keep agreeing by moving neither. That replaces run-B L3's "move both" (a CLI create used to
 move ACTIVE without moving the windows, and an agent's follow-up `kelpi pane create` landed
 somewhere the user could not see); an agent now names `--workspace` for its follow-ups.

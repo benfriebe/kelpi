@@ -1183,8 +1183,9 @@ kelpi workspace create ... --agent claude|codex [--prompt "..." | --prompt-file 
   (workspace <name> (<id>) was created at the top level)`, exit 1; `--json` prints the reply
   first. The human line says ` nested under <parent_name>` where it would say ` in group <g>`.
 - `--collapse-parent` requires `--parent` or `--nested` and background creation. It appends the
-  child, preserves the group's visibility, and collapses the parent's children. If the daemon's
-  active workspace is already a child, the parent keeps its current disclosure state.
+  child and preserves the group's visibility. A parent's first child starts it collapsed; later
+  children leave it as it is, so a worker never shuts a parent the user opened to watch, and
+  never opens one they shut.
   The `--json` reply includes `parent_collapsed` on supporting daemons. Either boolean
   confirms support. If an older daemon confirms nesting with `parent_id` and omits
   `parent_collapsed`, the command warns on stderr and exits 0. The JSON reply keeps the

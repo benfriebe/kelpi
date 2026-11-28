@@ -920,9 +920,10 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         rawHarness = harnessClient(harnessSocket);
         /*
          * In the lane, `focus` and `blur` mean "make the page believe it is focused / unfocused".
-         * The main-process call still happens (`harness.focus()` orders the frame front and hands
-         * the keyboard to the web contents; `blur()` is a no-op on a window that was never key), and
-         * the page-level half is added here because this is the side holding the CDP session. The
+         * The main-process call still happens (`harness.focus()` orders the frame front and sets the
+         * page focus with `focusOnWebView()`; `harness.blur()` takes it back with `blurWebView()`,
+         * since `BrowserWindow.blur()` is a no-op on a window that was never key), and the
+         * emulated half is added here because this is the side holding the CDP session. The
          * ORDER matters for `blur`: emulation goes off first, so a scenario that reads
          * `document.hasFocus()` straight after the await never sees the stale `true`.
          */

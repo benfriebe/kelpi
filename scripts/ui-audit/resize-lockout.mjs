@@ -20,7 +20,9 @@
  *      What the app actually experiences is the pair "no `pointerup` here" + "the window's focus
  *      went to the view", so this run reproduces exactly that pair - the sidebar's gesture is
  *      simply never released, and the focus change is driven through the shell's own harness
- *      channel (`packages/shell/src/harness.ts` ▸ `blur`, a real `BrowserWindow.blur()`).
+ *      channel (`packages/shell/src/harness.ts` ▸ `blur`, a real `BrowserWindow.blur()`, plus
+ *      `blurWebView()` on this run's keyless lane window, which was never key and whose page
+ *      focus only that call takes back: `window-present.ts` ▸ `blurWindowContents`).
  *
  *      Two things about that had to be measured rather than assumed, and both are load-bearing.
  *      CDP input does not move Electron's focus, so pressing into the web pane's own target
@@ -339,8 +341,9 @@ async function main() {
          * contents (which counts it), and the renderer's window loses focus to that view.
          *
          * The focus half goes through the shell's harness channel because CDP input does not
-         * move Electron's focus - see the module note. It is `BrowserWindow.blur()`, the same
-         * event the renderer gets when a native view takes the key focus or the Space switches.
+         * move Electron's focus - see the module note. It is `BrowserWindow.blur()` (with
+         * `blurWebView()` in the lane), and what the renderer gets is the `blur` it gets when a
+         * native view takes the key focus or the Space switches.
          */
         const releaseIntoWebPane = async () => {
             let landed = null;

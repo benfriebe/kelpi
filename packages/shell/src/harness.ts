@@ -68,7 +68,7 @@ import {
 } from './harness-protocol.js';
 import { setNotificationPresenter } from './notify-present.js';
 import type { NotificationPresenter } from './notify.js';
-import { focusWindowContents } from './window-present.js';
+import { blurWindowContents, focusWindowContents } from './window-present.js';
 
 export interface HarnessOptions {
     /** Release the initial navigation held for a CDP watcher (#239). */
@@ -304,16 +304,20 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
             return window.isFocused();
         },
         /*
-         * `blur` stays a real `BrowserWindow.blur()`. In the lane it is a no-op on a window that
-         * was never key, and the scenarios that use it are asserting the state it leaves
-         * (`focused === false`), which a keyless window is already in. The page-level half is
-         * again the driver's: it turns focus emulation off so `document.hasFocus()` goes false,
-         * which is the signal the client actually reads.
+         * `blur` mirrors `focus`. A window that may be key gets a real `BrowserWindow.blur()`.
+         *
+         * A lane window was never key, so `blur()` alone is a no-op there and used to leave the
+         * page focused: `focus` above (and the first paint) set the renderer's page focus with
+         * `focusOnWebView()`, which the driver turning CDP focus emulation off cannot clear. So the
+         * lane also takes the page focus back with `blurWebView()` (`blurWindowContents` has the
+         * measurement), and the page hears a real `blur`, which is what
+         * `scripts/ui-audit/resize-lockout.mjs` needs to end a drag whose release went to a web
+         * pane. `isFocused()` still comes back false, as before.
          */
         blur: () => {
             const window = liveWindow(mainWindow);
             if (window === null) return null;
-            window.blur();
+            blurWindowContents(window);
             return window.isFocused();
         },
         /*

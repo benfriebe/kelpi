@@ -119,6 +119,31 @@ export function focusWindowContents(window: PresentableWindow): boolean {
     return true;
 }
 
+/** The slice of `BrowserWindow` that {@link blurWindowContents} touches. */
+export interface BlurrableWindow {
+    blur(): void;
+    /** Absent in a double means "may be key", which is every user window. */
+    isFocusable?(): boolean;
+    blurWebView?(): void;
+}
+
+/**
+ * Take the keyboard away from a window: {@link focusWindowContents} in reverse.
+ *
+ * A window that may be key gets `blur()`, and losing key status is what takes the page focus
+ * with it. A keyless window (a test lane, `./audit-window.ts` ▸ `auditWindowFocusable`) was never
+ * key, so `blur()` has nothing to take, while its page focus is real: `focusWindowContents` set
+ * it with `focusOnWebView()` at the first paint and on every harness `focus`, and CDP focus
+ * emulation turned off cannot clear a focus that is not emulated. Measured in the hidden lane
+ * with `blur()` alone, `document.hasFocus()` stayed true and the page heard no `blur` event.
+ * `blurWebView()` is the other half of `focusOnWebView()`: it clears the page focus and Chromium
+ * dispatches the `blur` the client listens for, without asking AppKit for anything.
+ */
+export function blurWindowContents(window: BlurrableWindow): void {
+    window.blur();
+    if (window.isFocusable?.() === false && window.blurWebView !== undefined) window.blurWebView();
+}
+
 /**
  * The line `main.ts` logs, and the only trace of the handoff visible from outside the process —
  * `scripts/smoke.mjs` asserts on it, because "the window can be typed into" is not otherwise

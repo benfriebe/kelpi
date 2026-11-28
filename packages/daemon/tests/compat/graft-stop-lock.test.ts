@@ -23,6 +23,9 @@ import { BREADCRUMB_FILENAME } from '../../src/graft/index.js';
 import { git, GIT, gitAvailable, initRepo, readIfPresent } from './gitfix.js';
 import { bundleKelpiCLI, startCompatDaemon, type CompatDaemon } from './harness.js';
 
+/** git's first line for a pop that met a held lock, in any git version. */
+const GIT_HELD_LOCK_LINE = /could not write index|index\.lock': File exists/;
+
 interface SessionJSON {
     readonly association_id: string;
     readonly status: string;
@@ -86,7 +89,9 @@ describe.skipIf(!gitAvailable())('compat: graft stop under a held index lock (#3
         expect(failed.code).toBe(1);
         expect(failed.stderr).toContain('stop incomplete');
         expect(failed.stderr).toContain(stash);
-        expect(failed.stderr).toContain('could not write index');
+        // The message keeps git's first line, and which line that is depends on git: up to 2.55
+        // it is `could not write index`, from 2.56 `Unable to create '…/index.lock': File exists.`
+        expect(failed.stderr).toMatch(GIT_HELD_LOCK_LINE);
         expect(failed.stderr).toContain(`kelpi graft stop --repo ${parent}`);
 
         // Before #342 this said `[]` while the file was missing and the stash still listed.

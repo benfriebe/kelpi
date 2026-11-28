@@ -827,7 +827,9 @@ describe.skipIf(!HAS_GIT)('stop on a held index lock (#342)', () => {
         expect(fs.existsSync(device)).toBe(false);
 
         const failure = await graft.stop(session.id).catch((error: unknown) => error);
-        expect(String((failure as Error).message)).toContain('could not write index');
+        // The message keeps git's first line: `could not write index` up to git 2.55, and
+        // `Unable to create '…/index.lock': File exists.` from 2.56. Both name the held lock.
+        expect(String((failure as Error).message)).toMatch(/could not write index|index\.lock': File exists/);
         expect(graft.session(session.id)?.stopIncomplete).toBe(true);
         expect(fs.existsSync(device)).toBe(false);
 

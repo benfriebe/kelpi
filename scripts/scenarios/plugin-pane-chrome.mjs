@@ -184,7 +184,30 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shel
         if (!await frameCheck(`(() => { const node = document.querySelector(${JSON.stringify(target)}); return node && !node.disabled; })()`)) {
             throw new Error(`Missing or disabled ${target} in the presenter frame: ${await labState()}`);
         }
-        const inner = await inFrame(`(() => { const node = document.querySelector(${JSON.stringify(target)}); const box = node.getBoundingClientRect(); return {x:box.x + box.width * ${String(fraction)}, y:box.y + box.height/2, width:box.width, height:box.height}; })()`);
+        /*
+         * Aim checked INSIDE the frame too: the point has to be on the target in the lab's own
+         * document, not just somewhere in the frame. A button in the band's item row can be partly
+         * clipped by the row's `overflow: hidden`, and the middle of its box is then on whatever
+         * the row drew next to it. Since workspace tabs (#474) that neighbour is the host's "Move to
+         * new tab" control, and a click aimed at the middle of a squeezed item moved the pane into a
+         * tab of its own. So the requested fraction is tried first and the rest of the node after
+         * it, and a target with no visible point at all is a thrown error rather than a click on
+         * its neighbour.
+         */
+        const inner = await inFrame(`(() => {
+            const node = document.querySelector(${JSON.stringify(target)});
+            const box = node.getBoundingClientRect();
+            const y = box.y + box.height / 2;
+            const fractions = [${String(fraction)}, 0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9];
+            let hit = null;
+            for (const at of fractions) {
+                const x = box.x + box.width * at;
+                hit = document.elementFromPoint(x, y);
+                if (hit !== null && (hit === node || node.contains(hit))) return {x, y, width:box.width, height:box.height};
+            }
+            return {x: box.x + box.width * ${String(fraction)}, y, width:box.width, height:box.height, covered: hit === null ? 'nothing' : String(hit.outerHTML ?? hit.nodeName).slice(0, 160)};
+        })()`);
+        if (inner.covered !== undefined) throw new Error(`${target} has no point the lab's own document hits it at: ${inner.covered}`);
         await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
         const outer = await page.box(presenterFrame);
         if (!outer || !inner.width || !inner.height) throw new Error(`no visible ${target} in the presenter frame`);
@@ -476,10 +499,57 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shel
         const activate = (paneID, ref) => refusal(`kelpi.ui.activatePaneControl(${JSON.stringify(paneID)}, ${JSON.stringify(ref)})`);
         const focusedNow = () => page.eval(`document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? null`);
 
-        await clickFrame(band(shellPane));
+        /*
+         * A point on the band that is the BAND itself: inside the presenter frame, on none of the
+         * lab's buttons, and outside the host's drag surface over the title.
+         *
+         * Not the middle of the band. The title run is under the host's surface, so what is left in
+         * the frame is mostly the item and control row, and the middle of a narrow pane's band is
+         * whichever button the row happens to put there. Since workspace tabs (#474) that row holds
+         * "Move to new tab" whenever the tab has more than one pane, and a click on the middle of
+         * this pane's band pressed it: the pane went to a tab of its own, this check still passed
+         * because that pane was focused, and every later check that looked for the workspace's
+         * other panes found them in a tab nobody was showing. The band's own padding above and
+         * below the row is in the frame and is no button, so the press is aimed there, and the
+         * check reads back what the lab says the press landed on.
+         */
+        const bandPoint = async paneID => {
+            if (!await frameCheck(`!!document.querySelector(${JSON.stringify(band(paneID))})`)) return null;
+            const inner = JSON.parse(String(await inFrame(`(() => {
+                const node = document.querySelector(${JSON.stringify(band(paneID))});
+                const box = node.getBoundingClientRect();
+                const points = [];
+                for (const fy of [0.12, 0.88, 0.5]) {
+                    for (let fx = 0.04; fx < 1; fx += 0.04) {
+                        const x = box.x + box.width * fx, y = box.y + box.height * fy;
+                        const hit = document.elementFromPoint(x, y);
+                        if (hit !== null && node.contains(hit) && hit.closest('.control, .item') === null) points.push({ x, y });
+                    }
+                }
+                return JSON.stringify(points);
+            })()`)));
+            await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+            const outer = await page.box(presenterFrame);
+            if (outer === null) return null;
+            for (const candidate of inner) {
+                const point = { x: outer.x + candidate.x, y: outer.y + candidate.y };
+                const hit = await page.eval(`(() => {
+                    const node = document.elementFromPoint(${point.x}, ${point.y});
+                    const frame = document.querySelector('${presenterFrame}');
+                    return node !== null && (node === frame || frame?.contains(node));
+                })()`);
+                if (hit === true) return point;
+            }
+            return null;
+        };
+        const bandPress = await bandPoint(shellPane);
+        await inFrame(`(() => { globalThis.paneLab.lastPress = null; return true; })()`);
+        if (bandPress !== null) await page.clickAt(bandPress.x, bandPress.y);
         const focused = await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 });
+        const lastPress = JSON.parse(String(await inFrame(`JSON.stringify(globalThis.paneLab?.lastPress ?? null)`).catch(() => 'null')));
         rec.check('a press on the lab\'s band focuses that pane through focusChromePane',
-            focused, `focused ${String(await focusedNow())}`);
+            bandPress !== null && focused && lastPress?.paneID === shellPane && !/\b(control|item)\b/.test(String(lastPress?.target)),
+            `point ${JSON.stringify(bandPress)} · the lab saw ${JSON.stringify(lastPress)} · focused ${String(await focusedNow())}`);
 
         const before = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length;
         const splitRef = await controlRef(shellPane, 'Split right');
@@ -680,7 +750,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon, shel
          * "the caret is on `[data-pane-surface]` and not inside the presenter's wrapper" is the
          * whole property, and the find bar below is what proves the chords came back with it.
          */
-        const itemButton = `[data-testid="lab-pane-item"]`;
+        /*
+         * The button pressed is UI Lab's own `pane.header` command, which the lab draws in its
+         * CONTROL row: pressing it runs UI Lab's counter and nothing else. Not the "Lab pane" item
+         * beside it: the item row gives ground before the control row does, and with this pane
+         * one of four in its tab, and the control row one button longer since workspace tabs
+         * (#474) added "Move to new tab", the item has no visible pixel left at all.
+         */
+        const itemButton = `[data-testid="lab-pane-control"][data-kind="item"]`;
         let caretBack = null;
         if (await frameCheck(`!!document.querySelector('${band(shellPane)} ${itemButton}')`, 6_000)) {
             await clickFrame(`${band(shellPane)} ${itemButton}`);

@@ -537,11 +537,11 @@ export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
                        [--group <name> | --parent <name-or-id> | --nested] \\
                        [--profile <name>] [--repo <path> | --no-repo] \\
-                       [--muted] [--icon <emoji>] [--keep-emoji] [--focus] [--json]
+                       [--muted] [--icon <emoji>] [--keep-emoji] [--focus | --collapse-parent] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
                        [--update-main | --no-update-main] \\
                        [--group <existing> | --parent <name-or-id> | --nested] [--muted] \\
-                       [--icon <emoji>] [--keep-emoji] [--focus] [--json]
+                       [--icon <emoji>] [--keep-emoji] [--focus | --collapse-parent] [--json]
   kelpi workspace create ... --agent claude|codex \\
                        [--prompt "..." | --prompt-file <path|->] [--send]
 
@@ -566,6 +566,9 @@ Options:
                      follows its parent's group (and that group's repository).
   --nested           Nest the workspace under the one this pane belongs to
                      (KELPI_PANE_ID): an orchestrator spawning its workers.
+  --collapse-parent  On a background create, start the parent collapsed if
+                     this is its first child; otherwise leave it as it is.
+                     Requires --parent or --nested.
   --profile <name>   Assign a workspace profile at creation.
   --repo <path>      Repository to associate; with --worktree, the source repo
                      (defaults to the group's repository, then --path, then

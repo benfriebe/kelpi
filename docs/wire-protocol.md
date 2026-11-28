@@ -568,7 +568,7 @@ carry `"command"`.
 | `pane-move-to-new-tab` | R/R | one of `pane_id`/`target` | `workspace`, `index`, `at_end`, `focus` |
 | `pane-move-to-tab` | R/R | one of `pane_id`/`target`; `tab` | `workspace`, `anchor`, `zone`, `focus` |
 | `workspace-list` | R/R | — | `group`, `parent` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `keep_emoji`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `start_agent`, `agent_prompt`, `send_prompt` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `keep_emoji`, `group_defaults`, `parent`, `parent_pane_id`, `focus`, `collapse_parent`, `start_agent`, `agent_prompt`, `send_prompt` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
 | `workspace-nest` | R/R | `name`, `parent` | `index` |
 | `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids`, `stop_services` |
@@ -1425,6 +1425,20 @@ group. Every success reply of a nested create carries `parent_id` and `parent_na
 store holds, so a caller can tell a daemon that predates nesting (which drops both fields and
 creates the workspace at the top level); `kelpi workspace create --parent/--nested` then exits
 non-zero.
+
+`collapse_parent: true` requires a parent and background creation. It appends the child in one
+state update, preserving the containing group's visibility. A parent's first child starts it
+collapsed; later children leave it as it is, so a later request never shuts a parent the user
+opened, or opens one they shut. If the new child becomes active because no workspace was active,
+its parent and containing group stay expanded. Each window keeps its own focus even if its active
+row gets hidden by the collapse.
+
+The reply includes `parent_collapsed` when requested. It is true if the parent is collapsed
+and false if the parent is expanded or a worktree create lost its parent. An older daemon that
+confirms nesting with `parent_id` can omit `parent_collapsed` and use the ordinary reveal.
+The command line warns on stderr and exits 0, leaving the field absent in JSON. The plugin helper
+resolves with `parentCollapsed` undefined. An absent `parent_id` still triggers the existing
+nesting error. Omitting the option or passing false uses the usual sidebar reveal behavior.
 
 The repository and worktree branches check the parent again once their git work is done, since
 it can be deleted (or nested under another workspace) meanwhile. The repository branch has made
@@ -2436,6 +2450,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `group_defaults` | bool | `workspace-create` |
 | `parent` | string | `workspace-create`, `workspace-nest`, `workspace-list` (workspace name-or-id, app-state-core.md §2.9) |
 | `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
+| `collapse_parent` | bool | `workspace-create` (a background nested create starts a childless parent collapsed) |
 | `start_agent`, `agent_prompt` | string | `workspace-create` (`start_agent` decoded raw, §6.3) |
 | `send_prompt` | bool | `workspace-create` |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295); `workspace-create` (#307), `diff`, `pane-move-to-workspace`, `web-tab-new` (#298), `workspace-tab-new`, `workspace-tab-duplicate`, `workspace-tab-move-to-workspace`, `pane-move-to-tab`, `pane-move-to-new-tab` (§6.10), all absent = background |

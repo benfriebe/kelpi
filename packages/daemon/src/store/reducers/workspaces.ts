@@ -193,15 +193,22 @@ function createWorkspace(
         const childOrder = [...parent.childOrder];
         if (anchorIndex < 0) childOrder.push(workspace.id);
         else childOrder.splice(anchorIndex + 1, 0, workspace.id);
+        const collapseParent = background && action.collapseParent === true;
+        // A parent's first child starts it collapsed. After that the disclosure is the user's:
+        // a later worker never shuts a parent they opened to watch, and never opens one they
+        // shut. If this create takes focus because nothing was active, keep the new row visible.
+        const childrenCollapsed =
+            collapseParent && keepsActive ? parent.childOrder.length === 0 || parent.childrenCollapsed : false;
         next = updateWorkspace(next, parent.id, (candidate) => ({
             ...candidate,
             childOrder,
-            childrenCollapsed: false
+            childrenCollapsed
         }));
-        // The new workspace must be visible, whether it became active or (#307) was made in
-        // the background and the sidebar is pointing at it instead: open the parent's group too.
-        const parentGroup = groupOfWorkspace(next, parent.id);
-        if (parentGroup !== null) next = expandGroup(next, parentGroup.id);
+        if (!collapseParent || !keepsActive) {
+            // Reveal ordinary creates and children that become active, including their group.
+            const parentGroup = groupOfWorkspace(next, parent.id);
+            if (parentGroup !== null) next = expandGroup(next, parentGroup.id);
+        }
         return { ...next, lastActiveWorkspaceID: activeID };
     }
 

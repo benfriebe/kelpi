@@ -17,17 +17,20 @@
 import type { JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState, type DomainAction } from '@kelpi/daemon/store';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
+import { NEW_WORKSPACE_CUE_MS } from './app/new-workspace-cue';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { createKelpiRuntime, createKelpiStore, selectActiveWorkspaceID, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
+const W3 = 'AAAAAAAA-0000-4000-8000-000000000003';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_W2 = 'DDDDDDDD-0000-4000-8000-000000000002';
+const PANE_W3 = 'DDDDDDDD-0000-4000-8000-000000000003';
 const NOW = 1_755_500_000_000;
 
 interface Harness {
@@ -95,7 +98,10 @@ async function userTypingInW1(): Promise<{ h: Harness; caret: Element }> {
     return { h, caret: document.activeElement as Element };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+});
 
 describe('a workspace the daemon creates in the background leaves the window alone (#307)', () => {
     it('stays on the user\'s workspace and pane, and points at the new row instead', async () => {
@@ -122,5 +128,76 @@ describe('a workspace the daemon creates in the background leaves the window alo
     it('does not highlight what it attached to: the first snapshot is adopted', async () => {
         await userTypingInW1();
         expect(document.querySelector('[data-just-created]')).toBeNull();
+    });
+
+    it('folds the first worker on arrival and keeps a parent the user opened open for the next', async () => {
+        const { h, caret } = await userTypingInW1();
+        vi.useFakeTimers();
+        const originalScroll = Element.prototype.scrollIntoView;
+        const scrolled: Element[] = [];
+        Element.prototype.scrollIntoView = function (this: Element): void {
+            scrolled.push(this);
+        };
+        try {
+            h.daemon({ type: 'create-workspace', id: W2, paneID: PANE_W2, name: 'worker one', now: NOW, focus: false, parentID: W1, collapseParent: true });
+            expect(rowOf(W1)?.querySelector('[data-testid="workspace-children-chevron"]')?.getAttribute('aria-expanded')).toBe('false');
+            expect(rowOf(W2)).toBeNull();
+            expect(document.querySelector('[data-just-created]')).toBeNull();
+            await act(async () => { await vi.advanceTimersByTimeAsync(NEW_WORKSPACE_CUE_MS + 1); });
+
+            // The user opens the parent to watch: the hidden arrival queued no jump to it.
+            h.daemon({ type: 'set-workspace-children-collapsed', id: W1, collapsed: false });
+            expect(rowOf(W2)).not.toBeNull();
+            expect(scrolled).not.toContain(rowOf(W2));
+
+            // The next worker leaves the parent as the user set it, and arrives like any background row.
+            h.daemon({ type: 'create-workspace', id: W3, paneID: PANE_W3, name: 'worker two', now: NOW, focus: false, parentID: W1, collapseParent: true });
+            expect(rowOf(W1)?.querySelector('[data-testid="workspace-children-chevron"]')?.getAttribute('aria-expanded')).toBe('true');
+            expect(rowOf(W3)?.getAttribute('data-just-created')).toBe('true');
+        } finally {
+            Element.prototype.scrollIntoView = originalScroll;
+        }
+        expect(rowOf(W1)?.getAttribute('data-active')).toBe('true');
+        expect(selectActiveWorkspaceID(h.runtime.store.getState())).toBe(W1);
+        expect(document.activeElement).toBe(caret);
+        expect(JSON.stringify(h.socket().messages())).not.toContain('set-workspace-children-collapsed');
+    });
+
+    it('keeps worker rows folded under a parent the user shut, without moving the caret or active workspace', async () => {
+        const { h, caret } = await userTypingInW1();
+        vi.useFakeTimers();
+        h.daemon({ type: 'create-workspace', id: W2, paneID: PANE_W2, name: 'worker one', now: NOW, focus: false, parentID: W1 });
+        expect(rowOf(W2)?.getAttribute('data-just-created')).toBe('true');
+        // The user shuts the parent (from this or another window) while the cue is still showing.
+        h.daemon({ type: 'set-workspace-children-collapsed', id: W1, collapsed: true });
+        h.daemon({ type: 'create-workspace', id: W3, paneID: PANE_W3, name: 'worker two', now: NOW, focus: false, parentID: W1, collapseParent: true });
+        expect(rowOf(W2)).toBeNull();
+        expect(document.querySelector('[data-just-created]')).toBeNull();
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(NEW_WORKSPACE_CUE_MS + 1); });
+
+        expect(document.querySelector('[data-just-created]')).toBeNull();
+        expect(rowOf(W1)?.querySelector('[data-testid="workspace-children-chevron"]')?.getAttribute('aria-expanded')).toBe('false');
+        expect(rowOf(W2)).toBeNull();
+        expect(rowOf(W3)).toBeNull();
+        expect(rowOf(W1)?.getAttribute('data-active')).toBe('true');
+        expect(selectActiveWorkspaceID(h.runtime.store.getState())).toBe(W1);
+        expect(document.activeElement).toBe(caret);
+        const messages = JSON.stringify(h.socket().messages());
+        expect(messages).not.toContain(W3);
+        expect(messages).not.toContain('set-workspace-children-collapsed');
+
+        const originalScroll = Element.prototype.scrollIntoView;
+        const scrolled: Element[] = [];
+        Element.prototype.scrollIntoView = function (this: Element): void {
+            scrolled.push(this);
+        };
+        try {
+            h.daemon({ type: 'set-workspace-children-collapsed', id: W1, collapsed: false });
+            expect(rowOf(W3)).not.toBeNull();
+            expect(scrolled).not.toContain(rowOf(W3));
+        } finally {
+            Element.prototype.scrollIntoView = originalScroll;
+        }
     });
 });

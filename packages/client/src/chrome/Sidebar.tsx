@@ -2181,6 +2181,7 @@ const GHOST_STRIPPED_ATTRIBUTES = [
     'data-depth',
     'data-selected',
     'data-entering',
+    'data-just-created',
     'data-guide',
     'data-nest-preview',
     'data-drag-gap',

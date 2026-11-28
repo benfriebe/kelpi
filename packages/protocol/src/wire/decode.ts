@@ -538,6 +538,7 @@ function decodeCommand(
                 parent: fields.text('parent'),
                 // Verbatim: a malformed id must fail the create (no such pane), not silently un-nest it.
                 parent_pane_id: fields.text('parent_pane_id'),
+                collapse_parent: fields.bool('collapse_parent'),
                 // #307: absent is BACKGROUND, the default for every caller but the window.
                 focus: fields.flag('focus', false),
                 // Raw on purpose (§6.3): `parseAgentKind` would turn a typo

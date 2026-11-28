@@ -805,6 +805,43 @@ describe('nested workspaces (app-state-core §2.9)', () => {
         expect(server.requests).toHaveLength(0);
     });
 
+    it.each([
+        { flags: ['--parent', 'boss'], selector: { parent: 'boss' }, collapsed: true },
+        { flags: ['--nested'], selector: { parent_pane_id: OTHER }, collapsed: false }
+    ])('sends --collapse-parent with $flags and accepts parent_collapsed=$collapsed', async ({ flags, selector, collapsed }) => {
+        const reply = { ok: true, workspace_id: PANE, workspace_name: 'worker', parent_id: OTHER, parent_collapsed: collapsed };
+        server.respond(() => ({ lines: [reply] }));
+        const result = await runCLI(['workspace', 'create', '--collapse-parent', ...flags, '--json'], { port: server.port, paneID: OTHER });
+        expect(result.code).toBe(0);
+        expect(result.stderr).toBe('');
+        expect(JSON.parse(result.stdout)).toEqual(reply);
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', collapse_parent: true, ...selector });
+    });
+
+    it('rejects --collapse-parent without a parent or with --focus before sending', async () => {
+        for (const flags of [[], ['--parent', 'boss', '--focus'], ['--nested', '--focus']]) {
+            const result = await runCLI(['workspace', 'create', '--collapse-parent', ...flags], { port: server.port, paneID: OTHER });
+            expect(result.code).toBe(1);
+            expect(result.stdout).toBe('');
+            expect(result.stderr).toBe('workspace create --collapse-parent requires --parent or --nested and background creation\n');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it.each([false, true])('warns and succeeds when an older daemon ignores --collapse-parent (JSON=%s)', async (asJSON) => {
+        const reply = { ok: true, workspace_id: PANE, workspace_name: 'worker', parent_id: OTHER, parent_name: 'boss' };
+        server.respond(() => ({ lines: [reply] }));
+        const flags = asJSON ? ['--json'] : [];
+        const result = await runCLI(['workspace', 'create', '--parent', 'boss', '--collapse-parent', ...flags], { port: server.port });
+        expect(result.code).toBe(0);
+        if (asJSON) expect(JSON.parse(result.stdout)).toEqual(reply);
+        else expect(result.stdout).toBe(`created workspace worker (${PANE}) nested under boss\n`);
+        expect(result.stderr).toBe(
+            `Warning: the daemon does not support --collapse-parent. Workspace worker (${PANE}) was created.\n`
+        );
+        expect(server.requests).toHaveLength(1);
+    });
+
     /**
      * #307: `workspace create` is a BACKGROUND create unless asked. Without `--focus` the CLI
      * sends no `focus` field (the daemon's default is background); with it, `focus: true`, on
@@ -826,6 +863,7 @@ describe('nested workspaces (app-state-core §2.9)', () => {
         const help = await runCLI(['workspace', 'create', '--help'], { port: server.port });
         expect(help.stdout).toContain('--focus            Switch every window to the new workspace (default: background).');
         expect(help.stdout).toContain('background: every window stays where it is');
+        expect(help.stdout).toContain('--collapse-parent');
     });
 
     it('sends keep_emoji only with --keep-emoji on workspace create, and prints the stored name', async () => {
@@ -838,11 +876,17 @@ describe('nested workspaces (app-state-core §2.9)', () => {
         expect(await lastRequest()).toEqual({ command: 'workspace-create', name: '🔥 auth', keep_emoji: true });
     });
 
-    it('fails when a daemon that predates nesting created the workspace at the top level', async () => {
-        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false }] }));
-        const result = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss'], { port: server.port });
+    it.each([false, true])('fails when a daemon predating nesting creates at the top level (collapse=%s)', async (collapse) => {
+        const reply = { ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false };
+        server.respond(() => ({ lines: [reply] }));
+        const flags = collapse ? ['--collapse-parent'] : [];
+        const result = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss', '--json', ...flags], { port: server.port });
         expect(result.code).toBe(1);
-        expect(result.stderr).toContain('the daemon did not nest the workspace');
+        expect(JSON.parse(result.stdout)).toEqual(reply);
+        expect(result.stderr).toBe(
+            `kelpi workspace create: the daemon did not nest the workspace; restart it on this build (workspace worker (${PANE}) was created at the top level)\n`
+        );
+        expect(server.requests).toHaveLength(1);
     });
 
     it('defers a nested worktree’s source repo to the parent’s group, with the cwd as fallback', async () => {

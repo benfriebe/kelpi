@@ -305,6 +305,11 @@ export type DomainAction =
            * its parent's placement); a missing or already-nested parent falls back to `groupID`.
            */
           readonly parentID?: string | undefined;
+          /**
+           * With `focus: false` and a valid one-level parent, start the parent collapsed if it
+           * has no children yet, otherwise keep its disclosure state; group visibility is kept.
+           */
+          readonly collapseParent?: boolean | undefined;
           readonly profileName?: string | null | undefined;
           readonly muted?: boolean | undefined;
           readonly icon?: IconRef | null | undefined;

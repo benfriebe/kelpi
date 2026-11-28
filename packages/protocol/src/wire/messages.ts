@@ -440,6 +440,8 @@ export interface WorkspaceCreateMessage {
      * forwards `KELPI_PANE_ID`). Exclusive with `parent`.
      */
     parent_pane_id?: string | undefined;
+    /** On a background nested create, start a childless parent collapsed; otherwise keep its state. */
+    collapse_parent?: boolean | undefined;
     /**
      * #307: switch to the new workspace. Absent (or false) creates it in the BACKGROUND: no
      * window is revealed to it and the daemon's active workspace does not move. The window's

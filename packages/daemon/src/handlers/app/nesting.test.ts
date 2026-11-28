@@ -4,9 +4,12 @@
  * `parent_id` / `parent_name` and `parent` filter, and the group cascade's teardown.
  */
 
-import { describe, expect, it } from 'vitest';
+import { decodeWireObject } from '@kelpi/protocol';
+import { describe, expect, it, vi } from 'vitest';
 
+import { createDispatcher } from '../../boot/dispatch.js';
 import { stubGitService } from '../../git/testing.js';
+import type { ReplyHandle } from '../../seams.js';
 import { workspaceByID, type DaemonState } from '../../store/index.js';
 import { flush, harness, id, NOW, seeded } from './testing.js';
 
@@ -82,6 +85,79 @@ describe('workspace-create with a parent', () => {
         expect(h.state().groups[0]?.childOrder).toEqual([W1]);
         expect(childrenOf(h.state(), W1)).toEqual([NEW]);
     });
+
+    it('honors collapse_parent and reports the resulting state through either parent selector', () => {
+        const h = harness({ initial: seeded(1), ids: [NEW, NEW_PANE] });
+        expect(h.reply({ command: 'workspace-create', name: 'worker', parent: W1, collapse_parent: true })).toEqual({
+            ok: true,
+            workspace_id: NEW,
+            workspace_name: 'worker',
+            muted: false,
+            parent_id: W1,
+            parent_name: 'w1',
+            parent_collapsed: true
+        });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childrenCollapsed: true, childOrder: [NEW] });
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+        expect(h.broadcasts).toEqual([]);
+
+        h.dispatch({ type: 'set-active-workspace', id: NEW, now: NOW });
+        const second = h.reply({ command: 'workspace-create', name: 'worker two', parent_pane_id: P1, collapse_parent: true });
+        expect(second).toMatchObject({ ok: true, parent_id: W1, parent_collapsed: false });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childrenCollapsed: false, childOrder: [NEW, second['workspace_id']] });
+        expect(h.state().lastActiveWorkspaceID).toBe(NEW);
+        expect(h.broadcasts).toEqual([]);
+    });
+
+    it('acknowledges the committed child before attempting to spawn its pane', () => {
+        const h = harness({
+            initial: seeded(1),
+            ids: [NEW, NEW_PANE],
+            spawnPane: () => { throw new Error('pty unavailable'); }
+        });
+        const decoded = decodeWireObject({ command: 'workspace-create', name: 'worker', parent: W1, collapse_parent: true });
+        if (!decoded.ok) throw new Error(decoded.detail);
+        const send = vi.fn<ReplyHandle['send']>();
+        let closed = false;
+        const reply: ReplyHandle = {
+            send,
+            close: () => { closed = true; },
+            get closed() { return closed; },
+            onDisconnect: () => {}
+        };
+        const onError = vi.fn();
+        const dispatch = createDispatcher({ ctx: h.ctx, tables: [h.table], onError });
+
+        dispatch(decoded.message, reply);
+        expect(onError).toHaveBeenCalledExactlyOnceWith(new Error('pty unavailable'), 'handler workspace-create');
+        expect(send).toHaveBeenCalledExactlyOnceWith({
+            ok: true,
+            workspace_id: NEW,
+            workspace_name: 'worker',
+            muted: false,
+            parent_id: W1,
+            parent_name: 'w1',
+            parent_collapsed: true
+        });
+        expect(reply.closed).toBe(true);
+        expect(h.state().workspaces.map((workspace) => workspace.id)).toEqual([W1, NEW]);
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childOrder: [NEW], childrenCollapsed: true });
+        expect(h.state().lastActiveWorkspaceID).toBe(W1);
+    });
+
+    it('refuses collapse_parent on a top-level or focusing create before any change', () => {
+        const h = family();
+        const before = h.state();
+        for (const options of [{ group: 'new group' }, { parent: W1, focus: true }]) {
+            expect(h.reply({ command: 'workspace-create', collapse_parent: true, ...options })).toEqual({
+                ok: false,
+                error: 'collapse_parent requires a background nested workspace create'
+            });
+            expect(h.state()).toBe(before);
+        }
+        expect(h.spawned).toEqual([]);
+        expect(h.broadcasts).toEqual([]);
+    });
 });
 
 describe('an empty parent (§2.9: never read as "no parent")', () => {
@@ -139,11 +215,12 @@ describe('an async create whose parent goes away while git runs (§2.9)', () => 
 
     it('completes a worktree create at the top level and says the parent was lost', async () => {
         const { h, finish } = gated();
-        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', worktree: 'worker', repo: REPO });
+        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', worktree: 'worker', repo: REPO, collapse_parent: true });
         h.send({ command: 'workspace-delete', name: 'w1' });
         const reply = await finish();
         expect(reply).toMatchObject({
             ok: true,
+            parent_collapsed: false,
             parent_lost: true,
             parent_lost_reason: "parent 'w1' was deleted while the workspace was being created"
         });
@@ -154,7 +231,7 @@ describe('an async create whose parent goes away while git runs (§2.9)', () => 
 
     it('fails a repo create whole, leaving no workspace, when the parent was nested meanwhile', async () => {
         const { h, finish } = gated();
-        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', repo: REPO });
+        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', repo: REPO, collapse_parent: true });
         h.send({ command: 'workspace-nest', name: 'w1', parent: 'w2' });
         expect(await finish()).toEqual({
             ok: false,
@@ -163,12 +240,38 @@ describe('an async create whose parent goes away while git runs (§2.9)', () => 
         expect(h.state().workspaces.map((workspace) => workspace.name).sort()).toEqual(['w1', 'w2']);
     });
 
-    it('still nests when the parent is untouched', async () => {
+    it.each([{ repo: REPO }, { worktree: 'worker', repo: REPO }])('collapses after git finishes for %o', async (options) => {
         const { h, finish } = gated();
-        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', repo: REPO });
+        h.dispatch(
+            { type: 'create-group', id: G1, name: 'team', now: NOW, initialWorkspaceIDs: [W1] },
+            { type: 'set-group-collapsed', id: G1, collapsed: true }
+        );
+        const before = h.state();
+        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', collapse_parent: true, ...options });
+        expect(h.state()).toBe(before);
         const reply = await finish();
-        expect(reply).toMatchObject({ ok: true, parent_id: W1, parent_name: 'w1' });
+        expect(reply).toMatchObject({ ok: true, parent_id: W1, parent_name: 'w1', parent_collapsed: true });
         expect(reply).not.toHaveProperty('parent_lost');
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childrenCollapsed: true, childOrder: [reply?.['workspace_id']] });
+        expect(h.state().groups).toEqual(before.groups);
+        expect(h.state().lastActiveWorkspaceID).toBe(W2);
+    });
+
+    it('collapses when the child uses the group default repository', async () => {
+        const { h, finish } = gated();
+        const repoID = id('cccccccc', 2);
+        h.dispatch(
+            { type: 'create-group', id: G1, name: 'team', now: NOW, initialWorkspaceIDs: [W1] },
+            {
+                type: 'add-repo',
+                repo: { id: repoID, path: REPO, name: 'kelpi', remoteURL: null, lastAccessedAt: 1, isAutoDiscovered: false }
+            },
+            { type: 'set-group-repo', id: G1, repoID, createWorktree: false }
+        );
+        h.send({ command: 'workspace-create', name: 'worker', parent: 'w1', collapse_parent: true });
+        const reply = await finish();
+        expect(reply).toMatchObject({ ok: true, parent_id: W1, parent_collapsed: true, repo_path: REPO });
+        expect(workspaceByID(h.state(), W1)).toMatchObject({ childrenCollapsed: true, childOrder: [reply?.['workspace_id']] });
     });
 });
 

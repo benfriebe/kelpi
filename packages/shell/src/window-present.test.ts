@@ -17,6 +17,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    blurWindowContents,
     focusWindowContents,
     presentWindow,
     presentWindowLogLine,
@@ -191,5 +192,34 @@ describe('focusWindowContents', () => {
         const window = { ...fakeWindow(), isFocusable: () => true, focusOnWebView: () => window.calls.push('focusOnWebView') };
         expect(focusWindowContents(window)).toBe(true);
         expect(window.calls).toEqual(['contents.focus']);
+    });
+});
+
+describe('blurWindowContents', () => {
+    const blurrable = (focusable: boolean | undefined) => {
+        const calls: string[] = [];
+        return {
+            calls,
+            blur: () => calls.push('blur'),
+            blurWebView: () => calls.push('blurWebView'),
+            ...(focusable === undefined ? {} : { isFocusable: () => focusable })
+        };
+    };
+
+    it('takes the page focus back from a window that may not be key (a test lane window)', () => {
+        // `blur()` is a no-op on a window that was never key, and the page focus that
+        // `focusOnWebView()` set is real, so without `blurWebView()` the page never hears a
+        // `blur` (measured in the hidden lane: `document.hasFocus()` stayed true).
+        const window = blurrable(false);
+        blurWindowContents(window);
+        expect(window.calls).toEqual(['blur', 'blurWebView']);
+    });
+
+    it('leaves a window that may be key to lose its key status the ordinary way (every user launch)', () => {
+        for (const focusable of [true, undefined]) {
+            const window = blurrable(focusable);
+            blurWindowContents(window);
+            expect(window.calls).toEqual(['blur']);
+        }
     });
 });

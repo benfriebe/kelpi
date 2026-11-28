@@ -167,7 +167,8 @@ describe('parseCornerFrame', () => {
     });
 
     it('refuses another version, a bad rect or a missing flag', () => {
-        expect(parseCornerFrame(frame(1, { version: 2 }))).toBeNull();
+        expect(parseCornerFrame(frame(1, { version: CORNER_LAYER_VERSION + 1 }))).toBeNull();
+        expect(parseCornerFrame(frame(1, { version: CORNER_LAYER_VERSION - 1 }))).toBeNull();
         expect(parseCornerFrame(frame(1, { rect: { x: 0, y: 0, w: -1, h: 4 } }))).toBeNull();
         expect(parseCornerFrame(frame(1, { rect: 'here' }))).toBeNull();
         expect(parseCornerFrame(frame(1, { attached: 'yes' }))).toBeNull();
@@ -360,10 +361,19 @@ describe('createCornerLayer', () => {
         await settle();
         overlay.click({ kind: 'dismiss', id: 't1' });
         await settle();
-        overlay.click({ kind: 'nonsense' });
+        // #478: any well-formed kind crosses, so a new card needs no shell change; the page
+        // ignores one it does not know. A malformed kind, or a dismiss with no id, never does.
+        overlay.click({ kind: 'later-leftovers' });
+        await settle();
+        overlay.click({ kind: 'Not a kind();' });
+        await settle();
+        overlay.click({ kind: 'dismiss' });
         await settle();
         const acts = page.calls.filter((call) => call.includes('"act"'));
-        expect(acts).toEqual([cornerCallScript('__kelpiCorner', 'act', { kind: 'dismiss', id: 't1' })]);
+        expect(acts).toEqual([
+            cornerCallScript('__kelpiCorner', 'act', { kind: 'dismiss', id: 't1' }),
+            cornerCallScript('__kelpiCorner', 'act', { kind: 'later-leftovers' })
+        ]);
     });
 
     it('when the overlay dies: the page draws again, and a fresh overlay is loaded', async () => {
